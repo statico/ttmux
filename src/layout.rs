@@ -179,19 +179,24 @@ impl Layout {
     pub fn set_area(&mut self, area: Rect) {
         let old = self.area;
         self.area = area;
-        if old.w > 0 && old.h > 0 {
-            let ids: Vec<PaneId> = self.rects.keys().copied().collect();
-            for id in ids {
-                let r = self.rects[&id];
-                let scaled = Rect::new(
+        let ids: Vec<PaneId> = self.rects.keys().copied().collect();
+        for id in ids {
+            let r = self.rects[&id];
+            // A degenerate old area (a 1-row terminal leaves zero rows for the
+            // panes) has no proportion to scale by, but the float still has to
+            // be clamped back inside the new area or it stays off screen.
+            let scaled = if old.w > 0 && old.h > 0 {
+                Rect::new(
                     area.x + scale(r.x.saturating_sub(old.x), old.w, area.w),
                     area.y + scale(r.y.saturating_sub(old.y), old.h, area.h),
                     scale(r.w, old.w, area.w).max(1),
                     scale(r.h, old.h, area.h).max(1),
-                );
-                let clamped = self.clamp_rect(scaled);
-                self.rects.insert(id, clamped);
-            }
+                )
+            } else {
+                r
+            };
+            let clamped = self.clamp_rect(scaled);
+            self.rects.insert(id, clamped);
         }
     }
 
