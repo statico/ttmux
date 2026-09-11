@@ -1,14 +1,12 @@
-# ttmux module contracts
+# ttmux architecture
 
-Single crate. Each module below is owned by exactly one author. **Do not edit a
-file you do not own** — others are being written in parallel. If `cargo test`
-fails inside a file you don't own, ignore it and re-run.
+One crate, one module per concern. The public API of each module is listed
+below; it is the contract the other modules code against.
 
-Already written and stable — read them, don't change them:
-
-- `src/action.rs` — `Action`, `Dir`, `ALL_ACTIONS`. Parse/Display round-trip.
-- `src/config.rs` — `Config` (`general`/`appearance`/`status`/`agents`/`keys`),
-  `Chord`, `Binding`, `Rgb`, `BorderStyle`, `StatusPosition`, `TitlePosition`.
+`src/app.rs` owns the event loop and wires everything together. Everything it
+calls is pure enough to unit test: `layout` is geometry with no I/O, `render`
+and `status` only write into a ratatui `Buffer`, `input` is a pure function
+from key events to bytes, and `agent` is a state machine over text.
 
 Shared vocabulary:
 
@@ -19,6 +17,13 @@ pub struct Rect { pub x: u16, pub y: u16, pub w: u16, pub h: u16 }  // in layout
 
 `layout::Rect` is ttmux's own type (ratatui's is converted at the render edge
 via `From<Rect> for ratatui::layout::Rect`).
+
+Foundations:
+
+- `src/action.rs` — `Action`, `Dir`, `ALL_ACTIONS`. Parse/Display round-trip,
+  so config strings and the command palette share one vocabulary.
+- `src/config.rs` — `Config` (`general`/`appearance`/`status`/`agents`/`keys`),
+  `Chord`, `Binding`, `Rgb`, `BorderStyle`, `StatusPosition`, `TitlePosition`.
 
 ## src/layout.rs
 Pure geometry. No I/O, no terminal. Fully unit-tested.
