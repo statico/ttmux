@@ -858,8 +858,14 @@ impl Layout {
         let a = self.area;
         r.w = r.w.clamp(MIN.min(a.w).max(1), a.w.max(1));
         r.h = r.h.clamp(MIN.min(a.h).max(1), a.h.max(1));
-        r.x = r.x.max(a.x).min(a.right().saturating_sub(r.w).max(a.x));
-        r.y = r.y.max(a.y).min(a.bottom().saturating_sub(r.h).max(a.y));
+        // A float may hang off the right or bottom edge — that is what makes
+        // free mode feel like a window manager — but never so far that less
+        // than `MIN` of it is still reachable. Unsigned coordinates mean it can
+        // never hang off the left or top, so those stay flush with the area.
+        let max_x = a.right().saturating_sub(MIN.min(r.w)).max(a.x);
+        let max_y = a.bottom().saturating_sub(MIN.min(r.h)).max(a.y);
+        r.x = r.x.max(a.x).min(max_x);
+        r.y = r.y.max(a.y).min(max_y);
         r
     }
 }
@@ -1418,16 +1424,24 @@ mod tests {
     }
 
     #[test]
-    fn free_move_clamps_to_area() {
+    fn free_move_keeps_a_grabbable_sliver_on_screen() {
         let mut l = grid();
         l.set_mode(Mode::Free);
+        // Left and top are hard edges: unsigned coordinates cannot go past them.
         l.move_pane(1, Dir::Left, 100);
         assert_eq!(l.rect_of(1).unwrap().x, AREA.x);
+        l.move_pane(1, Dir::Up, 100);
+        assert_eq!(l.rect_of(1).unwrap().y, AREA.y);
+
+        // Right and bottom let the pane hang off, keeping MIN cells reachable.
         l.move_pane(1, Dir::Right, 500);
-        let r = l.rect_of(1).unwrap();
-        assert_eq!(r.right(), AREA.right());
+        assert_eq!(l.rect_of(1).unwrap().x, AREA.right() - MIN);
         l.move_pane(1, Dir::Down, 500);
-        assert_eq!(l.rect_of(1).unwrap().bottom(), AREA.bottom());
+        assert_eq!(l.rect_of(1).unwrap().y, AREA.bottom() - MIN);
+
+        // And it can be dragged back out again.
+        l.move_pane(1, Dir::Up, 500);
+        assert_eq!(l.rect_of(1).unwrap().y, AREA.y);
     }
 
     #[test]

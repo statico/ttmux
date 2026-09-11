@@ -158,3 +158,52 @@ fn every_status_widget_renders_without_panicking() {
     let buf = scene(&cfg, &two_panes(), 1, 40, 10);
     assert!(text(&buf)[9].contains("?bogus"));
 }
+
+#[test]
+fn dragging_a_divider_keeps_the_tiling_exact() {
+    let mut l = Layout::new(Rect::new(0, 0, 80, 24));
+    l.insert(1, None, None);
+    l.insert(2, Some(1), Some(Dir::Right));
+
+    let divider = l.rect_of(1).unwrap().right();
+    assert!(l.drag_start(divider, 10), "no divider at column {divider}");
+    l.drag_to(divider - 14, 10);
+    l.drag_end();
+
+    let geo = l.geometry();
+    let a = geo.iter().find(|(id, _)| *id == 1).unwrap().1;
+    let b = geo.iter().find(|(id, _)| *id == 2).unwrap().1;
+    assert_eq!(a.x, 0);
+    assert_eq!(b.x, a.right(), "panes overlap or leave a gap: {a:?} {b:?}");
+    assert_eq!(a.w + b.w, 80, "tiling no longer covers the area");
+    assert!(a.w < 40, "the divider did not move left: {a:?}");
+}
+
+#[test]
+fn a_floated_pane_can_be_grabbed_by_its_top_border() {
+    let mut l = Layout::new(Rect::new(0, 0, 80, 24));
+    l.insert(1, None, None);
+    l.insert(2, Some(1), Some(Dir::Right));
+    l.toggle_float(2);
+    assert!(l.is_floating(2));
+
+    let r = l.rect_of(2).unwrap();
+    let (gx, gy) = (r.x + r.w / 2, r.y);
+    assert_eq!(
+        l.pane_at(gx, gy),
+        Some(2),
+        "topmost at the float's top border"
+    );
+    assert!(
+        matches!(l.hit_test(gx, gy), Some((2, ttmux::layout::DragKind::Move))),
+        "hit_test gave {:?}",
+        l.hit_test(gx, gy)
+    );
+
+    // The app raises the pane under the cursor before starting the drag.
+    l.raise(2);
+    assert!(l.drag_start(gx, gy), "drag did not start");
+    l.drag_to(gx, gy + 3);
+    l.drag_end();
+    assert_eq!(l.rect_of(2).unwrap().y, r.y + 3);
+}
