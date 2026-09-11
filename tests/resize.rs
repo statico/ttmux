@@ -44,7 +44,9 @@ fn assert_exact(l: &Layout) {
 /// tiny area they are legitimately thinner than MIN (`assert_exact` covers them).
 fn assert_reachable(l: &Layout, ids: &[PaneId]) {
     let a = l.area();
-    assert_eq!(l.ids(), ids, "pane lost by resize to {a:?}");
+    let mut have = l.ids();
+    have.sort_unstable(); // floating reorders ids(); it must not lose any
+    assert_eq!(have, ids, "pane lost by resize to {a:?}");
     for &id in ids {
         let r = l.rect_of(id).unwrap_or_else(|| panic!("no rect for {id}"));
         if !l.is_floating(id) {
@@ -81,22 +83,30 @@ fn free_shrink_then_grow_lands_back() {
     l.set_area(Rect::new(0, 0, 60, 20));
     l.set_area(Rect::new(0, 0, 120, 40));
 
-    // Halving floors each coordinate, doubling cannot recover the dropped odd
-    // cell: exactly 1 per axis, per direction. Nothing here overhangs, so
-    // clamping adds no further error.
-    for (id, was) in before {
-        let now = l.rect_of(id).unwrap();
-        for (a, b, what) in [
-            (was.x, now.x, "x"),
-            (was.y, now.y, "y"),
-            (was.w, now.w, "w"),
-            (was.h, now.h, "h"),
+    // Exact: every float's rect is derived from the fraction of the area the
+    // user put it at, not from the rounded rect it had at 60x20, so the
+    // intermediate rounding never enters the result.
+    assert_eq!(l.geometry(), before);
+}
+
+#[test]
+fn repeated_resize_cycles_do_not_drift() {
+    let mut l = free(Rect::new(0, 0, 120, 40), 4);
+    l.move_pane(4, Dir::Right, 500); // parked overhanging the right edge
+    let before = l.geometry();
+
+    // Sizes that do not divide evenly, so any per-cycle rounding would show up
+    // as a slow crawl towards the top-left and towards MIN.
+    for _ in 0..50 {
+        for area in [
+            Rect::new(0, 0, 37, 11),
+            Rect::new(0, 0, 7, 5),
+            Rect::new(0, 0, 201, 61),
         ] {
-            assert!(
-                a.abs_diff(b) <= 1,
-                "pane {id} {what}: {was:?} -> {now:?} after round trip"
-            );
+            l.set_area(area);
         }
+        l.set_area(Rect::new(0, 0, 120, 40));
+        assert_eq!(l.geometry(), before, "floats drifted");
     }
 }
 
@@ -178,7 +188,7 @@ fn explicit_float_survives_resize() {
     l.set_area(Rect::new(0, 0, 40, 12));
     assert_eq!(l.mode, Mode::Tiling);
     assert!(l.is_floating(2), "float docked itself on resize");
-    assert_reachable(&l, &l.ids());
+    assert_reachable(&l, &[1, 2, 3]);
     // The tiled remainder still tiles exactly; the float is drawn over it.
     let a = l.area();
     let tiled: u32 = l
@@ -227,6 +237,19 @@ fn random_resizes_keep_invariants() {
                 (rng() % 60) as u16,
             );
             l.set_area(area);
+            // Interleave the user ops that write float geometry. In free mode
+            // they are all legal at any size, and `toggle_float` on a shrunken
+            // area is what used to spin forever: this loop simply not finishing
+            // is the assertion.
+            if mode == Mode::Free {
+                let id = 1 + rng() % 5;
+                let dir = [Dir::Left, Dir::Right, Dir::Up, Dir::Down][(rng() % 4) as usize];
+                match rng() % 3 {
+                    0 => l.move_pane(id, dir, (rng() % 20) as u16),
+                    1 => l.resize(id, dir, (rng() % 20) as u16),
+                    _ => l.toggle_float(id),
+                }
+            }
             if mode == Mode::Tiling {
                 assert_exact(&l);
             }

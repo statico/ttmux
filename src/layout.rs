@@ -152,6 +152,10 @@ pub struct Layout {
     root: Option<Node>,
     /// Absolute rects for panes drawn free (explicit floats, or everything in `Free`).
     rects: HashMap<PaneId, Rect>,
+    /// The same rects as fractions of `area` (x, y, w, h), written only when the
+    /// user places a float. `set_area` derives `rects` from these instead of
+    /// rescaling the last rounded rect, which would drift on every resize.
+    desired: HashMap<PaneId, (f64, f64, f64, f64)>,
     /// Panes that float even in tiling mode (they are not in the tree).
     explicit: Vec<PaneId>,
     /// Z order of free-drawn panes, back to front.
@@ -169,6 +173,7 @@ impl Layout {
             area,
             root: None,
             rects: HashMap::new(),
+            desired: HashMap::new(),
             explicit: Vec::new(),
             z: Vec::new(),
             drag: None,
@@ -176,26 +181,27 @@ impl Layout {
     }
 
     /// Resize the whole layout. Tiled ratios are kept; float rects scale with it.
+    ///
+    /// Floats are re-derived from the fractions in `desired`, never from the
+    /// rect they currently have, so a shrink and a grow back land exactly where
+    /// they started however many times it happens.
     pub fn set_area(&mut self, area: Rect) {
-        let old = self.area;
         self.area = area;
         let ids: Vec<PaneId> = self.rects.keys().copied().collect();
         for id in ids {
-            let r = self.rects[&id];
-            // A degenerate old area (a 1-row terminal leaves zero rows for the
-            // panes) has no proportion to scale by, but the float still has to
-            // be clamped back inside the new area or it stays off screen.
-            let scaled = if old.w > 0 && old.h > 0 {
-                Rect::new(
-                    area.x + scale(r.x.saturating_sub(old.x), old.w, area.w),
-                    area.y + scale(r.y.saturating_sub(old.y), old.h, area.h),
-                    scale(r.w, old.w, area.w).max(1),
-                    scale(r.h, old.h, area.h).max(1),
-                )
-            } else {
-                r
+            // A degenerate area has no proportion to place a float in, so the
+            // old rect stands; it still has to be clamped back inside `area` or
+            // it stays off screen.
+            let r = match self.desired.get(&id) {
+                Some(&(fx, fy, fw, fh)) if area.w > 0 && area.h > 0 => Rect::new(
+                    area.x.saturating_add(from_frac(fx, area.w)),
+                    area.y.saturating_add(from_frac(fy, area.h)),
+                    from_frac(fw, area.w).max(1),
+                    from_frac(fh, area.h).max(1),
+                ),
+                _ => self.rects[&id],
             };
-            let clamped = self.clamp_rect(scaled);
+            let clamped = self.clamp_rect(r);
             self.rects.insert(id, clamped);
         }
     }
@@ -208,10 +214,13 @@ impl Layout {
 
     /// Add a pane, splitting `near` (or the last pane) along `dir`.
     ///
-    /// `dir` of `None` splits the longer side of that pane.
-    pub fn insert(&mut self, id: PaneId, near: Option<PaneId>, dir: Option<Dir>) {
+    /// `dir` of `None` splits the longer side of that pane. Returns false and
+    /// changes nothing when there is no room for the split: half of a pane
+    /// narrower than `2 * MIN` is unusable (a zero-width pane cannot even be
+    /// clicked), so the caller keeps its pane and reports "no room" instead.
+    pub fn insert(&mut self, id: PaneId, near: Option<PaneId>, dir: Option<Dir>) -> bool {
         if self.ids().contains(&id) {
-            return;
+            return false;
         }
         let leaves = self.leaves();
         let near = near
@@ -234,6 +243,10 @@ impl Layout {
                         }
                     }
                 };
+                if !splittable(rect, axis) {
+                    self.root = Some(root);
+                    return false;
+                }
                 let first = matches!(dir, Some(Dir::Left) | Some(Dir::Up));
                 let mut root = root;
                 split_leaf(&mut root, near, id, axis, first);
@@ -243,13 +256,15 @@ impl Layout {
         }
         if self.mode == Mode::Free {
             // Give the newcomer the rect it would have had while tiled.
-            if let Some(r) = self.tiled_geometry().into_iter().find(|(p, _)| *p == id) {
-                self.rects.insert(id, r.1);
-            } else {
-                self.rects.insert(id, self.area.shrink(2));
-            }
+            let r = self
+                .tiled_geometry()
+                .into_iter()
+                .find(|(p, _)| *p == id)
+                .map_or_else(|| self.area.shrink(2), |(_, r)| r);
+            self.put_rect(id, r);
             self.z.push(id);
         }
+        true
     }
 
     /// Remove a pane; its sibling collapses into its place.
@@ -258,6 +273,7 @@ impl Layout {
             self.root = remove_leaf(root, id);
         }
         self.rects.remove(&id);
+        self.desired.remove(&id);
         self.explicit.retain(|p| *p != id);
         self.z.retain(|p| *p != id);
         if self.zoomed == Some(id) {
@@ -408,8 +424,7 @@ impl Layout {
                 Dir::Down => Rect::new(r.x, r.y, r.w, r.h.saturating_add(n)),
                 Dir::Up => Rect::new(r.x, r.y, r.w, r.h.saturating_sub(n).max(MIN)),
             };
-            let grown = self.clamp_rect(grown);
-            self.rects.insert(id, grown);
+            self.put_rect(id, grown);
             return;
         }
         let axis = Axis::of(dir);
@@ -467,8 +482,7 @@ impl Layout {
             r.w,
             r.h,
         );
-        let moved = self.clamp_rect(moved);
-        self.rects.insert(id, moved);
+        self.put_rect(id, moved);
     }
 
     /// Swap a pane with the next one in `ids()` order.
@@ -487,6 +501,14 @@ impl Layout {
         }
         if let Some(a) = a {
             self.rects.insert(other, a);
+        }
+        let da = self.desired.remove(&id);
+        let db = self.desired.remove(&other);
+        if let Some(db) = db {
+            self.desired.insert(id, db);
+        }
+        if let Some(da) = da {
+            self.desired.insert(other, da);
         }
         for p in self.z.iter_mut() {
             if *p == id {
@@ -524,7 +546,7 @@ impl Layout {
                 let tiled = self.tiled_geometry();
                 let mut z: Vec<PaneId> = Vec::new();
                 for (id, r) in tiled {
-                    self.rects.insert(id, r);
+                    self.put_rect(id, r);
                     z.push(id);
                 }
                 // Explicit floats stay on top, in their existing order.
@@ -540,6 +562,7 @@ impl Layout {
                 self.z.retain(|id| explicit.contains(id));
                 let keep: Vec<PaneId> = self.z.clone();
                 self.rects.retain(|id, _| keep.contains(id));
+                self.desired.retain(|id, _| keep.contains(id));
             }
         }
         self.mode = m;
@@ -548,7 +571,6 @@ impl Layout {
     /// Float a tiled pane on top, or dock a floating one back into the tree.
     pub fn toggle_float(&mut self, id: PaneId) {
         if self.explicit.contains(&id) {
-            self.explicit.retain(|p| *p != id);
             let leaves = self.leaves();
             match leaves.last().copied() {
                 None => self.root = Some(Node::Leaf(id)),
@@ -559,33 +581,52 @@ impl Layout {
                     } else {
                         Axis::Vertical
                     };
+                    // Nowhere to dock it without making an unusable tile: leave
+                    // it floating rather than wedge it in.
+                    if !splittable(rect, axis) {
+                        return;
+                    }
                     if let Some(root) = self.root.as_mut() {
                         split_leaf(root, near, id, axis, false);
                     }
                 }
             }
+            self.explicit.retain(|p| *p != id);
             if self.mode == Mode::Tiling {
                 self.z.retain(|p| *p != id);
                 self.rects.remove(&id);
+                self.desired.remove(&id);
             }
             self.preset = Preset::Tree;
             return;
         }
-        let Some(mut rect) = self.raw_rect(id) else {
+        let Some(rect) = self.raw_rect(id) else {
             return;
         };
         if let Some(root) = self.root.take() {
             self.root = remove_leaf(root, id);
         }
-        // Don't land exactly on top of another float.
+        // Don't land exactly on top of another float. Only cascade while the
+        // nudge actually moves the rect: on a small area `clamp_rect` pins it
+        // against the edge, and the loop would otherwise never make progress.
+        let mut rect = self.clamp_rect(rect);
         while self
             .rects
             .iter()
             .any(|(p, r)| *p != id && *r == rect && self.z.contains(p))
         {
-            rect = self.clamp_rect(Rect::new(rect.x + 2, rect.y + 1, rect.w, rect.h));
+            let next = self.clamp_rect(Rect::new(
+                rect.x.saturating_add(2),
+                rect.y.saturating_add(1),
+                rect.w,
+                rect.h,
+            ));
+            if next == rect {
+                break;
+            }
+            rect = next;
         }
-        self.rects.insert(id, rect);
+        self.put_rect(id, rect);
         self.explicit.push(id);
         self.z.retain(|p| *p != id);
         self.z.push(id);
@@ -707,8 +748,7 @@ impl Layout {
             DragKind::Move => {
                 let nx = (x as i32 - d.grab.0).max(0) as u16;
                 let ny = (y as i32 - d.grab.1).max(0) as u16;
-                let r = self.clamp_rect(Rect::new(nx, ny, d.start.w, d.start.h));
-                self.rects.insert(d.id, r);
+                self.put_rect(d.id, Rect::new(nx, ny, d.start.w, d.start.h));
             }
             DragKind::ResizeEdge(dir) => {
                 let mut r = d.start;
@@ -720,8 +760,7 @@ impl Layout {
                     let bottom = (y as i32 - d.grab.1 + 1).max(0) as u16;
                     r.h = bottom.saturating_sub(r.y).max(MIN);
                 }
-                let r = self.clamp_rect(r);
-                self.rects.insert(d.id, r);
+                self.put_rect(d.id, r);
             }
             DragKind::Divider(i) => {
                 let splits = self.splits();
@@ -858,6 +897,25 @@ impl Layout {
         }
     }
 
+    /// Place a float, and remember where the user put it as a fraction of the
+    /// area so `set_area` can reproduce it instead of rescaling a rounded rect.
+    fn put_rect(&mut self, id: PaneId, r: Rect) {
+        let r = self.clamp_rect(r);
+        let a = self.area;
+        if a.w > 0 && a.h > 0 {
+            self.desired.insert(
+                id,
+                (
+                    (r.x - a.x) as f64 / a.w as f64,
+                    (r.y - a.y) as f64 / a.h as f64,
+                    r.w as f64 / a.w as f64,
+                    r.h as f64 / a.h as f64,
+                ),
+            );
+        }
+        self.rects.insert(id, r);
+    }
+
     /// Keep a rect inside `area`, at least MIN x MIN (or the whole area if smaller).
     fn clamp_rect(&self, mut r: Rect) -> Rect {
         let a = self.area;
@@ -881,11 +939,19 @@ fn overlap(a0: u16, a1: u16, b0: u16, b1: u16) -> u16 {
     a1.min(b1).saturating_sub(a0.max(b0))
 }
 
-fn scale(v: u16, from: u16, to: u16) -> u16 {
-    if from == 0 {
-        return v;
-    }
-    ((v as u32 * to as u32) / from as u32) as u16
+/// A fraction of `len`, in whole cells.
+fn from_frac(frac: f64, len: u16) -> u16 {
+    (frac * len as f64).round() as u16
+}
+
+/// Is there room to split `rect` along `axis` into two usable panes?
+fn splittable(rect: Rect, axis: Axis) -> bool {
+    let len = if axis == Axis::Horizontal {
+        rect.w
+    } else {
+        rect.h
+    };
+    len >= 2 * MIN
 }
 
 /// Size of the first child, with the remainder going to the second.
@@ -1191,6 +1257,7 @@ mod tests {
         for seed in 0u32..6 {
             let mut l = Layout::new(Rect::new(2, 1, 77 + seed as u16, 23));
             l.insert(1, None, None);
+            let mut placed = 1;
             for id in 2..=9u32 {
                 let ids = l.ids();
                 let near = ids[((id * 7 + seed) as usize) % ids.len()];
@@ -1200,10 +1267,11 @@ mod tests {
                     2 => Some(Dir::Left),
                     _ => None,
                 };
-                l.insert(id, Some(near), dir);
+                // 23 rows only halve so far: some of these splits are refused.
+                placed += usize::from(l.insert(id, Some(near), dir));
                 assert_exact(&l);
             }
-            assert_eq!(l.ids().len(), 9);
+            assert_eq!(l.ids().len(), placed);
         }
     }
 
@@ -1482,6 +1550,64 @@ mod tests {
         assert!(!l.is_floating(2));
         assert_exact(&l);
         assert_eq!(l.ids().len(), 4);
+    }
+
+    #[test]
+    fn toggle_float_cascades_but_terminates_on_a_tiny_area() {
+        // The cascade nudges a float that would land exactly on another one.
+        // On a 3x3 area `clamp_rect` pins every nudge back to (0, 0), so this
+        // used to spin forever and hang the UI.
+        let mut l = Layout::new(Rect::new(0, 0, 3, 3));
+        l.insert(1, None, None);
+        l.toggle_float(1);
+        l.insert(2, None, None);
+        l.toggle_float(2);
+        assert_eq!(l.ids().len(), 2);
+        assert_eq!(l.rect_of(1), l.rect_of(2), "no room to cascade here");
+
+        // Same sequence with room: the cascade still offsets the newcomer.
+        let mut l = layout(1);
+        l.toggle_float(1);
+        l.insert(2, None, None);
+        l.toggle_float(2);
+        let (a, b) = (l.rect_of(1).unwrap(), l.rect_of(2).unwrap());
+        assert_eq!((b.x, b.y), (a.x + 2, a.y + 1));
+    }
+
+    #[test]
+    fn insert_refuses_when_there_is_no_room_to_split() {
+        for w in [1u16, 2, 5] {
+            let mut l = Layout::new(Rect::new(0, 0, w, 10));
+            assert!(l.insert(1, None, None));
+            assert!(!l.insert(2, Some(1), Some(Dir::Right)), "split at w={w}");
+            assert_eq!(l.ids(), vec![1]);
+            assert_eq!(l.rect_of(1).unwrap().w, w);
+        }
+        // 2 * MIN across is exactly enough, and both halves are usable.
+        let mut l = Layout::new(Rect::new(0, 0, 6, 10));
+        assert!(l.insert(1, None, None));
+        assert!(l.insert(2, Some(1), Some(Dir::Right)));
+        for (_, r) in l.geometry() {
+            assert!(r.w >= MIN && r.h >= MIN, "unusable pane {r:?}");
+        }
+        assert_exact(&l);
+    }
+
+    #[test]
+    fn toggle_float_refuses_to_dock_without_room() {
+        let mut l = Layout::new(Rect::new(0, 0, 4, 4));
+        l.insert(1, None, None);
+        l.insert(2, None, None); // refused: no room
+        l.toggle_float(1);
+        l.toggle_float(1); // docks again: it is the only pane
+        assert!(!l.is_floating(1));
+
+        let mut l = Layout::new(Rect::new(0, 0, 5, 4));
+        l.insert(1, None, None);
+        l.toggle_float(1);
+        l.insert(2, None, None);
+        l.toggle_float(1); // would have to split a 5x4 pane: no room either way
+        assert!(l.is_floating(1), "docked into an unusable tile");
     }
 
     #[test]

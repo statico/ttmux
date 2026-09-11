@@ -258,7 +258,13 @@ impl App {
         let id = self.spawn_pane(cwd)?;
         let t = self.tab_mut();
         t.layout.set_zoom(None);
-        t.layout.insert(id, Some(near), Some(dir));
+        if !t.layout.insert(id, Some(near), Some(dir)) {
+            // The pty is already running, so a refused split has to kill it or
+            // it lives on in `slots` with no tile: invisible and unkillable.
+            self.close_pane(id);
+            self.note("no room to split");
+            return Ok(());
+        }
         t.focus = id;
         self.sync_sizes();
         Ok(())

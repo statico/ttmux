@@ -8,9 +8,8 @@
 use std::ops::Range;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ratatui::buffer::Buffer;
+use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::style::{Color, Modifier, Style};
-use unicode_width::UnicodeWidthStr;
 
 use crate::agent::AgentState;
 use crate::config::StatusBar;
@@ -58,8 +57,20 @@ impl Span {
     }
 }
 
+/// Columns `Buffer::set_stringn` will actually advance for `s`.
+///
+/// Must agree with ratatui exactly or the tab hitboxes we hand back point at
+/// cells we never painted. ratatui drops control-containing graphemes and adds
+/// a column per halfwidth dakuten (`CellWidth`), so plain `UnicodeWidthStr`
+/// is one column too wide per control char and too narrow per dakuten.
 fn sw(s: &str) -> usize {
-    UnicodeWidthStr::width(s)
+    // A grapheme containing a control char is made only of control chars, so
+    // dropping the chars is the same as dropping the graphemes ratatui filters.
+    if s.chars().any(char::is_control) {
+        let stripped: String = s.chars().filter(|c| !c.is_control()).collect();
+        return stripped.as_str().cell_width() as usize;
+    }
+    s.cell_width() as usize
 }
 
 fn spans_width(spans: &[Span]) -> usize {
@@ -94,6 +105,9 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
         center = join(center_chunks.clone(), &sep);
     }
     let lw_budget = w.saturating_sub(rw);
+    if let Some(active) = ctx.tabs.iter().position(|(_, a)| *a) {
+        scroll_tabs(&mut left, active, lw_budget);
+    }
     if spans_width(&left) > lw_budget {
         left = truncate(left, lw_budget);
     }
@@ -160,6 +174,29 @@ fn expand_spacers(spans: &mut [Span], free: usize) {
     }
 }
 
+/// Scroll the tab run like tmux does: drop whole tabs off its left until the
+/// active one fits in `max`, so it is never both invisible and unclickable.
+/// (`truncate` only ever cuts from the right, so without this the active tab
+/// simply falls off the end.)
+fn scroll_tabs(spans: &mut Vec<Span>, active: usize, max: usize) {
+    let Some(a) = spans.iter().position(|s| s.tab == Some(active)) else {
+        return;
+    };
+    let head: usize = spans[..=a].iter().map(|s| sw(&s.text)).sum();
+    let Some(mut need) = head.checked_sub(max) else {
+        return;
+    };
+    // Tabs are one contiguous run (separators only go between widgets), so the
+    // first tab span is the left edge of what we may scroll away.
+    let start = spans.iter().position(|s| s.tab.is_some()).unwrap_or(a);
+    let mut drop = 0;
+    while start + drop < a && need > 0 {
+        need = need.saturating_sub(sw(&spans[start + drop].text));
+        drop += 1;
+    }
+    spans.drain(start..start + drop);
+}
+
 /// Keep spans while they fit in `max` columns, ending with `…` if anything was cut.
 fn truncate(spans: Vec<Span>, max: usize) -> Vec<Span> {
     if max == 0 {
@@ -211,14 +248,15 @@ fn put(
             break;
         }
         let avail = (end - x) as usize;
-        let wid = sw(&s.text).min(avail);
-        buf.set_stringn(x, y, &s.text, avail, s.style);
+        // set_stringn reports where it stopped painting; trust that over any
+        // width we compute, so a hitbox can never cover an unpainted cell.
+        let (nx, _) = buf.set_stringn(x, y, &s.text, avail, s.style);
         if let Some(i) = s.tab {
-            if wid > 0 {
-                hits.push((i, x..x + wid as u16));
+            if nx > x {
+                hits.push((i, x..nx));
             }
         }
-        x += wid as u16;
+        x = nx;
     }
 }
 
@@ -602,6 +640,54 @@ mod tests {
             .find(|(_, r)| r.contains(&click))
             .map(|(i, _)| *i);
         assert_eq!(idx, Some(1));
+    }
+
+    /// What `put` charges for a span must be what ratatui paints, or every
+    /// hitbox after it is off by the difference.
+    #[test]
+    fn span_width_matches_what_ratatui_draws() {
+        for s in [" 1:a\tb ", "ｶﾞ", "あ", "ab", "aｶﾞb", "\u{1}"] {
+            let mut buf = buffer(20);
+            let (x, _) = buf.set_stringn(0, 0, s, 20, Style::default());
+            assert_eq!(sw(s), x as usize, "{s:?}");
+        }
+    }
+
+    /// Every returned range must cover exactly the cells that tab was painted on.
+    #[test]
+    fn hitboxes_cover_the_painted_label() {
+        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let t = tabs(&["a\tb", "ｶﾞ", "x"], 0);
+        let mut buf = buffer(40);
+        let hits = draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&t, &[]));
+        let painted: Vec<String> = hits
+            .iter()
+            .map(|(_, r)| {
+                (r.start..r.end)
+                    .map(|x| buf.cell((x, 0)).unwrap().symbol())
+                    .collect()
+            })
+            .collect();
+        // The tab char is dropped; "ｶﾞ" is one 2-column grapheme, so ratatui
+        // parks it in one cell and blanks the next — hence the extra space.
+        assert_eq!(painted, vec![" ab ", " ｶﾞ  ", " x "]);
+    }
+
+    #[test]
+    fn active_tab_scrolls_into_view() {
+        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let names: Vec<String> = (0..20).map(|i| format!("tab{i}")).collect();
+        let t = tabs(&names.iter().map(|s| s.as_str()).collect::<Vec<_>>(), 15);
+        let mut buf = buffer(80);
+        let hits = draw(&mut buf, Rect::new(0, 0, 80, 1), &cfg, &ctx(&t, &[]));
+        let (_, r) = hits
+            .iter()
+            .find(|(i, _)| *i == 15)
+            .expect("active tab has no hitbox");
+        let painted: String = (r.start..r.end)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert_eq!(painted, " tab15 ");
     }
 
     #[test]
