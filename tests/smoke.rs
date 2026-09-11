@@ -284,3 +284,50 @@ fn the_cli_answers_without_a_terminal() {
 
     assert!(!run(&["--nonsense"]).0, "an unknown flag must fail");
 }
+
+#[test]
+fn quitting_takes_the_shells_and_their_children_with_it() {
+    // Quitting drops every `Pane` without going through `close_pane`, so this
+    // is the one path where nothing explicitly kills the process group. A
+    // backgrounded grandchild is the thing that survives if it regresses.
+    let marker = "ttmux-orphan-probe-4311";
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(format!("sleep 300 & echo {marker}-up\n").as_bytes());
+    h.wait_for("the backgrounded child", |s| {
+        s.contains(&format!("{marker}-up"))
+    });
+
+    h.send(b"\x01q");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "ttmux did not exit after ctrl+a q"
+        );
+        if matches!(h._child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // The shell reaps its own background job on exit, so give it a moment
+    // rather than racing it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let out = std::process::Command::new("pgrep")
+            .args(["-f", "sleep 300"])
+            .output()
+            .unwrap();
+        let hits = String::from_utf8_lossy(&out.stdout);
+        if hits.trim().is_empty() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "sleep survived ttmux exiting: pids {}",
+            hits.trim()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
