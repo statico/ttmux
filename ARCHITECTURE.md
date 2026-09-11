@@ -50,10 +50,11 @@ pub struct Layout { pub mode: Mode, pub preset: Preset, pub zoomed: Option<PaneI
 
 impl Layout {
     pub fn new(area: Rect) -> Layout;
-    pub fn set_area(&mut self, area: Rect);
+    pub fn set_area(&mut self, area: Rect);  // floats keep their fractional geometry
     pub fn area(&self) -> Rect;
 
-    pub fn insert(&mut self, id: PaneId, near: Option<PaneId>, dir: Option<Dir>);
+    /// False (and no change) when there is no room to split: the caller keeps the pane.
+    pub fn insert(&mut self, id: PaneId, near: Option<PaneId>, dir: Option<Dir>) -> bool;
     pub fn remove(&mut self, id: PaneId);
     pub fn ids(&self) -> Vec<PaneId>;            // stable order
     pub fn is_empty(&self) -> bool;
@@ -85,7 +86,13 @@ impl Layout {
 }
 ```
 
-Rules: minimum pane size 3x3 (borders included); panes never leave `area`;
+Rules: nothing ever *creates* a pane smaller than 3x3 (borders included) —
+`insert` and docking with `toggle_float` refuse a split that would not leave
+both halves at least that big. An `area` too small for the panes it already
+holds is arithmetic, not a bug: the tree divides whatever cells exist, so
+shrinking the terminal can take tiled panes below 3x3 (`geometry()` still
+covers the area exactly). Floats keep at least 3x3 grabbable. Panes never
+leave `area`;
 `geometry()` covers `area` exactly in tiling mode with no gaps or overlaps
 (before `gap` is applied by the renderer); `zoomed` makes `geometry()` return
 just that pane filling `area`.
