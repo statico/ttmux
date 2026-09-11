@@ -132,7 +132,8 @@ impl FromStr for Action {
         let arg = parts.get(1).copied();
         let num = |d: u16| arg.and_then(|a| a.parse().ok()).unwrap_or(d);
         let dir = || -> Result<Dir, String> {
-            arg.ok_or_else(|| format!("`{head}` needs a direction"))?.parse()
+            arg.ok_or_else(|| format!("`{head}` needs a direction"))?
+                .parse()
         };
         // Optional numeric argument in third position: `verb <dir> [n]`.
         let dir_n = |d: u16| parts.get(2).and_then(|a| a.parse().ok()).unwrap_or(d);
@@ -216,7 +217,11 @@ mod tests {
     fn round_trips_through_strings() {
         for a in ALL_ACTIONS {
             let s = a.to_string();
-            assert_eq!(&Action::from_str(&s).unwrap(), a, "round trip failed for {s}");
+            assert_eq!(
+                &Action::from_str(&s).unwrap(),
+                a,
+                "round trip failed for {s}"
+            );
         }
     }
 

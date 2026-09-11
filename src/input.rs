@@ -254,7 +254,12 @@ mod tests {
     }
 
     fn mouse(kind: MouseEventKind, mods: KeyModifiers) -> MouseEvent {
-        MouseEvent { kind, column: 0, row: 0, modifiers: mods }
+        MouseEvent {
+            kind,
+            column: 0,
+            row: 0,
+            modifiers: mods,
+        }
     }
 
     // ------------------------------------------------------------ resolution
@@ -334,7 +339,10 @@ mod tests {
     fn plain_and_alt_chars() {
         assert_eq!(encode_key(ch('a'), false), b"a");
         assert_eq!(encode_key(ch('é'), false), "é".as_bytes());
-        assert_eq!(encode_key(key(KeyCode::Char('x'), KeyModifiers::ALT), false), b"\x1bx");
+        assert_eq!(
+            encode_key(key(KeyCode::Char('x'), KeyModifiers::ALT), false),
+            b"\x1bx"
+        );
     }
 
     #[test]
@@ -363,7 +371,10 @@ mod tests {
 
     #[test]
     fn backspace_is_del() {
-        assert_eq!(encode_key(key(KeyCode::Backspace, KeyModifiers::NONE), false), vec![0x7f]);
+        assert_eq!(
+            encode_key(key(KeyCode::Backspace, KeyModifiers::NONE), false),
+            vec![0x7f]
+        );
     }
 
     #[test]
@@ -416,7 +427,10 @@ mod tests {
 
     #[test]
     fn alt_up_uses_the_modifier_parameter() {
-        assert_eq!(encode_key(key(KeyCode::Up, KeyModifiers::ALT), false), b"\x1b[1;3A");
+        assert_eq!(
+            encode_key(key(KeyCode::Up, KeyModifiers::ALT), false),
+            b"\x1b[1;3A"
+        );
     }
 
     #[test]
@@ -429,13 +443,19 @@ mod tests {
 
     #[test]
     fn shift_f5_and_modified_tilde_keys() {
-        assert_eq!(encode_key(key(KeyCode::F(5), KeyModifiers::SHIFT), false), b"\x1b[15;2~");
+        assert_eq!(
+            encode_key(key(KeyCode::F(5), KeyModifiers::SHIFT), false),
+            b"\x1b[15;2~"
+        );
         assert_eq!(
             encode_key(key(KeyCode::Delete, KeyModifiers::CONTROL), false),
             b"\x1b[3;5~"
         );
         assert_eq!(
-            encode_key(key(KeyCode::F(1), KeyModifiers::CONTROL | KeyModifiers::SHIFT), false),
+            encode_key(
+                key(KeyCode::F(1), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                false
+            ),
             b"\x1b[1;6P"
         );
     }
@@ -473,7 +493,12 @@ mod tests {
             b"\x1b[<64;3;4M"
         );
         assert_eq!(
-            encode_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::CONTROL), 2, 3).unwrap(),
+            encode_mouse(
+                mouse(MouseEventKind::ScrollDown, KeyModifiers::CONTROL),
+                2,
+                3
+            )
+            .unwrap(),
             b"\x1b[<81;3;4M"
         );
     }

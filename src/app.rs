@@ -1,1 +1,3 @@
-pub fn run() -> anyhow::Result<()> { Ok(()) }
+pub fn run() -> anyhow::Result<()> {
+    Ok(())
+}

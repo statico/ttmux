@@ -209,7 +209,9 @@ impl Layout {
             return;
         }
         let leaves = self.leaves();
-        let near = near.filter(|n| leaves.contains(n)).or_else(|| leaves.last().copied());
+        let near = near
+            .filter(|n| leaves.contains(n))
+            .or_else(|| leaves.last().copied());
         match (self.root.take(), near) {
             (None, _) | (_, None) => {
                 // First tiled pane (or nothing to split): it becomes the whole tree.
@@ -407,7 +409,9 @@ impl Layout {
         }
         let axis = Axis::of(dir);
         let forward = matches!(dir, Dir::Right | Dir::Down);
-        let Some(path) = self.leaf_path(id) else { return };
+        let Some(path) = self.leaf_path(id) else {
+            return;
+        };
         let splits = self.splits();
         // Nearest ancestor split on the matching axis: move its divider.
         for k in (0..path.len()).rev() {
@@ -419,7 +423,11 @@ impl Layout {
             if ax != axis {
                 continue;
             }
-            let len = if axis == Axis::Horizontal { rect.w } else { rect.h };
+            let len = if axis == Axis::Horizontal {
+                rect.w
+            } else {
+                rect.h
+            };
             if len < 2 * MIN {
                 continue;
             }
@@ -438,7 +446,9 @@ impl Layout {
 
     /// Move a floating pane by `n` cells. No-op for tiled panes.
     pub fn move_pane(&mut self, id: PaneId, dir: Dir, n: u16) {
-        let Some(r) = self.rects.get(&id).copied() else { return };
+        let Some(r) = self.rects.get(&id).copied() else {
+            return;
+        };
         let n = n as i32;
         let (dx, dy) = match dir {
             Dir::Left => (-n, 0),
@@ -556,7 +566,9 @@ impl Layout {
             self.preset = Preset::Tree;
             return;
         }
-        let Some(mut rect) = self.raw_rect(id) else { return };
+        let Some(mut rect) = self.raw_rect(id) else {
+            return;
+        };
         if let Some(root) = self.root.take() {
             self.root = remove_leaf(root, id);
         }
@@ -604,7 +616,9 @@ impl Layout {
             return None;
         }
         for id in self.z.iter().rev() {
-            let Some(r) = self.rects.get(id) else { continue };
+            let Some(r) = self.rects.get(id) else {
+                continue;
+            };
             if !r.contains(x, y) {
                 continue;
             }
@@ -636,7 +650,10 @@ impl Layout {
         };
         let start = self.rects.get(&id).copied().unwrap_or_default();
         let (grab, corner) = match kind {
-            DragKind::Move => ((x as i32 - start.x as i32, y as i32 - start.y as i32), false),
+            DragKind::Move => (
+                (x as i32 - start.x as i32, y as i32 - start.y as i32),
+                false,
+            ),
             DragKind::ResizeEdge(_) => (
                 (
                     x as i32 - start.right() as i32 + 1,
@@ -646,7 +663,11 @@ impl Layout {
             ),
             DragKind::Divider(i) => {
                 let (rect, axis, _) = self.splits()[i];
-                let len = if axis == Axis::Horizontal { rect.w } else { rect.h };
+                let len = if axis == Axis::Horizontal {
+                    rect.w
+                } else {
+                    rect.h
+                };
                 let first = part(len, self.nth_ratio(i));
                 let boundary = if axis == Axis::Horizontal {
                     rect.x + first
@@ -699,9 +720,15 @@ impl Layout {
             }
             DragKind::Divider(i) => {
                 let splits = self.splits();
-                let Some(&(rect, axis, ref path)) = splits.get(i) else { return };
+                let Some(&(rect, axis, ref path)) = splits.get(i) else {
+                    return;
+                };
                 let path = path.clone();
-                let len = if axis == Axis::Horizontal { rect.w } else { rect.h };
+                let len = if axis == Axis::Horizontal {
+                    rect.w
+                } else {
+                    rect.h
+                };
                 if len < 2 * MIN {
                     return;
                 }
