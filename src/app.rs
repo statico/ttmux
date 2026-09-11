@@ -90,15 +90,23 @@ pub fn run() -> Result<()> {
         hook(info);
     }));
 
-    let size = term.size()?;
-    let mut app = App::new(cfg, path, Rect::new(0, 0, size.width, size.height))?;
-    let result = app.main_loop(&mut term);
+    let result = (|| {
+        let size = term.size()?;
+        let mut app = App::new(cfg, path, Rect::new(0, 0, size.width, size.height))?;
+        app.main_loop(&mut term)
+    })();
     restore()?;
     result
 }
 
 fn setup(cfg: &Config) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     terminal::enable_raw_mode()?;
+    enter(cfg).inspect_err(|_| {
+        let _ = restore();
+    })
+}
+
+fn enter(cfg: &Config) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     let mut out = io::stdout();
     execute!(out, terminal::EnterAlternateScreen)?;
     if cfg.general.mouse {
@@ -170,6 +178,14 @@ impl App {
         }
     }
 
+    /// A pane's tile split into the rect the border is drawn on and the rect
+    /// its screen is drawn in. `inner` is also what the pty is sized to, so
+    /// these must come from one place or the content is clipped and the mouse
+    /// coordinates are off.
+    fn frame(&self, outer: Rect) -> (Rect, Rect) {
+        (outer.shrink(self.cfg.appearance.gap), self.inner(outer))
+    }
+
     /// The drawable interior of a pane: outer rect minus gap and border.
     fn inner(&self, outer: Rect) -> Rect {
         let outer = outer.shrink(self.cfg.appearance.gap);
@@ -177,6 +193,18 @@ impl App {
             outer
         } else {
             outer.shrink(1)
+        }
+    }
+
+    /// Focus a pane in the current tab. A zoomed pane hides every other pane,
+    /// so moving focus off it must unzoom, or keystrokes go to something the
+    /// user cannot see.
+    fn set_focus(&mut self, id: PaneId) {
+        let t = self.tab_mut();
+        t.focus = id;
+        if t.layout.zoomed.is_some_and(|z| z != id) {
+            t.layout.set_zoom(None);
+            self.sync_sizes();
         }
     }
 
@@ -240,7 +268,13 @@ impl App {
         if let Some(mut slot) = self.slots.remove(&id) {
             slot.pane.kill();
         }
-        let t = self.tab_mut();
+        // `slots` is global but layouts are per tab: a pane that exits in a
+        // background tab must be removed from *that* tab's layout, or the tab
+        // keeps an id with no process and can never empty out.
+        let Some(ti) = self.tabs.iter().position(|t| t.layout.ids().contains(&id)) else {
+            return;
+        };
+        let t = &mut self.tabs[ti];
         let next = t.layout.next(id).filter(|n| *n != id);
         t.layout.remove(id);
         if t.focus == id {
@@ -251,8 +285,8 @@ impl App {
         if t.layout.zoomed == Some(id) {
             t.layout.set_zoom(None);
         }
-        if self.tabs[self.tab].layout.is_empty() {
-            self.close_tab();
+        if t.layout.is_empty() {
+            self.close_tab_at(ti);
         } else {
             self.sync_sizes();
         }
@@ -297,20 +331,26 @@ impl App {
     }
 
     fn close_tab(&mut self) {
-        if self.tabs.is_empty() {
+        self.close_tab_at(self.tab);
+    }
+
+    fn close_tab_at(&mut self, i: usize) {
+        if i >= self.tabs.len() {
             return;
         }
-        for id in self.tabs[self.tab].layout.ids() {
+        for id in self.tabs[i].layout.ids() {
             if let Some(mut slot) = self.slots.remove(&id) {
                 slot.pane.kill();
             }
         }
-        self.tabs.remove(self.tab);
+        self.tabs.remove(i);
         if self.tabs.is_empty() {
             self.quit = true;
             return;
         }
-        self.tab = self.tab.min(self.tabs.len() - 1);
+        if self.tab >= i {
+            self.tab = self.tab.saturating_sub(1).min(self.tabs.len() - 1);
+        }
         self.relayout();
     }
 
@@ -346,7 +386,7 @@ impl App {
             Focus(d) => {
                 let id = self.focus();
                 if let Some(n) = self.tabs[self.tab].layout.neighbor(id, d) {
-                    self.tab_mut().focus = n;
+                    self.set_focus(n);
                 }
             }
             FocusNext | FocusPrev => {
@@ -358,7 +398,7 @@ impl App {
                     t.layout.prev(id)
                 };
                 if let Some(n) = n {
-                    t.focus = n;
+                    self.set_focus(n);
                 }
             }
             Resize(d, n) => {
@@ -465,7 +505,7 @@ impl App {
             NextAlert => match self.next_alert() {
                 Some((tab, id)) => {
                     self.tab = tab;
-                    self.tab_mut().focus = id;
+                    self.set_focus(id);
                     self.relayout();
                 }
                 None => self.note("no panes waiting"),
@@ -484,6 +524,24 @@ impl App {
     }
 
     fn apply_config(&mut self, cfg: Config) {
+        // Mouse capture is a terminal mode, not a flag we can read back later:
+        // toggling `general.mouse` has to actually turn it on or off now.
+        if cfg.general.mouse != self.cfg.general.mouse {
+            let mut out = io::stdout();
+            let _ = if cfg.general.mouse {
+                execute!(out, event::EnableMouseCapture)
+            } else {
+                execute!(out, event::DisableMouseCapture)
+            };
+        }
+        // Agent states are only refreshed while agents are enabled, so clear
+        // them here or the last alert stays lit forever.
+        if !cfg.agents.enabled {
+            for slot in self.slots.values_mut() {
+                slot.state = AgentState::Idle;
+                slot.watcher = Watcher::default();
+            }
+        }
         self.cfg = cfg;
         self.keys.reload(&self.cfg);
         self.relayout();
@@ -667,7 +725,7 @@ impl App {
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(id) = self.tabs[self.tab].layout.pane_at(x, y) {
-                    self.tab_mut().focus = id;
+                    self.set_focus(id);
                     self.tab_mut().layout.raise(id);
                 }
                 if self.tabs[self.tab].layout.drag_start(x, y) {
@@ -710,7 +768,7 @@ impl App {
             }
             MouseEventKind::Moved if self.cfg.general.focus_follows_mouse => {
                 if let Some(id) = self.tabs[self.tab].layout.pane_at(x, y) {
-                    self.tab_mut().focus = id;
+                    self.set_focus(id);
                 }
             }
             _ => self.forward_mouse(ev),
@@ -744,6 +802,7 @@ impl App {
 
     fn main_loop(&mut self, term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
         let mut dirty = true;
+        let mut last_tick = Instant::now();
         while !self.quit {
             if event::poll(TICK)? {
                 match event::read()? {
@@ -778,8 +837,17 @@ impl App {
                 }
             }
             if output {
-                self.update_agents();
                 dirty = true;
+            }
+            // The clock widget and the agent busy->idle grace timer both move
+            // on their own, so redraw at least once a second regardless of I/O.
+            let tick = last_tick.elapsed() >= Duration::from_secs(1);
+            if tick {
+                last_tick = Instant::now();
+                dirty = true;
+            }
+            if output || tick {
+                self.update_agents();
             }
             self.reap();
             if self.quit {
@@ -847,16 +915,15 @@ impl App {
                 let Some(slot) = self.slots.get(&id) else {
                     continue;
                 };
-                let outer = outer.shrink(self.cfg.appearance.gap);
+                let (framed, inner) = self.frame(outer);
                 let floating = self.tabs[self.tab].layout.is_floating(id);
                 if floating && self.cfg.appearance.float_shadow {
-                    render::draw_shadow(buf, outer);
+                    render::draw_shadow(buf, framed);
                 }
                 let focused = id == focus;
-                let inner = self.inner(outer);
                 render::draw_border(
                     buf,
-                    outer,
+                    framed,
                     &slot.pane.title(),
                     focused,
                     slot.state.is_alert(),
@@ -1030,6 +1097,9 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
             .fg(cfg.status.accent.into())
             .add_modifier(Modifier::BOLD),
     );
+    if inner.w == 0 {
+        return;
+    }
     let hits = App::palette_matches(query);
     let sel = sel.min(hits.len().saturating_sub(1));
     for (i, a) in hits.iter().enumerate() {
@@ -1045,8 +1115,19 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
 
 fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Config) {
     let w = area.w.min(60);
-    let rect = Rect::new(area.x + (area.w - w) / 2, area.y + area.h / 2 - 1, w, 3);
+    let h = 3.min(area.h);
+    let rect = Rect::new(
+        area.x + (area.w - w) / 2,
+        area.y + area.h.saturating_sub(h) / 2,
+        w,
+        h,
+    );
     let inner = panel(buf, rect, label, cfg);
+    // A 1-row area leaves the border with no interior; set_stringn would then
+    // write outside the buffer.
+    if inner.h == 0 {
+        return;
+    }
     buf.set_stringn(
         inner.x,
         inner.y,
@@ -1054,4 +1135,124 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
         inner.w as usize,
         Style::default().fg(cfg.status.fg.into()),
     );
+}
+
+// ------------------------------------------------------------- tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::General;
+
+    /// An app with one tab and one pane. `cat` is a cheap child that stays
+    /// alive without writing anything, so nothing races with the assertions.
+    fn app() -> App {
+        let cfg = Config {
+            general: General {
+                shell: "/bin/cat".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        App::new(cfg, PathBuf::from("/dev/null"), Rect::new(0, 0, 80, 24)).expect("spawn app")
+    }
+
+    #[test]
+    fn frame_and_inner_agree() {
+        let mut a = app();
+        let tile = Rect::new(0, 0, 20, 10);
+
+        a.cfg.appearance.gap = 1;
+        let (framed, inner) = a.frame(tile);
+        assert_eq!(framed, Rect::new(1, 1, 18, 8));
+        assert_eq!(inner, Rect::new(2, 2, 16, 6));
+        assert_eq!(inner, a.inner(tile));
+
+        a.cfg.appearance.gap = 0;
+        let (framed, inner) = a.frame(tile);
+        assert_eq!(framed, tile);
+        assert_eq!(inner, Rect::new(1, 1, 18, 8));
+        assert_eq!(inner, a.inner(tile));
+
+        a.cfg.appearance.gap = 1;
+        a.cfg.appearance.border_style = BorderStyle::None;
+        let (framed, inner) = a.frame(tile);
+        assert_eq!(framed, Rect::new(1, 1, 18, 8));
+        assert_eq!(inner, Rect::new(1, 1, 18, 8));
+        assert_eq!(inner, a.inner(tile));
+    }
+
+    #[test]
+    fn close_pane_finds_the_owning_tab() {
+        let mut a = app();
+        a.new_tab().unwrap();
+        a.new_tab().unwrap();
+        let tab0_pane = a.tabs[0].layout.ids()[0];
+        let tab1_pane = a.tabs[1].layout.ids()[0];
+        a.select_tab(0);
+
+        // Removing a later tab must not shift the selection.
+        a.close_tab_at(2);
+        assert_eq!(a.tab, 0);
+        assert_eq!(a.tabs.len(), 2);
+
+        a.close_pane(tab1_pane);
+        assert_eq!(a.tabs.len(), 1);
+        assert_eq!(a.tabs[0].layout.ids(), vec![tab0_pane]);
+        assert_eq!(a.tabs[0].focus, tab0_pane);
+        assert!(a.tab < a.tabs.len());
+        for t in &a.tabs {
+            for id in t.layout.ids() {
+                assert!(a.slots.contains_key(&id), "orphan pane {id} in a layout");
+            }
+        }
+    }
+
+    #[test]
+    fn moving_focus_off_a_zoomed_pane_unzooms() {
+        let mut a = app();
+        let first = a.focus();
+        a.split(Dir::Right).unwrap();
+        let second = a.focus();
+        assert_ne!(first, second);
+
+        a.tab_mut().layout.set_zoom(Some(first));
+        a.set_focus(second);
+        assert_eq!(a.tabs[0].layout.zoomed, None);
+        assert_eq!(a.focus(), second);
+
+        a.tab_mut().layout.set_zoom(Some(first));
+        a.set_focus(first);
+        assert_eq!(a.tabs[0].layout.zoomed, Some(first));
+    }
+
+    #[test]
+    fn disabling_agents_clears_their_state() {
+        let mut a = app();
+        for slot in a.slots.values_mut() {
+            slot.state = AgentState::Attention;
+        }
+        let mut cfg = a.cfg.clone();
+        cfg.agents.enabled = false;
+        a.apply_config(cfg);
+        assert!(a.slots.values().all(|s| s.state == AgentState::Idle));
+    }
+
+    #[test]
+    fn prompt_survives_a_short_area() {
+        let cfg = Config::default();
+        for h in [1, 2] {
+            let area = Rect::new(0, 0, 20, h);
+            let mut buf = Buffer::empty(area.into());
+            draw_prompt(&mut buf, area, " rename ", "x", &cfg);
+        }
+    }
+
+    #[test]
+    fn palette_survives_a_zero_width_panel() {
+        let cfg = Config::default();
+        let area = Rect::new(0, 0, 2, 5);
+        let mut buf = Buffer::empty(area.into());
+        draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
+    }
 }
