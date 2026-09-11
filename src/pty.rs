@@ -58,6 +58,8 @@ pub struct Pane {
     writer: Box<dyn Write + Send>,
     child: RefCell<Box<dyn Child + Send + Sync>>,
     exit: Cell<Option<u32>>,
+    /// `kill` already waited: signalling the group again could hit a reused pid.
+    reaped: Cell<bool>,
     /// Write side failed; stop writing. Reads still drain.
     disconnected: bool,
     /// Fallback title: the program's basename.
@@ -152,6 +154,7 @@ impl Pane {
             writer,
             child: RefCell::new(child),
             exit: Cell::new(None),
+            reaped: Cell::new(false),
             disconnected: false,
             name,
         })
@@ -270,6 +273,10 @@ impl Pane {
 
     /// Kill the child and everything it left behind, then reap it.
     pub fn kill(&mut self) {
+        if self.reaped.get() {
+            return;
+        }
+        self.reaped.set(true);
         let mut child = self.child.borrow_mut();
         // portable_pty setsid()s before exec, so the child's pid is also its
         // process group id.
@@ -291,6 +298,15 @@ impl Pane {
         if let Ok(st) = child.wait() {
             self.exit.set(Some(st.exit_code()));
         }
+    }
+}
+
+impl Drop for Pane {
+    /// Quitting drops panes without calling `kill`, and closing the master is
+    /// not enough: a backgrounded grandchild ignores the hangup and outlives
+    /// the app. Reap the group here so every exit path is covered.
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 
