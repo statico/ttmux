@@ -49,7 +49,12 @@ struct Span {
 
 impl Span {
     fn new(text: impl Into<String>, style: Style) -> Span {
-        Span { text: text.into(), style, tab: None, expand: false }
+        Span {
+            text: text.into(),
+            style,
+            tab: None,
+            expand: false,
+        }
     }
 }
 
@@ -236,11 +241,18 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
             .enumerate()
             .map(|(i, (name, active))| {
                 let style = if *active {
-                    base.bg(cfg.accent.0).fg(cfg.bg.0).add_modifier(Modifier::BOLD)
+                    base.bg(cfg.accent.0)
+                        .fg(cfg.bg.0)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     base
                 };
-                Span { text: format!(" {name} "), style, tab: Some(i), expand: false }
+                Span {
+                    text: format!(" {name} "),
+                    style,
+                    tab: Some(i),
+                    expand: false,
+                }
             })
             .collect(),
         "panes" => vec![Span::new(format!("{} panes", ctx.panes.len()), base)],
@@ -263,7 +275,9 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
         "zoom" if ctx.zoomed => vec![Span::new("⛶", base)],
         "prefix" if ctx.pending_prefix => vec![Span::new(
             "PREFIX",
-            base.bg(cfg.accent.0).fg(cfg.bg.0).add_modifier(Modifier::BOLD),
+            base.bg(cfg.accent.0)
+                .fg(cfg.bg.0)
+                .add_modifier(Modifier::BOLD),
         )],
         "message" => match ctx.message {
             Some(m) if !m.is_empty() => vec![Span::new(m, base.fg(cfg.accent.0))],
@@ -280,7 +294,12 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
             Some(p) => vec![Span::new(format!("{p}%"), base)],
             None => Vec::new(),
         },
-        "spacer" => vec![Span { text: String::new(), style: base, tab: None, expand: true }],
+        "spacer" => vec![Span {
+            text: String::new(),
+            style: base,
+            tab: None,
+            expand: true,
+        }],
         "alerts" | "zoom" | "prefix" => Vec::new(),
         other => vec![Span::new(format!("?{other}"), base.fg(WARN))],
     }
@@ -381,7 +400,11 @@ fn hostname() -> String {
     let mut buf = [0i8; 256];
     let full = unsafe {
         if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
-            let bytes: Vec<u8> = buf.iter().take_while(|b| **b != 0).map(|b| *b as u8).collect();
+            let bytes: Vec<u8> = buf
+                .iter()
+                .take_while(|b| **b != 0)
+                .map(|b| *b as u8)
+                .collect();
             String::from_utf8_lossy(&bytes).into_owned()
         } else {
             String::new()
@@ -475,7 +498,10 @@ mod tests {
 
     #[test]
     fn epoch_zero() {
-        assert_eq!(format_time("%Y-%m-%d %H:%M:%S", 0, 0), "1970-01-01 00:00:00");
+        assert_eq!(
+            format_time("%Y-%m-%d %H:%M:%S", 0, 0),
+            "1970-01-01 00:00:00"
+        );
     }
 
     #[test]
@@ -495,7 +521,10 @@ mod tests {
     #[test]
     fn weekday_month_meridiem() {
         // 2023-11-14 22:13:20 UTC is a Tuesday.
-        assert_eq!(format_time("%a %b %p %I", 1_700_000_000, 0), "Tue Nov PM 10");
+        assert_eq!(
+            format_time("%a %b %p %I", 1_700_000_000, 0),
+            "Tue Nov PM 10"
+        );
         assert_eq!(format_time("%a %b %p %I", 0, 0), "Thu Jan AM 12");
     }
 
@@ -510,13 +539,19 @@ mod tests {
     fn positive_offset() {
         // +02:00
         assert_eq!(format_time("%H:%M", 0, 7200), "02:00");
-        assert_eq!(format_time("%Y-%m-%d %H", 1_700_000_000, 7200), "2023-11-15 00");
+        assert_eq!(
+            format_time("%Y-%m-%d %H", 1_700_000_000, 7200),
+            "2023-11-15 00"
+        );
     }
 
     #[test]
     fn negative_offset() {
         // -05:00 crosses back over midnight.
-        assert_eq!(format_time("%Y-%m-%d %H:%M", 0, -18_000), "1969-12-31 19:00");
+        assert_eq!(
+            format_time("%Y-%m-%d %H:%M", 0, -18_000),
+            "1969-12-31 19:00"
+        );
     }
 
     // ---- draw
@@ -534,7 +569,10 @@ mod tests {
     #[test]
     fn groups_hug_their_edges() {
         let cfg = cfg_with(&["session"], &[], &["panes"]);
-        let p = vec![("a".into(), AgentState::Idle), ("b".into(), AgentState::Idle)];
+        let p = vec![
+            ("a".into(), AgentState::Idle),
+            ("b".into(), AgentState::Idle),
+        ];
         let mut buf = buffer(40);
         draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&[], &p));
         let line = row(&buf, 40);
@@ -549,14 +587,20 @@ mod tests {
         let mut buf = buffer(40);
         let hits = draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&t, &[]));
         assert_eq!(hits.len(), 3);
-        assert_eq!(hits.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            hits.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         for pair in hits.windows(2) {
             assert!(pair[0].1.end <= pair[1].1.start, "overlap: {hits:?}");
         }
         // " one " is 5 columns, so tab 1 starts at column 5.
         assert_eq!(hits[1].1, 5..10);
         let click = 6;
-        let idx = hits.iter().find(|(_, r)| r.contains(&click)).map(|(i, _)| *i);
+        let idx = hits
+            .iter()
+            .find(|(_, r)| r.contains(&click))
+            .map(|(i, _)| *i);
         assert_eq!(idx, Some(1));
     }
 
@@ -583,7 +627,10 @@ mod tests {
     #[test]
     fn agents_widget() {
         let cfg = cfg_with(&["agents"], &[], &[]);
-        let idle = vec![("a".into(), AgentState::Idle), ("b".into(), AgentState::Idle)];
+        let idle = vec![
+            ("a".into(), AgentState::Idle),
+            ("b".into(), AgentState::Idle),
+        ];
         let mut buf = buffer(20);
         draw(&mut buf, Rect::new(0, 0, 20, 1), &cfg, &ctx(&[], &idle));
         assert_eq!(row(&buf, 20).trim(), "");
@@ -612,7 +659,10 @@ mod tests {
         let mut buf = buffer(30);
         draw(&mut buf, Rect::new(0, 0, 30, 1), &cfg, &c);
         let line = row(&buf, 30);
-        assert!(line.contains("● 3") && line.contains('⛶') && line.contains("PREFIX"), "{line:?}");
+        assert!(
+            line.contains("● 3") && line.contains('⛶') && line.contains("PREFIX"),
+            "{line:?}"
+        );
     }
 
     #[test]
