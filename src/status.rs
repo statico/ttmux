@@ -39,6 +39,7 @@ const WARN: Color = Color::Yellow;
 const OK: Color = Color::Green;
 
 /// A styled run of text. `tab` marks a clickable tab, `expand` a spacer.
+#[derive(Clone)]
 struct Span {
     text: String,
     style: Style,
@@ -82,10 +83,10 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
 
     // Too wide? Drop centre widgets first, then truncate the left group.
     let rw = spans_width(&right);
-    let mut center = join(center_chunks.clone_spans(), &sep);
-    while spans_width(&left) + spans_width(&center) + rw > w && !center_chunks.0.is_empty() {
-        center_chunks.0.pop();
-        center = join(center_chunks.clone_spans(), &sep);
+    let mut center = join(center_chunks.clone(), &sep);
+    while spans_width(&left) + spans_width(&center) + rw > w && !center_chunks.is_empty() {
+        center_chunks.pop();
+        center = join(center_chunks.clone(), &sep);
     }
     let lw_budget = w.saturating_sub(rw);
     if spans_width(&left) > lw_budget {
@@ -96,8 +97,6 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
     let lw = spans_width(&left);
     let cw = spans_width(&center);
     let free = w.saturating_sub(lw + cw + rw);
-    let n_spacers = [&left, &center, &right].iter().filter(|g| has_spacer(g)).count();
-    let _ = n_spacers;
     expand_spacers(&mut left, free);
 
     let lw = spans_width(&left);
@@ -120,36 +119,12 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
     hits
 }
 
-/// Newtype so the fitting loop can rebuild the joined centre cheaply.
-struct Chunks(Vec<Vec<Span>>);
-
-impl Chunks {
-    /// Re-materialise the chunks (spans are not `Clone`, so rebuild by value).
-    fn clone_spans(&self) -> Vec<Vec<Span>> {
-        self.0
-            .iter()
-            .map(|c| {
-                c.iter()
-                    .map(|s| Span {
-                        text: s.text.clone(),
-                        style: s.style,
-                        tab: s.tab,
-                        expand: s.expand,
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-}
-
-fn chunks(names: &[String], cfg: &StatusBar, ctx: &Ctx, base: Style) -> Chunks {
-    Chunks(
-        names
-            .iter()
-            .map(|n| widget(n, cfg, ctx, base))
-            .filter(|c| !c.is_empty())
-            .collect(),
-    )
+fn chunks(names: &[String], cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Vec<Span>> {
+    names
+        .iter()
+        .map(|n| widget(n, cfg, ctx, base))
+        .filter(|c| !c.is_empty())
+        .collect()
 }
 
 fn join(chunks: Vec<Vec<Span>>, sep: &dyn Fn() -> Span) -> Vec<Span> {
@@ -161,10 +136,6 @@ fn join(chunks: Vec<Vec<Span>>, sep: &dyn Fn() -> Span) -> Vec<Span> {
         out.extend(c);
     }
     out
-}
-
-fn has_spacer(spans: &[Span]) -> bool {
-    spans.iter().any(|s| s.expand)
 }
 
 fn expand_spacers(spans: &mut [Span], free: usize) {
