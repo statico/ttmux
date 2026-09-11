@@ -510,14 +510,21 @@ pub fn default_keys() -> BTreeMap<String, String> {
         .collect()
 }
 
-/// `~/.config/ttmux/ttmux.toml` (or the platform equivalent).
+/// `$TTMUX_CONFIG`, else `$XDG_CONFIG_HOME/ttmux/ttmux.toml`, else
+/// `~/.config/ttmux/ttmux.toml`.
+///
+/// A terminal tool belongs in `~/.config` on macOS too — nobody edits
+/// `~/Library/Application Support` by hand.
 pub fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("TTMUX_CONFIG") {
         return PathBuf::from(p);
     }
-    directories::ProjectDirs::from("", "", "ttmux")
-        .map(|d| d.config_dir().join("ttmux.toml"))
-        .unwrap_or_else(|| PathBuf::from("ttmux.toml"))
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("ttmux").join("ttmux.toml")
 }
 
 impl Config {
