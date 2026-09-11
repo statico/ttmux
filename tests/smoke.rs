@@ -179,3 +179,76 @@ fn snapshot() {
     h.wait_for("output", |s| s.contains("hello from ttmux"));
     println!("{}", h.screen());
 }
+
+/// SGR (1006) mouse report: press/drag/release at 1-based (col, row).
+fn mouse(button: u8, col: u16, row: u16, release: bool) -> Vec<u8> {
+    format!(
+        "\x1b[<{};{};{}{}",
+        button,
+        col + 1,
+        row + 1,
+        if release { 'm' } else { 'M' }
+    )
+    .into_bytes()
+}
+
+#[test]
+fn clicking_a_pane_moves_focus_and_dragging_a_divider_resizes() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x01%"); // split right; focus moves to the right-hand pane
+    h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
+
+    // The divider between the two panes sits at column 39/40. Grab it and drag
+    // it left; the left pane's top border must get shorter.
+    let width_of_first_pane = |s: &str| s.lines().next().unwrap_or("").find('╮').unwrap_or(0);
+    let before = width_of_first_pane(&h.screen());
+    h.send(&mouse(0, 39, 10, false));
+    h.send(&mouse(32, 25, 10, false)); // drag (button 0 + 32)
+    h.send(&mouse(0, 25, 10, true));
+    h.wait_for("the divider to move left", |s| {
+        width_of_first_pane(s) < before
+    });
+
+    // Clicking inside the left pane focuses it: type and the text lands there.
+    h.send(&mouse(0, 5, 5, false));
+    h.send(&mouse(0, 5, 5, true));
+    h.send(b"echo left''-pane-ok\r");
+    h.wait_for("output in the left pane", |s| {
+        let line = s
+            .lines()
+            .find(|l| l.contains("left-pane-ok"))
+            .unwrap_or_default();
+        // It must appear to the left of the divider, i.e. in the first pane.
+        line.find("left-pane-ok").unwrap_or(usize::MAX) < 25
+    });
+}
+
+#[test]
+fn free_mode_lets_a_pane_be_dragged_around() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x01%");
+    h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
+
+    h.send(b"\x01f"); // float the focused pane
+    h.wait_for("free/floating layout", |s| s.matches('╭').count() > 1);
+
+    // Grab the floating pane's top border and drag it down two rows.
+    let top_borders = |s: &str| {
+        s.lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains('╭'))
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>()
+    };
+    // The float is drawn last, so its top border is the lowest one on screen.
+    let before = top_borders(&h.screen());
+    let grab = *before.last().unwrap() as u16;
+    h.send(&mouse(0, 60, grab, false));
+    h.send(&mouse(32, 60, grab + 3, false));
+    h.send(&mouse(0, 60, grab + 3, true));
+    h.wait_for("the float to move", |s| {
+        top_borders(s).last() == Some(&(grab as usize + 3))
+    });
+}

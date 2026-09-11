@@ -159,9 +159,10 @@ fn free_mode_keeps_geometry_then_lets_panes_move() {
     assert_eq!(moved.y, was.y - 3);
     assert_eq!(moved.x, was.x);
 
-    // Panes stay inside the area however hard you shove them.
+    // Shoved hard, a float may hang off the bottom edge, but a grabbable
+    // sliver always stays on screen.
     layout.move_pane(3, Dir::Down, 500);
-    assert!(layout.rect_of(3).unwrap().bottom() <= 24);
+    assert!(layout.rect_of(3).unwrap().y < 24);
     layout.move_pane(3, Dir::Up, 500);
     assert_eq!(layout.rect_of(3).unwrap().y, 0);
 }
