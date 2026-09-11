@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver};
 
 use anyhow::Context;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
@@ -32,7 +32,12 @@ impl vt100::Callbacks for Sink {
         self.bell = true;
     }
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
-        self.title = String::from_utf8_lossy(title).into_owned();
+        // A pane can put anything here; a TAB or other control character draws
+        // at a width nobody agrees on and corrupts the status bar's tab row.
+        self.title = String::from_utf8_lossy(title)
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
     }
 }
 
@@ -53,7 +58,7 @@ pub struct Pane {
     writer: Box<dyn Write + Send>,
     child: RefCell<Box<dyn Child + Send + Sync>>,
     exit: Cell<Option<u32>>,
-    /// Reader thread gone (EOF or I/O error).
+    /// Write side failed; stop writing. Reads still drain.
     disconnected: bool,
     /// Fallback title: the program's basename.
     name: String,
@@ -92,6 +97,8 @@ impl Pane {
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<Pane> {
+        // vt100's grid does `rows - 1`, so a zero size underflows u16.
+        let (cols, rows) = (cols.max(1), rows.max(1));
         let name = cmd
             .get_argv()
             .first()
@@ -166,8 +173,12 @@ impl Pane {
         });
     }
 
-    /// Write bytes to the child. I/O errors mark the pane dead.
+    /// Write bytes to the child. After an I/O error, writes stop; the
+    /// already-buffered output still drains through [`Pane::pump`].
     pub fn send(&mut self, bytes: &[u8]) {
+        if self.disconnected {
+            return;
+        }
         if self.writer.write_all(bytes).is_err() || self.writer.flush().is_err() {
             self.disconnected = true;
         }
@@ -175,20 +186,14 @@ impl Pane {
 
     /// Feed pending child output into the emulator. True if anything changed.
     pub fn pump(&mut self) -> bool {
-        if self.disconnected {
-            return false;
-        }
         let mut got = 0usize;
         while got < PUMP_BUDGET {
             match self.rx.try_recv() {
+                // Empty or the reader is gone: either way, drain what arrived.
+                Err(_) => break,
                 Ok(chunk) => {
                     got += chunk.len();
                     self.parser.process(&chunk);
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    self.disconnected = true;
-                    break;
                 }
             }
         }
@@ -263,9 +268,29 @@ impl Pane {
         rows[start..].join("\n")
     }
 
-    /// Kill the child; the reader thread exits on its own at EOF.
+    /// Kill the child and everything it left behind, then reap it.
     pub fn kill(&mut self) {
-        let _ = self.child.borrow_mut().kill();
+        let mut child = self.child.borrow_mut();
+        // portable_pty setsid()s before exec, so the child's pid is also its
+        // process group id.
+        #[cfg(unix)]
+        let pg = child.process_id().map(|p| p as libc::pid_t);
+        #[cfg(unix)]
+        if let Some(pg) = pg {
+            unsafe { libc::killpg(pg, libc::SIGHUP) };
+        }
+        let _ = child.kill();
+        #[cfg(unix)]
+        if let Some(pg) = pg {
+            // A grandchild that outlives the shell keeps the pty slave open, so
+            // the reader thread would sit in read() forever holding the fd.
+            unsafe { libc::killpg(pg, libc::SIGKILL) };
+        }
+        // Nothing else waits on this child once the app drops the pane, and
+        // Child's Drop doesn't reap: without this it stays <defunct>.
+        if let Ok(st) = child.wait() {
+            self.exit.set(Some(st.exit_code()));
+        }
     }
 }
 
@@ -414,5 +439,56 @@ mod tests {
     fn osc_sets_the_title() {
         let mut p = pane("printf '\\033]0;mytitle\\007'", 40, 10);
         assert!(pump_until(&mut p, |p| p.title() == "mytitle"));
+    }
+
+    #[test]
+    fn osc_title_drops_control_characters() {
+        // C0 never survives the OSC parser; a C1 (here U+0085) does.
+        let mut p = pane("printf '\\033]0;a\\302\\205b\\007'", 40, 10);
+        assert!(pump_until(&mut p, |p| p.title() == "ab"));
+    }
+
+    #[test]
+    fn zero_size_does_not_underflow() {
+        let p = Pane::spawn_cmd(1, sh("exit 0"), 100, 0, 0).unwrap();
+        assert_eq!(p.screen().size(), (1, 1));
+    }
+
+    #[test]
+    fn a_dead_write_side_still_drains_output() {
+        let mut p = pane("printf hello", 40, 10);
+        // What send() does on a write error; it must not gate the drain.
+        p.disconnected = true;
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("hello")));
+    }
+
+    #[test]
+    fn kill_reaps_the_child_and_its_group() {
+        // The shell ignores SIGHUP (so the kill escalates to SIGKILL, the path
+        // that never waits) and leaves a grandchild holding the pty slave.
+        let mut p = pane("trap '' HUP; (sleep 30) & printf 'up'; wait", 40, 10);
+        assert!(pump_until(&mut p, |p| p.screen().contents().contains("up")));
+        // setsid() in the spawn makes the child's pid its process group id.
+        let pid = p.child.borrow().process_id().unwrap() as libc::pid_t;
+        p.kill();
+
+        let mut st = 0;
+        // ECHILD (-1) means already reaped; 0 would mean a live child or a
+        // <defunct> one still waiting for someone to collect it.
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut st, libc::WNOHANG) },
+            -1,
+            "child was not reaped"
+        );
+        // A grandchild that outlives the shell keeps the pty slave open, so the
+        // reader thread never sees EOF and its fd leaks for the whole session.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while unsafe { libc::killpg(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "process group survived kill()");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
