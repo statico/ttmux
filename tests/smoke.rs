@@ -252,3 +252,35 @@ fn free_mode_lets_a_pane_be_dragged_around() {
         top_borders(s).last() == Some(&(grab as usize + 3))
     });
 }
+
+#[test]
+fn the_cli_answers_without_a_terminal() {
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))
+            .args(args)
+            .env("TTMUX_CONFIG", "/tmp/ttmux-cli-test.toml")
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+        )
+    };
+
+    let (ok, out) = run(&["--version"]);
+    assert!(ok && out.starts_with("ttmux 0."), "{out:?}");
+
+    let (ok, out) = run(&["--help"]);
+    assert!(ok && out.contains("ctrl+a s"), "{out:?}");
+
+    let (ok, out) = run(&["--where"]);
+    assert!(ok && out.trim() == "/tmp/ttmux-cli-test.toml", "{out:?}");
+
+    // The dumped config is the real default config, and it parses back.
+    let (ok, out) = run(&["--print-config"]);
+    assert!(ok);
+    let parsed: ttmux::config::Config = toml::from_str(&out).unwrap();
+    assert_eq!(parsed, ttmux::config::Config::default());
+
+    assert!(!run(&["--nonsense"]).0, "an unknown flag must fail");
+}
