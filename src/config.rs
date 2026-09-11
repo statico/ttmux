@@ -226,11 +226,7 @@ impl FromStr for Rgb {
                 return Err(format!("colour must be #rrggbb: {s}"));
             }
             let v = u32::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
-            return Ok(Rgb(Color::Rgb(
-                (v >> 16) as u8,
-                (v >> 8) as u8,
-                v as u8,
-            )));
+            return Ok(Rgb(Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)));
         }
         if let Ok(i) = s.parse::<u8>() {
             return Ok(Rgb(Color::Indexed(i)));
@@ -578,7 +574,14 @@ mod tests {
     #[test]
     fn chords_round_trip() {
         for s in [
-            "ctrl+a", "alt+shift+left", "f5", "space", "esc", "a", "ctrl++", "super+k",
+            "ctrl+a",
+            "alt+shift+left",
+            "f5",
+            "space",
+            "esc",
+            "a",
+            "ctrl++",
+            "super+k",
         ] {
             let c: Chord = s.parse().unwrap();
             assert_eq!(c.to_string().parse::<Chord>().unwrap(), c, "{s}");
@@ -615,7 +618,10 @@ mod tests {
         let (map, errors) = Config::default().keymap();
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(map.len(), Config::default().keys.len());
-        assert_eq!(Config::default().prefixes(), vec!["ctrl+a".parse().unwrap()]);
+        assert_eq!(
+            Config::default().prefixes(),
+            vec!["ctrl+a".parse().unwrap()]
+        );
     }
 
     #[test]

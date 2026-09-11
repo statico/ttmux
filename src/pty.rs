@@ -104,7 +104,12 @@ impl Pane {
             .unwrap_or_default();
 
         let pair = portable_pty::native_pty_system()
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .context("openpty")?;
         let child = pair.slave.spawn_command(cmd).context("spawn")?;
         // Drop our copy of the slave so the reader sees EOF when the child exits.
@@ -153,9 +158,12 @@ impl Pane {
         self.cols = cols;
         self.rows = rows;
         self.parser.screen_mut().set_size(rows, cols);
-        let _ = self
-            .master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
+        let _ = self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
 
     /// Write bytes to the child. I/O errors mark the pane dead.
@@ -336,7 +344,10 @@ mod tests {
     #[test]
     fn output_reaches_the_screen() {
         let mut p = pane("printf hello", 40, 10);
-        assert!(pump_until(&mut p, |p| p.screen().contents().contains("hello")));
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("hello")));
     }
 
     #[test]
@@ -353,7 +364,10 @@ mod tests {
         // Wait for the child to be up before typing at it.
         std::thread::sleep(Duration::from_millis(100));
         p.send(b"abc\n");
-        assert!(pump_until(&mut p, |p| p.screen().contents().contains("got:abc")));
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("got:abc")));
     }
 
     #[test]
@@ -368,8 +382,15 @@ mod tests {
 
     #[test]
     fn scrollback_moves_the_view() {
-        let mut p = pane("i=1; while [ $i -le 200 ]; do echo line$i; i=$((i+1)); done", 40, 10);
-        assert!(pump_until(&mut p, |p| p.screen().contents().contains("line200")));
+        let mut p = pane(
+            "i=1; while [ $i -le 200 ]; do echo line$i; i=$((i+1)); done",
+            40,
+            10,
+        );
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("line200")));
         let live = p.screen().contents();
         p.scroll_by(-5);
         assert_eq!(p.scroll, 5);
@@ -383,7 +404,10 @@ mod tests {
         let mut p = pane("printf 'a\\nb\\nc\\nd\\n'", 40, 10);
         assert!(pump_until(&mut p, |p| p.screen().contents().contains('d')));
         let t = p.tail(3);
-        assert_eq!(t.lines().map(str::trim).collect::<Vec<_>>(), ["b", "c", "d"]);
+        assert_eq!(
+            t.lines().map(str::trim).collect::<Vec<_>>(),
+            ["b", "c", "d"]
+        );
     }
 
     #[test]

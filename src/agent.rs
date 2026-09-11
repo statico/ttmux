@@ -19,8 +19,9 @@ const RECENT_LINES: usize = 5;
 const ANCHOR_CHARS: usize = 40;
 
 /// Coarse activity state of a coding agent running in a pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentState {
+    #[default]
     Idle,
     Busy,
     Attention,
@@ -44,12 +45,6 @@ impl AgentState {
     }
 }
 
-impl Default for AgentState {
-    fn default() -> Self {
-        AgentState::Idle
-    }
-}
-
 /// Per-pane classifier. Feed it on every pump via [`Watcher::update`].
 pub struct Watcher {
     state: AgentState,
@@ -70,7 +65,13 @@ impl Watcher {
     }
 
     /// Call on every pump. `bell` is a one-shot OS bell from the pane.
-    pub fn update(&mut self, cfg: &config::Agents, title: &str, tail: &str, bell: bool) -> AgentState {
+    pub fn update(
+        &mut self,
+        cfg: &config::Agents,
+        title: &str,
+        tail: &str,
+        bell: bool,
+    ) -> AgentState {
         self.update_at(cfg, title, tail, bell, Instant::now())
     }
 
@@ -95,9 +96,7 @@ impl Watcher {
 
         let lines = recent_lines(tail);
 
-        let new_state = if bell {
-            AgentState::Attention
-        } else if matches_patterns(&cfg.attention_patterns, title, &lines) {
+        let new_state = if bell || matches_patterns(&cfg.attention_patterns, title, &lines) {
             AgentState::Attention
         } else if matches_patterns(&cfg.busy_patterns, title, &lines) {
             AgentState::Busy
@@ -287,7 +286,10 @@ mod tests {
     #[test]
     fn shell_prompt_is_not_attention() {
         let mut w = Watcher::new();
-        assert_eq!(w.update(&cfg(), "", "~/dev/ttmux $ ", false), AgentState::Idle);
+        assert_eq!(
+            w.update(&cfg(), "", "~/dev/ttmux $ ", false),
+            AgentState::Idle
+        );
     }
 
     #[test]
