@@ -704,6 +704,7 @@ impl Settings {
             return;
         }
         let base = Style::default();
+        crate::render::clear(buf, area, base);
         border(buf, area, base);
         let g = geometry(area);
 

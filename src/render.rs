@@ -220,6 +220,20 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
 }
 
 /// Darken the L-shaped band one cell right of and below `rect`.
+/// Blank a rect and give it a style. An overlay is drawn on top of panes that
+/// are already in the buffer, and `Buffer::set_style` restyles cells without
+/// replacing their symbols, so anything that does not clear first shows the
+/// pane's text bleeding through its own gaps.
+pub fn clear(buf: &mut Buffer, rect: Rect, style: Style) {
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_symbol(" ").set_style(style);
+            }
+        }
+    }
+}
+
 pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
     if rect.w == 0 || rect.h == 0 {
         return;
