@@ -11,7 +11,14 @@ use crate::action::Dir;
 /// Stable identifier for a pane. Allocated by the app, opaque here.
 pub type PaneId = u32;
 
-/// Smallest pane we ever produce, borders included.
+/// Smallest pane any deliberate action creates, borders included: two border
+/// cells plus one of content.
+///
+/// It is a floor on what `insert`, docking with `toggle_float` and every drag
+/// will produce, not an invariant of `geometry()`. Presets and a shrinking
+/// `area` divide whatever cells exist between the panes already there, so a
+/// tiled pane can end up thinner than this — down to nothing on a one-cell
+/// area. Only floats are kept `MIN` across, and only so they stay grabbable.
 const MIN: u16 = 3;
 
 /// A rectangle in terminal cells.
@@ -158,6 +165,14 @@ impl Axis {
             Dir::Up | Dir::Down => Axis::Vertical,
         }
     }
+
+    /// The side of `rect` a split on this axis divides.
+    fn len_of(self, rect: Rect) -> u16 {
+        match self {
+            Axis::Horizontal => rect.w,
+            Axis::Vertical => rect.h,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -177,7 +192,9 @@ struct Drag {
     kind: DragKind,
     /// Pointer offset from the thing being dragged at press time.
     grab: (i32, i32),
-    /// Rect of the float at press time (unused for dividers).
+    /// Rect of the float at press time; every resize delta is measured from
+    /// it rather than from the current rect, so a drag back to the press point
+    /// restores the original exactly. Unused for dividers and grabs.
     start: Rect,
     /// Where the pointer is now, for `snap_target`.
     at: (u16, u16),
@@ -255,10 +272,10 @@ impl Layout {
 
     /// Add a pane, splitting `near` (or the last pane) along `dir`.
     ///
-    /// `dir` of `None` splits the longer side of that pane. Returns false and
-    /// changes nothing when there is no room for the split: half of a pane
-    /// narrower than `2 * MIN` is unusable (a zero-width pane cannot even be
-    /// clicked), so the caller keeps its pane and reports "no room" instead.
+    /// `dir` of `None` halves the pane whichever way `default_axis` prefers.
+    /// Returns false and changes nothing when the split would leave either
+    /// half under `MIN` along the split axis, so the caller keeps its pane and
+    /// reports "no room" rather than being handed one nobody can read.
     pub fn insert(&mut self, id: PaneId, near: Option<PaneId>, dir: Option<Dir>) -> bool {
         if self.ids().contains(&id) {
             return false;
@@ -267,31 +284,20 @@ impl Layout {
         let near = near
             .filter(|n| leaves.contains(n))
             .or_else(|| leaves.last().copied());
-        match (self.root.take(), near) {
-            (None, _) | (_, None) => {
-                // First tiled pane (or nothing to split): it becomes the whole tree.
-                self.root = Some(Node::Leaf(id));
-            }
-            (Some(root), Some(near)) => {
-                let rect = self.tiled_of(&root, near).unwrap_or(self.area);
-                let axis = match dir {
-                    Some(d) => Axis::of(d),
-                    None => {
-                        if rect.w / 2 >= rect.h {
-                            Axis::Horizontal
-                        } else {
-                            Axis::Vertical
-                        }
-                    }
-                };
+        // `near` is only ever `None` when the tree is empty, so this is also
+        // the "first pane" case.
+        match near {
+            None => self.root = Some(Node::Leaf(id)),
+            Some(near) => {
+                let rect = self.tiled_rect(near).unwrap_or(self.area);
+                let axis = dir.map_or_else(|| default_axis(rect), Axis::of);
                 if !splittable(rect, axis) {
-                    self.root = Some(root);
                     return false;
                 }
                 let first = matches!(dir, Some(Dir::Left) | Some(Dir::Up));
-                let mut root = root;
-                split_leaf(&mut root, near, id, axis, first);
-                self.root = Some(root);
+                if let Some(root) = self.root.as_mut() {
+                    split_leaf(root, near, id, axis, first);
+                }
                 self.preset = Preset::Tree;
             }
         }
@@ -325,7 +331,8 @@ impl Layout {
         }
     }
 
-    /// All panes: tiled ones in tree order, then floats back to front.
+    /// All panes: the tree's leaves in tree order, then any explicit floats
+    /// (which are not in the tree) back to front.
     pub fn ids(&self) -> Vec<PaneId> {
         let mut out = self.leaves();
         for id in &self.z {
@@ -349,17 +356,7 @@ impl Layout {
                 return vec![(z, self.area)];
             }
         }
-        let mut out = if self.mode == Mode::Tiling {
-            self.tiled_geometry()
-        } else {
-            Vec::new()
-        };
-        for id in &self.z {
-            if let Some(r) = self.rects.get(id) {
-                out.push((*id, *r));
-            }
-        }
-        out
+        self.all_rects()
     }
 
     pub fn rect_of(&self, id: PaneId) -> Option<Rect> {
@@ -453,7 +450,10 @@ impl Layout {
 
     // -------------------------------------------------------------- changes
 
-    /// Grow the pane by `n` cells towards `dir`.
+    /// Move the pane's edge `n` cells towards `dir`: for a float its right or
+    /// bottom edge, for a tiled pane the nearest ancestor divider on that
+    /// axis. Whether that grows or shrinks the pane depends on which side of
+    /// the divider it sits.
     pub fn resize(&mut self, id: PaneId, dir: Dir, n: u16) {
         if n == 0 {
             return;
@@ -484,11 +484,7 @@ impl Layout {
             if ax != axis {
                 continue;
             }
-            let len = if axis == Axis::Horizontal {
-                rect.w
-            } else {
-                rect.h
-            };
+            let len = axis.len_of(rect);
             if len < 2 * MIN {
                 continue;
             }
@@ -617,11 +613,7 @@ impl Layout {
                 None => self.root = Some(Node::Leaf(id)),
                 Some(near) => {
                     let rect = self.raw_rect(near).unwrap_or(self.area);
-                    let axis = if rect.w / 2 >= rect.h {
-                        Axis::Horizontal
-                    } else {
-                        Axis::Vertical
-                    };
+                    let axis = default_axis(rect);
                     // Nowhere to dock it without making an unusable tile: leave
                     // it floating rather than wedge it in.
                     if !splittable(rect, axis) {
@@ -688,11 +680,7 @@ impl Layout {
 
     /// Make one pane fill `area`, or clear the zoom with `None`.
     pub fn set_zoom(&mut self, id: Option<PaneId>) {
-        self.zoomed = match id {
-            Some(id) if self.ids().contains(&id) => Some(id),
-            Some(_) => None,
-            None => None,
-        };
+        self.zoomed = id.filter(|id| self.ids().contains(id));
     }
 
     // ----------------------------------------------------------------- mice
@@ -733,9 +721,30 @@ impl Layout {
             }) {
                 return Some((id, DragKind::Grab));
             }
-            if let Some(root) = self.root.as_ref() {
-                let mut idx = 0;
-                return hit_divider(root, self.area, x, y, &mut idx);
+            // Pre-order, so the outermost divider under the pointer wins. Only
+            // the splits on the chain of rects containing (x, y) can match, and
+            // pre-order visits that chain outermost first.
+            for (i, (rect, axis, path)) in self.splits().into_iter().enumerate() {
+                if !rect.contains(x, y) {
+                    continue;
+                }
+                let first = part(axis.len_of(rect), self.ratio_at(&path));
+                // The first child got no cells at all, so there is no boundary
+                // between the two to grab — only the second child to click.
+                if first == 0 {
+                    continue;
+                }
+                // Both cells either side of the boundary grab it, so a divider
+                // is two cells wide to the pointer.
+                let on_edge = match axis {
+                    Axis::Horizontal => x + 1 == rect.x + first || x == rect.x + first,
+                    Axis::Vertical => y + 1 == rect.y + first || y == rect.y + first,
+                };
+                if on_edge {
+                    let mut leaves = Vec::new();
+                    collect_leaves(self.node_at(&path)?, &mut leaves);
+                    return leaves.first().map(|id| (*id, DragKind::Divider(i)));
+                }
             }
         }
         None
@@ -788,22 +797,11 @@ impl Layout {
                 (x as i32 - start.x as i32, y as i32 - start.y as i32)
             }
             DragKind::Divider(i) => {
-                let (rect, axis, _) = self.splits()[i];
-                let len = if axis == Axis::Horizontal {
-                    rect.w
-                } else {
-                    rect.h
-                };
-                let first = part(len, self.nth_ratio(i));
-                let boundary = if axis == Axis::Horizontal {
-                    rect.x + first
-                } else {
-                    rect.y + first
-                };
-                if axis == Axis::Horizontal {
-                    (x as i32 - boundary as i32, 0)
-                } else {
-                    (0, y as i32 - boundary as i32)
+                let (rect, axis, path) = self.splits()[i].clone();
+                let first = part(axis.len_of(rect), self.ratio_at(&path));
+                match axis {
+                    Axis::Horizontal => (x as i32 - (rect.x + first) as i32, 0),
+                    Axis::Vertical => (0, y as i32 - (rect.y + first) as i32),
                 }
             }
         };
@@ -842,19 +840,23 @@ impl Layout {
                 let dy = y as i32 - (s.y as i32 + d.grab.1);
                 let mut r = s;
                 // Each side moves on its own; the clamps are what stop a window
-                // turning inside out when dragged past the opposite side.
+                // turning inside out when dragged past the opposite side. The
+                // `max(0)` matters when the float is already thinner than MIN
+                // (an area narrower than MIN leaves it no choice): without it
+                // the upper bound falls below the lower one and `clamp` panics.
                 if right {
                     r.w = (s.w as i32 + dx).max(MIN as i32) as u16;
                 }
                 if left {
-                    r.x = (s.x as i32 + dx).clamp(0, s.right() as i32 - MIN as i32) as u16;
+                    r.x = (s.x as i32 + dx).clamp(0, (s.right() as i32 - MIN as i32).max(0)) as u16;
                     r.w = s.right() - r.x;
                 }
                 if bottom {
                     r.h = (s.h as i32 + dy).max(MIN as i32) as u16;
                 }
                 if top {
-                    r.y = (s.y as i32 + dy).clamp(0, s.bottom() as i32 - MIN as i32) as u16;
+                    r.y =
+                        (s.y as i32 + dy).clamp(0, (s.bottom() as i32 - MIN as i32).max(0)) as u16;
                     r.h = s.bottom() - r.y;
                 }
                 self.put_rect(d.id, r);
@@ -867,11 +869,7 @@ impl Layout {
                     return;
                 };
                 let path = path.clone();
-                let len = if axis == Axis::Horizontal {
-                    rect.w
-                } else {
-                    rect.h
-                };
+                let len = axis.len_of(rect);
                 if len < 2 * MIN {
                     return;
                 }
@@ -927,10 +925,11 @@ impl Layout {
         out
     }
 
-    fn tiled_of(&self, root: &Node, id: PaneId) -> Option<Rect> {
-        let mut out = Vec::new();
-        collect_geometry(root, self.area, &mut out);
-        out.into_iter().find(|(p, _)| *p == id).map(|(_, r)| r)
+    fn tiled_rect(&self, id: PaneId) -> Option<Rect> {
+        self.tiled_geometry()
+            .into_iter()
+            .find(|(p, _)| *p == id)
+            .map(|(_, r)| r)
     }
 
     /// Every pane's rect, ignoring zoom.
@@ -964,22 +963,21 @@ impl Layout {
         out
     }
 
-    fn nth_ratio(&self, i: usize) -> f32 {
-        let splits = self.splits();
-        splits.get(i).map_or(0.5, |(_, _, p)| self.ratio_at(p))
+    /// The node a `splits()` path leads to, or `None` if the tree changed
+    /// under it.
+    fn node_at(&self, path: &[bool]) -> Option<&Node> {
+        let mut node = self.root.as_ref()?;
+        for &step in path {
+            let Node::Split { a, b, .. } = node else {
+                return None;
+            };
+            node = if step { b } else { a };
+        }
+        Some(node)
     }
 
     fn ratio_at(&self, path: &[bool]) -> f32 {
-        let mut node = self.root.as_ref();
-        for &b in path {
-            match node {
-                Some(Node::Split { a, b: bb, .. }) => {
-                    node = Some(if b { bb } else { a });
-                }
-                _ => return 0.5,
-            }
-        }
-        match node {
+        match self.node_at(path) {
             Some(Node::Split { ratio, .. }) => *ratio,
             _ => 0.5,
         }
@@ -1029,7 +1027,8 @@ impl Layout {
         self.rects.insert(id, r);
     }
 
-    /// Keep a rect inside `area`, at least MIN x MIN (or the whole area if smaller).
+    /// Keep a rect inside `area`, at least MIN x MIN, or as much of the area
+    /// as there is when it is smaller than that.
     fn clamp_rect(&self, mut r: Rect) -> Rect {
         let a = self.area;
         r.w = r.w.clamp(MIN.min(a.w).max(1), a.w.max(1));
@@ -1057,17 +1056,30 @@ fn from_frac(frac: f64, len: u16) -> u16 {
     (frac * len as f64).round() as u16
 }
 
-/// Is there room to split `rect` along `axis` into two usable panes?
-fn splittable(rect: Rect, axis: Axis) -> bool {
-    let len = if axis == Axis::Horizontal {
-        rect.w
+/// Which way to halve a rect when the caller did not say. Terminal cells are
+/// roughly twice as tall as they are wide, so a rect only counts as wide
+/// enough to split side by side once it is twice as wide as it is tall.
+fn default_axis(rect: Rect) -> Axis {
+    if rect.w / 2 >= rect.h {
+        Axis::Horizontal
     } else {
-        rect.h
-    };
-    len >= 2 * MIN
+        Axis::Vertical
+    }
 }
 
-/// Size of the first child, with the remainder going to the second.
+/// Is there room to split `rect` along `axis` into two usable panes?
+fn splittable(rect: Rect, axis: Axis) -> bool {
+    axis.len_of(rect) >= 2 * MIN
+}
+
+/// Size of the first child of a split, the remainder going to the second.
+///
+/// The three cases are the whole of the minimum-size policy for tiled panes.
+/// With room for two usable children the ratio is honoured but held `MIN` off
+/// either end. Below that there is nothing to honour: the cells are halved,
+/// which is how a shrinking terminal produces tiles under `MIN` without ever
+/// losing or double-counting a cell. Under two cells there is no split to
+/// make, so the first child gets none and the second gets the lot.
 fn part(len: u16, ratio: f32) -> u16 {
     if len < 2 {
         0
@@ -1133,54 +1145,6 @@ fn collect_splits(
         path.push(true);
         collect_splits(b, rb, path, out);
         path.pop();
-    }
-}
-
-fn hit_divider(
-    node: &Node,
-    rect: Rect,
-    x: u16,
-    y: u16,
-    idx: &mut usize,
-) -> Option<(PaneId, DragKind)> {
-    let Node::Split { dir, ratio, a, b } = node else {
-        return None;
-    };
-    let here = *idx;
-    *idx += 1;
-    let (ra, rb) = split_rect(rect, *dir, *ratio);
-    let on_edge = match dir {
-        Axis::Horizontal => {
-            rect.contains(x, y) && (x + 1 == ra.right() || x == rb.x) && ra.w > 0 && rb.w > 0
-        }
-        Axis::Vertical => {
-            rect.contains(x, y) && (y + 1 == ra.bottom() || y == rb.y) && ra.h > 0 && rb.h > 0
-        }
-    };
-    if on_edge {
-        let mut leaves = Vec::new();
-        collect_leaves(a, &mut leaves);
-        return leaves.first().map(|id| (*id, DragKind::Divider(here)));
-    }
-    if ra.contains(x, y) {
-        let r = hit_divider(a, ra, x, y, idx);
-        // Keep the index counter consistent even when the hit is on the a side.
-        let mut skip = *idx;
-        count_splits(b, &mut skip);
-        *idx = skip;
-        return r;
-    }
-    let mut skip = *idx;
-    count_splits(a, &mut skip);
-    *idx = skip;
-    hit_divider(b, rb, x, y, idx)
-}
-
-fn count_splits(node: &Node, n: &mut usize) {
-    if let Node::Split { a, b, .. } = node {
-        *n += 1;
-        count_splits(a, n);
-        count_splits(b, n);
     }
 }
 
@@ -1405,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn default_split_picks_longer_side() {
+    fn default_split_follows_cell_aspect_not_the_longer_side() {
         // 80x24 is "wide" in cell aspect terms -> side by side.
         let mut l = layout(1);
         l.insert(2, None, None);
@@ -1415,6 +1379,12 @@ mod tests {
         l.insert(1, None, None);
         l.insert(2, None, None);
         assert_eq!(l.rect_of(1).unwrap().w, 20);
+        // 40x24 is wider than it is tall but not twice as wide, so cells being
+        // roughly 1x2 make it the taller of the two on screen: stacked.
+        let mut l = Layout::new(Rect::new(0, 0, 40, 24));
+        l.insert(1, None, None);
+        l.insert(2, None, None);
+        assert_eq!(l.rect_of(1).unwrap().w, 40);
     }
 
     #[test]
@@ -1460,7 +1430,7 @@ mod tests {
     }
 
     #[test]
-    fn resize_respects_minimum() {
+    fn resize_beyond_the_far_edge_stops_at_min() {
         let mut l = grid();
         l.resize(1, Dir::Right, 200);
         assert!(l.rect_of(2).unwrap().w >= MIN);
@@ -1688,6 +1658,35 @@ mod tests {
     }
 
     #[test]
+    fn float_bookkeeping_never_outlives_a_pane() {
+        // `desired` is what makes a resize round-trip exact, so it is written
+        // from several places. A stale entry would resurrect a dead pane's
+        // geometry under a recycled id.
+        let mut l = layout(4);
+        l.toggle_float(2);
+        l.set_mode(Mode::Free);
+        l.move_pane(3, Dir::Right, 5);
+        l.swap_next(1);
+        l.remove(3);
+        l.remove(2);
+        l.set_mode(Mode::Tiling);
+        l.remove(1);
+        let ids = l.ids();
+        assert_eq!(ids, vec![4]);
+        for map in [
+            l.desired.keys().copied().collect::<Vec<_>>(),
+            l.rects.keys().copied().collect(),
+            l.z.clone(),
+            l.explicit.clone(),
+        ] {
+            assert!(
+                map.iter().all(|id| ids.contains(id)),
+                "stale entry: {map:?}"
+            );
+        }
+    }
+
+    #[test]
     fn insert_refuses_when_there_is_no_room_to_split() {
         for w in [1u16, 2, 5] {
             let mut l = Layout::new(Rect::new(0, 0, w, 10));
@@ -1844,6 +1843,46 @@ mod tests {
     }
 
     #[test]
+    fn divider_index_picks_the_nested_split_under_the_pointer() {
+        // grid()'s splits in pre-order: 0 is the root column divider, 1 the
+        // left column's row divider, 2 the right column's. Getting the index
+        // wrong here drags the wrong divider, which is invisible in a layout
+        // with only one split.
+        let mut l = grid();
+        assert_eq!(l.hit_test(60, 12), Some((2, DragKind::Divider(2))));
+        assert_eq!(l.hit_test(20, 12), Some((1, DragKind::Divider(1))));
+
+        assert!(l.drag_start(60, 12));
+        l.drag_to(60, 18);
+        assert_eq!(l.rect_of(2).unwrap().h, 18);
+        assert_eq!(l.rect_of(4).unwrap().h, 6);
+        assert_eq!(l.rect_of(1).unwrap().h, 12, "the left column moved too");
+        assert_exact(&l);
+    }
+
+    #[test]
+    fn resize_drag_on_a_float_thinner_than_min_does_not_panic() {
+        // An area narrower than MIN forces the float below MIN, so the far
+        // edge sits inside the minimum and the edge clamp has no room. It used
+        // to build an inverted range and panic on the first drag event.
+        let mut l = Layout::new(Rect::new(0, 0, 1, 8));
+        l.insert(1, None, None);
+        l.toggle_float(1);
+        let r = l.rect_of(1).unwrap();
+        assert_eq!(r.w, 1);
+        assert!(l.drag_start(r.x, r.y + 2));
+        l.drag_to(r.x + 4, r.y + 2);
+        assert!(l.rect_of(1).unwrap().w >= 1);
+
+        let mut l = Layout::new(Rect::new(0, 0, 8, 1));
+        l.insert(1, None, None);
+        l.toggle_float(1);
+        assert!(l.drag_start(4, 0)); // the single row is both top and bottom
+        l.drag_to(4, 6);
+        assert!(l.rect_of(1).unwrap().h >= 1);
+    }
+
+    #[test]
     fn float_move_drag_keeps_grab_offset() {
         let mut l = grid();
         l.toggle_float(2);
@@ -1971,7 +2010,7 @@ mod tests {
     }
 
     #[test]
-    fn rect_helpers() {
+    fn rect_edges_are_half_open_and_shrink_saturates() {
         let r = Rect::new(2, 3, 10, 5);
         assert_eq!((r.right(), r.bottom()), (12, 8));
         assert!(r.contains(2, 3) && r.contains(11, 7));
