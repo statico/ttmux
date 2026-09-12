@@ -18,8 +18,9 @@ Three ways to reach these commands:
   flag, and the row above shows its usage.
 - `ttmux list-commands --json` for an agent that wants the whole API first.
 
-`ttmux <command> --help` prints one command. `--help` and `list-commands`
-need no running session.
+`ttmux <command> --help` prints one command. `--help`, `list-commands` and
+`list-sessions` need no running session. Use `--help`, not `-h`:
+`split-window` and `join-pane` read `-h` as `--horizontal`.
 
 ## How a command is addressed
 
@@ -147,9 +148,13 @@ the default is 2.
 | `-L`, `--left` | the edge to push, and `-R`, `-U`, `-D` for the rest |
 | `-Z`, `--zoom` | toggle zoom instead of resizing |
 
+`-Z` zooms the pane `-t` names, and the focus moves to it. A zoomed pane
+nobody is typing into is not what the command asked for.
+
 ```
 ttmux resize-pane -R 10
 ttmux resize-pane -Z
+ttmux resize-pane -t %2 -Z
 ```
 
 ### swap-pane
