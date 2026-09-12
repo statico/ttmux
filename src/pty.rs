@@ -493,6 +493,9 @@ impl Pane {
                             Piece::Image(bytes) => {
                                 let (row, col) = self.parser.screen().cursor_position();
                                 let mut pending = self.images.borrow_mut();
+                                // A video redraws the same cell every frame;
+                                // only the newest frame is worth sending.
+                                pending.retain(|i| (i.row, i.col) != (row, col));
                                 if pending.len() >= MAX_PENDING_IMAGES {
                                     pending.remove(0);
                                 }
@@ -936,7 +939,7 @@ mod tests {
     #[test]
     fn pending_images_stop_at_the_cap_by_dropping_the_oldest() {
         let mut p = pane(
-            "i=0; while [ $i -lt 40 ]; do printf '\\033_Gn=%s;\\033\\\\' $i; \
+            "i=0; while [ $i -lt 40 ]; do printf '\\033_Gn=%s;\\033\\\\x' $i; \
              i=$((i+1)); done; printf done",
             40,
             10,

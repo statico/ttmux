@@ -362,8 +362,12 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         let inner = hub.clone();
         let writer = thread::spawn(move || {
             for msg in rx {
-                if proto::write_msg(&mut out, &msg).is_err() {
-                    break;
+                match proto::write_msg(&mut out, &msg) {
+                    // Too big to send is checked before anything is written:
+                    // lose the message, not the client.
+                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {}
+                    Err(_) => break,
+                    Ok(()) => {}
                 }
             }
             inner.drop_client(id);
