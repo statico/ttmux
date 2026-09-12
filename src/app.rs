@@ -1162,7 +1162,7 @@ impl App {
                 }
                 Overlay::Welcome(w) => {
                     let rect = overlay_rect(self.area);
-                    let inner = panel(buf, rect, w.title(), &self.cfg);
+                    let inner = modal(buf, rect, w.title(), w.hint(), &self.cfg);
                     w.draw(buf, inner, &self.cfg);
                 }
                 Overlay::Prompt { label, input } => {
@@ -1269,14 +1269,78 @@ fn overlay_rect(area: Rect) -> Rect {
     )
 }
 
-fn panel(buf: &mut Buffer, rect: Rect, title: &str, cfg: &Config) -> Rect {
+/// A drop shadow twice as wide as it is deep.
+///
+/// Terminal cells are about twice as tall as they are wide, so a one-cell L
+/// reads lopsided. The second pass is the same L one column further out;
+/// the union is a two-column right edge and a one-row bottom, all of it
+/// outside `rect`.
+fn shadow(buf: &mut Buffer, rect: Rect) {
+    render::draw_shadow(buf, rect);
+    render::draw_shadow(
+        buf,
+        Rect {
+            w: rect.w.saturating_add(1),
+            ..rect
+        },
+    );
+}
+
+/// The modal ground: a few steps off the bar background, so a modal reads as
+/// lifted off the panes rather than as one more window.
+///
+/// Dark themes go up and light ones go down, which keeps the contrast with
+/// `status.fg` in the direction it already had. A palette colour has no
+/// arithmetic to do and leans on the border and the shadow instead.
+fn raised(c: Color) -> Color {
+    const STEP: u8 = 20;
+    match c {
+        Color::Rgb(r, g, b) => {
+            let up = u16::from(r) + u16::from(g) + u16::from(b) < 384;
+            let f = |v: u8| {
+                if up {
+                    v.saturating_add(STEP)
+                } else {
+                    v.saturating_sub(STEP)
+                }
+            };
+            Color::Rgb(f(r), f(g), f(b))
+        }
+        other => other,
+    }
+}
+
+/// The content rect inside the modal chrome, hint row already taken out.
+///
+/// `modal` and `Settings::on_mouse` both need it, so where a click lands and
+/// where a row was drawn cannot drift apart.
+pub(crate) fn modal_content(rect: Rect) -> Rect {
+    let mut inner = rect.shrink(1);
+    // The hint is the first thing to go: content outranks it.
+    if inner.h > 2 {
+        inner.h -= 1;
+    }
+    inner
+}
+
+/// The chrome every modal wears: shadow, raised ground, heavy accent border,
+/// a title chip and a dim hint on the bottom row. Returns the content rect.
+///
+/// One function so help, settings, the palette, the prompt, the welcome and
+/// the colour picker cannot drift into six different looks.
+pub(crate) fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config) -> Rect {
+    let inner = modal_content(rect);
+    if rect.w == 0 || rect.h == 0 {
+        return inner;
+    }
     let fg: Color = cfg.status.fg.into();
-    let bg: Color = cfg.status.bg.into();
+    let bg = raised(cfg.status.bg.into());
+    shadow(buf, rect);
     render::clear(buf, rect, Style::default().bg(bg).fg(fg));
     render::draw_border(
         buf,
         rect,
-        title,
+        "",
         true,
         false,
         false,
@@ -1288,11 +1352,38 @@ fn panel(buf: &mut Buffer, rect: Rect, title: &str, cfg: &Config) -> Rect {
             ..cfg.appearance.clone()
         },
     );
-    rect.shrink(1)
+
+    // The title as a filled chip rather than accent text on the rule: it is
+    // the one thing on screen that has to be found without looking for it.
+    if !title.is_empty() && rect.w > 6 {
+        crate::settings_ui::put(
+            buf,
+            rect.x + 2,
+            rect.y,
+            &format!("  {title}  "),
+            rect.w - 4,
+            Style::default()
+                .bg(cfg.status.accent.into())
+                .fg(cfg.status.bg.into())
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
+    if !hint.is_empty() && inner.h < rect.shrink(1).h {
+        crate::settings_ui::put(
+            buf,
+            inner.x,
+            inner.bottom(),
+            hint,
+            inner.w,
+            Style::default().fg(fg).add_modifier(Modifier::DIM),
+        );
+    }
+    inner
 }
 
 fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
-    let inner = panel(buf, rect, " help ", cfg);
+    let inner = modal(buf, rect, "help", "any key to close", cfg);
     let (map, _) = cfg.keymap();
     let style = Style::default().fg(cfg.status.fg.into());
     let accent = Style::default().fg(cfg.status.accent.into());
@@ -1313,7 +1404,13 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
 }
 
 fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Config) {
-    let inner = panel(buf, rect, " commands ", cfg);
+    let inner = modal(
+        buf,
+        rect,
+        "commands",
+        "type to filter   ↑↓ select   enter run   esc cancel",
+        cfg,
+    );
     let style = Style::default().fg(cfg.status.fg.into());
     let sel_style = Style::default()
         .fg(cfg.status.bg.into())
@@ -1345,14 +1442,15 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
 
 fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Config) {
     let w = area.w.min(60);
-    let h = 3.min(area.h);
+    // Five rows: border, the field, a blank, the hint, border.
+    let h = 5.min(area.h);
     let rect = Rect::new(
         area.x + (area.w - w) / 2,
         area.y + area.h.saturating_sub(h) / 2,
         w,
         h,
     );
-    let inner = panel(buf, rect, label, cfg);
+    let inner = modal(buf, rect, label, "enter confirm   esc cancel", cfg);
     // A 1-row area leaves the border with no interior; set_stringn would then
     // write outside the buffer.
     if inner.h == 0 {

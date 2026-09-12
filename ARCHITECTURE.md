@@ -236,15 +236,16 @@ impl Welcome {
 ## src/color_picker.rs
 Hex colour editing for the settings panel: a swatch grid (the 16 theme
 colours, the 6x6x6 cube, the grey ramp), a hex field, per-channel RGB
-nudging, and a before/after preview. Every keystroke reports `Apply`, so
-the running session recolours while you pick.
+nudging, and a before/after preview. Every keystroke leaves the new
+colour in `value()`, so the running session recolours while you pick.
 
 ```rust
-pub enum Outcome { Continue, Apply, Accept, Cancel }
+pub enum Outcome { Continue, Commit, Cancel }
 pub struct Picker { /* focus, grid cursor, hex buffer, original */ }
 impl Picker {
-    pub fn new(start: Color) -> Picker;
-    pub fn color(&self) -> Color;
+    pub fn new(current: &str) -> Picker;   // hex, as the config stores it
+    pub fn value(&self) -> String;
+    pub fn previous(&self) -> &str;        // what cancel restores
     pub fn on_key(&mut self, ev: KeyEvent) -> Outcome;
     pub fn on_mouse(&mut self, ev: MouseEvent, area: Rect) -> Outcome;
     pub fn draw(&self, buf: &mut Buffer, area: Rect, cfg: &Config);

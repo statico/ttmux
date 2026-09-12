@@ -47,6 +47,57 @@ impl vt100::Callbacks for Sink {
     }
 }
 
+/// Rewrites HVP (`CSI … f`) into its identical twin CUP (`CSI … H`).
+///
+/// ECMA-48 defines the two to do the same thing, but vt100 0.16 implements
+/// only `H` and drops `f` on the floor. A program that repositions with `f`
+/// — mpv's `--vo=tct` does it once per row of every frame — then has every
+/// move ignored, so its frame paints as one long wrapping stream that scrolls
+/// the pane and leaves two half-frames on screen at once.
+///
+/// Stateful because a sequence can straddle two reads from the pty.
+// ponytail: swapping the byte beats forking vt100; drop this if vt100 ever
+// grows HVP.
+#[derive(Default)]
+struct Hvp {
+    /// Saw `ESC`, waiting to see whether `[` follows.
+    esc: bool,
+    /// Inside `CSI …` with only parameter bytes so far.
+    csi: bool,
+}
+
+impl Hvp {
+    fn fix(&mut self, buf: &mut [u8]) {
+        for b in buf {
+            match *b {
+                // An ESC anywhere, mid-sequence included, starts over.
+                0x1b => {
+                    self.esc = true;
+                    self.csi = false;
+                }
+                b'[' if self.esc => {
+                    self.esc = false;
+                    self.csi = true;
+                }
+                _ if self.esc => self.esc = false,
+                // Parameter bytes keep the sequence open.
+                0x30..=0x3b if self.csi => {}
+                // Intermediates and the private markers `<=>?` mean this is
+                // something other than a plain HVP; stop watching it.
+                0x20..=0x3f if self.csi => self.csi = false,
+                // Final byte.
+                0x40..=0x7e if self.csi => {
+                    if *b == b'f' {
+                        *b = b'H';
+                    }
+                    self.csi = false;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// One pane: the child, its pty, and the emulator the app draws from.
 pub struct Pane {
     pub id: PaneId,
@@ -60,6 +111,7 @@ pub struct Pane {
 
     parser: vt100::Parser<Sink>,
     scanner: Scanner,
+    hvp: Hvp,
     /// Graphics sequences captured since the app last took them.
     images: RefCell<Vec<Image>>,
     rx: Receiver<Vec<u8>>,
@@ -157,6 +209,7 @@ impl Pane {
             title_override: None,
             parser: vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default()),
             scanner: Scanner::new(),
+            hvp: Hvp::default(),
             images: RefCell::new(Vec::new()),
             rx,
             master: pair.master,
@@ -209,7 +262,10 @@ impl Pane {
                     got += chunk.len();
                     for piece in self.scanner.feed(&chunk) {
                         match piece {
-                            Piece::Plain(bytes) => self.parser.process(&bytes),
+                            Piece::Plain(mut bytes) => {
+                                self.hvp.fix(bytes.to_mut());
+                                self.parser.process(&bytes);
+                            }
                             // The cursor is wherever the preceding plain bytes
                             // left it, which is where the image belongs.
                             Piece::Image(bytes) => {
@@ -514,6 +570,40 @@ mod tests {
         assert!(p.take_images().is_empty());
         // And no part of the payload landed on the screen.
         assert!(!p.screen().contents().contains("PAYLOAD"));
+    }
+
+    #[test]
+    fn hvp_moves_the_cursor_the_way_cup_does() {
+        // vt100 implements only CUP; without the rewrite the escape is dropped
+        // and the text lands wherever the cursor happened to be.
+        let mut p = pane("printf '\\033[3;5fX\\033[0;1fY'", 40, 10);
+        assert!(pump_until(&mut p, |p| p.screen().contents().contains('X')));
+        assert_eq!(
+            p.screen().cell(2, 4).map(|c| c.contents()),
+            Some("X".into())
+        );
+        // A row or column of 0 means 1, same as for CUP.
+        assert_eq!(
+            p.screen().cell(0, 0).map(|c| c.contents()),
+            Some("Y".into())
+        );
+    }
+
+    #[test]
+    fn hvp_rewriting_survives_a_split_read_and_leaves_everything_else_alone() {
+        let mut h = Hvp::default();
+        // Split mid-sequence: the pty hands over whatever arrived.
+        let (mut a, mut b) = (b"\x1b[12".to_vec(), b";7fhi".to_vec());
+        h.fix(&mut a);
+        h.fix(&mut b);
+        assert_eq!([a, b].concat(), b"\x1b[12;7Hhi");
+
+        // Private and intermediate forms happen to end in `f`, and mean
+        // something else entirely; an `f` outside a CSI is just a letter.
+        let mut other = b"\x1b[?7f f \x1b[ f\x1bf".to_vec();
+        let before = other.clone();
+        h.fix(&mut other);
+        assert_eq!(other, before);
     }
 
     #[test]

@@ -12,6 +12,7 @@ struct Harness {
     writer: Box<dyn Write + Send>,
     parser: vt100::Parser,
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
+    sock: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -51,6 +52,10 @@ impl Harness {
         }
         cmd.env("TTMUX_CONFIG", &cfg_path);
         cmd.env("TTMUX_SESSION", "test");
+        // Its own server, in its own directory: without this every test in
+        // this file would attach to the same session and to the developer's.
+        let sock = dir.path().join("ttmux.sock");
+        cmd.env("TTMUX_SOCKET", &sock);
         let child = pair.slave.spawn_command(cmd).unwrap();
         drop(pair.slave);
 
@@ -70,6 +75,7 @@ impl Harness {
             _child: child,
             parser: vt100::Parser::new(rows, cols, 0),
             rx,
+            sock,
             _dir: dir,
         }
     }
@@ -105,6 +111,13 @@ impl Harness {
 impl Drop for Harness {
     fn drop(&mut self) {
         let _ = self._child.kill();
+        // Killing the client leaves the session server running -- that is the
+        // point of it -- so the test has to end the session as well.
+        if let Ok(mut sock) = std::os::unix::net::UnixStream::connect(&self.sock) {
+            let _ = sock.set_read_timeout(Some(Duration::from_secs(10)));
+            let _ = ttmux::proto::write_msg(&mut sock, &ttmux::proto::ClientMsg::KillServer);
+            let _ = sock.read_to_end(&mut Vec::new());
+        }
     }
 }
 
@@ -428,4 +441,52 @@ fn a_first_run_offers_the_keymap_picker_and_then_gets_out_of_the_way() {
     // The preset it wrote is live: ctrl+b % splits, ctrl+t does nothing.
     h.send(b"\x02%");
     h.wait_for("a second pane", |s| s.matches('\u{256d}').count() >= 2);
+}
+
+/// A program that positions its cursor with HVP (`CSI … f`) rather than CUP
+/// (`CSI … H`) must land where it asked. mpv's `--vo=tct` repositions with `f`
+/// once per row of every frame; with those moves dropped the frame paints as
+/// one long wrapping stream that scrolls the pane, and two half-frames end up
+/// on screen at once.
+#[test]
+fn a_pane_honours_hvp_cursor_positioning() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('\u{256d}'));
+
+    // What tct does, minus the colour: home, then one absolute move per row.
+    // Rows 3..=6 of the pane, each with a marker wide enough that a wrapping
+    // stream would visibly run them together.
+    let x = "x".repeat(68);
+    h.send(
+        format!(
+            "clear; for i in 3 4 5 6; do printf '\\033[%d;3fR%d{x}' $i $i; done; \
+             printf '\\033[9;3fDO''NE'\r"
+        )
+        .as_bytes(),
+    );
+    h.wait_for("the last write", |s| s.contains("DONE"));
+
+    // The pane's interior starts at (1, 1) of the screen and the escape's row
+    // is 1-based, so `CSI N;3f` lands on screen row N and screen column 3.
+    let lines: Vec<String> = h.screen().lines().map(str::to_string).collect();
+    // Columns, not byte offsets: the border glyph is three bytes wide.
+    let at = |row: &str, col: usize, s: &str| {
+        row.chars().skip(col).take(s.chars().count()).eq(s.chars())
+    };
+    for i in 3..=6usize {
+        assert!(
+            at(&lines[i], 3, &format!("R{i}")),
+            "row {i} did not land at column 3:\n{}",
+            h.screen()
+        );
+    }
+    assert!(at(&lines[9], 3, "DONE"), "{}", h.screen());
+    // Nothing wrapped into the rows in between.
+    assert!(
+        lines[7..9]
+            .iter()
+            .all(|l| l.trim_matches(|c| c == '\u{2502}' || c == ' ').is_empty()),
+        "content wrapped past its row:\n{}",
+        h.screen()
+    );
 }

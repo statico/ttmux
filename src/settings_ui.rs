@@ -377,21 +377,20 @@ struct Geom {
     /// Rows available for fields (footer and error line excluded).
     fields: Rect,
     error_y: u16,
-    footer_y: u16,
 }
 
+/// `area` is the whole panel; the modal chrome owns the border and the hint
+/// row, and the bottom row of what is left is the error line.
 fn geometry(area: Rect) -> Geom {
-    let inner = area.shrink(1);
+    let inner = crate::app::modal_content(area);
     let sec_w = inner.w.min(16);
     let fx = inner.x.saturating_add(sec_w).saturating_add(1);
     let fw = inner.right().saturating_sub(fx);
-    // Bottom two rows are the error line and the hint footer.
-    let rows = inner.h.saturating_sub(2);
+    let rows = inner.h.saturating_sub(1);
     Geom {
         sections: Rect::new(inner.x, inner.y, sec_w, rows),
         fields: Rect::new(fx, inner.y, fw, rows),
         error_y: inner.y.saturating_add(rows),
-        footer_y: inner.bottom().saturating_sub(1),
     }
 }
 
@@ -790,9 +789,8 @@ impl Settings {
         if area.w < 4 || area.h < 3 {
             return;
         }
-        let base = Style::default();
-        crate::render::clear(buf, area, base);
-        border(buf, area, base);
+        let base = Style::default().fg(cfg.status.fg.into());
+        crate::app::modal(buf, area, "settings", self.hint(), cfg);
         let g = geometry(area);
 
         for (i, name) in SECTIONS.iter().enumerate() {
@@ -838,21 +836,17 @@ impl Settings {
                 base.fg(Color::Red),
             );
         }
-        let hint = match self.edit {
-            Edit::Capture | Edit::CaptureNew => "press a key…  esc cancel",
-            Edit::Buffer(_) => "type to edit  enter commit  esc cancel",
-            Edit::Colour(_) => "↑↓←→ pick  tab hex/rgb  enter accept  esc cancel",
-            _ => "↑↓ move  ←→ change  enter edit  s save  esc close",
-        };
-        let inner = area.shrink(1);
-        put(
-            buf,
-            inner.x,
-            g.footer_y,
-            hint,
-            inner.w,
-            base.fg(Color::DarkGray),
-        );
+    }
+
+    /// What the modal chrome prints along the bottom.
+    fn hint(&self) -> &'static str {
+        match self.edit {
+            Edit::Capture | Edit::CaptureNew => "press a key…   esc cancel",
+            Edit::Buffer(_) => "type to edit   enter commit   esc cancel",
+            Edit::Colour(_) => "↑↓←→ pick   tab hex/rgb   enter accept   esc cancel",
+            Edit::PickAction { .. } => "type to filter   ↑↓ select   enter bind   esc cancel",
+            Edit::None => "↑↓ move   ←→ change   enter edit   s save   esc close",
+        }
     }
 
     fn draw_fields(&self, buf: &mut Buffer, r: Rect, cfg: &Config, base: Style) {
@@ -940,33 +934,6 @@ fn filtered_actions(filter: &str) -> Vec<String> {
 
 /// Heavy border, matching the help overlay: the heavy stroke marks a panel
 /// as an overlay rather than a pane.
-fn border(buf: &mut Buffer, r: Rect, style: Style) {
-    let f = crate::render::frame_chars(crate::config::BorderStyle::Heavy);
-    let (x1, y1) = (r.right().saturating_sub(1), r.bottom().saturating_sub(1));
-    let h = f.h.to_string();
-    let v = f.v.to_string();
-    for x in r.x..r.right() {
-        put(buf, x, r.y, &h, 1, style);
-        put(buf, x, y1, &h, 1, style);
-    }
-    for y in r.y..r.bottom() {
-        put(buf, r.x, y, &v, 1, style);
-        put(buf, x1, y, &v, 1, style);
-    }
-    put(buf, r.x, r.y, &f.tl.to_string(), 1, style);
-    put(buf, x1, r.y, &f.tr.to_string(), 1, style);
-    put(buf, r.x, y1, &f.bl.to_string(), 1, style);
-    put(buf, x1, y1, &f.br.to_string(), 1, style);
-    put(
-        buf,
-        r.x + 1,
-        r.y,
-        " settings ",
-        r.w.saturating_sub(2),
-        style,
-    );
-}
-
 /// Clipped single-line write. Never panics on a small buffer.
 ///
 /// ponytail: one column per char; wide (CJK) glyphs would need unicode-width.
