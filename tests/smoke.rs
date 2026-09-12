@@ -741,3 +741,18 @@ fn footer(screen: &str) -> String {
         .trim()
         .to_string()
 }
+
+#[test]
+fn a_cursor_position_query_is_answered_without_another_key() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('\u{256d}'));
+
+    // What fzf does before drawing: ask where the cursor is and block on the
+    // reply. No key follows, so only ttmux can end the wait.
+    h.send(
+        b"clear; printf '\\033[2;4H\\033[6n'; stty raw -echo; \
+          r=$(dd bs=6 count=1 2>/dev/null); stty sane; \
+          echo \"Q$(printf %s \"$r\" | tr -d '\\033')Q\"\r",
+    );
+    h.wait_for("the reply", |s| s.contains("Q[2;4RQ"));
+}

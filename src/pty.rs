@@ -31,6 +31,8 @@ const MAX_PENDING_IMAGES: usize = 32;
 struct Sink {
     title: String,
     bell: bool,
+    /// Answers to the child's terminal queries, written back after each pump.
+    replies: Vec<u8>,
 }
 
 impl vt100::Callbacks for Sink {
@@ -44,6 +46,31 @@ impl vt100::Callbacks for Sink {
             .chars()
             .filter(|c| !c.is_control())
             .collect();
+    }
+    /// The queries a program blocks on. fzf, for one, asks where the cursor
+    /// is and draws nothing until it hears back.
+    // ponytail: DSR and DA1 only; add DA2, XTVERSION or OSC colour queries
+    // when a program is found waiting on one.
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+        match (i1, c, first) {
+            (None, 'n', 5) => self.replies.extend_from_slice(b"\x1b[0n"),
+            (None, 'n', 6) => {
+                let (row, col) = screen.cursor_position();
+                self.replies
+                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            // VT220 with ANSI colour, what tmux answers too.
+            (None, 'c', 0) => self.replies.extend_from_slice(b"\x1b[?62;22c"),
+            _ => {}
+        }
     }
 }
 
@@ -292,6 +319,10 @@ impl Pane {
         }
         if got == 0 {
             return false;
+        }
+        let replies = std::mem::take(&mut self.parser.callbacks_mut().replies);
+        if !replies.is_empty() {
+            self.send(&replies);
         }
         if std::mem::take(&mut self.parser.callbacks_mut().bell) {
             self.bell = true;
@@ -728,5 +759,12 @@ mod tests {
             assert!(Instant::now() < deadline, "process group survived kill()");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn cursor_and_status_queries_are_answered() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b[3;5H\x1b[6n\x1b[5n\x1b[c\x1b[?6n");
+        assert_eq!(p.callbacks().replies, b"\x1b[3;5R\x1b[0n\x1b[?62;22c");
     }
 }
