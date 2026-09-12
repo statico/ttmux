@@ -789,7 +789,11 @@ impl Settings {
         if area.w < 4 || area.h < 3 {
             return;
         }
-        let base = Style::default().fg(cfg.status.fg.into());
+        // Every write resets its cell, so the ground has to be repainted with
+        // each of them or the panel ends up full of holes.
+        let base = Style::default()
+            .fg(cfg.status.fg.into())
+            .bg(crate::app::modal_bg(cfg));
         crate::app::modal(buf, area, "settings", self.hint(), cfg);
         let g = geometry(area);
 
@@ -841,11 +845,11 @@ impl Settings {
     /// What the modal chrome prints along the bottom.
     fn hint(&self) -> &'static str {
         match self.edit {
-            Edit::Capture | Edit::CaptureNew => "press a key…   esc cancel",
-            Edit::Buffer(_) => "type to edit   enter commit   esc cancel",
-            Edit::Colour(_) => "↑↓←→ pick   tab hex/rgb   enter accept   esc cancel",
-            Edit::PickAction { .. } => "type to filter   ↑↓ select   enter bind   esc cancel",
-            Edit::None => "↑↓ move   ←→ change   enter edit   s save   esc close",
+            Edit::Capture | Edit::CaptureNew => "press a key…  esc cancel",
+            Edit::Buffer(_) => "type to edit  enter commit  esc cancel",
+            Edit::Colour(_) => "↑↓←→ pick  tab hex/rgb  enter accept  esc cancel",
+            Edit::PickAction { .. } => "type to filter  ↑↓ select  enter bind  esc cancel",
+            Edit::None => "↑↓ move  ←→ change  enter edit  s save  esc close",
         }
     }
 

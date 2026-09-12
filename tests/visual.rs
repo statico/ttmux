@@ -237,3 +237,124 @@ fn a_floated_pane_can_be_grabbed_by_its_top_border() {
     l.drag_end();
     assert_eq!(l.rect_of(2).unwrap().y, r.y + 3);
 }
+
+// -------------------------------------------------------------- modals
+
+/// A buffer with every cell filled, the way a pane leaves it.
+fn covered(w: u16, h: u16) -> Buffer {
+    let mut buf = Buffer::empty(RRect::new(0, 0, w, h));
+    for y in 0..h {
+        for x in 0..w {
+            buf.cell_mut((x, y)).unwrap().set_symbol("X");
+        }
+    }
+    buf
+}
+
+fn row_text(buf: &Buffer, y: u16) -> String {
+    (0..buf.area.width)
+        .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+        .collect()
+}
+
+#[test]
+fn the_modal_shadow_is_two_columns_wide_and_one_row_deep() {
+    // Cells are about twice as tall as they are wide, so an even-looking
+    // shadow needs two columns on the right for every row at the bottom.
+    let cfg = Config::default();
+    let rect = Rect::new(4, 3, 20, 8);
+    let mut buf = covered(40, 16);
+    let plain = buf.cell((0u16, 0u16)).unwrap().style();
+    ttmux::app::modal(&mut buf, rect, "help", "any key to close", &cfg);
+
+    let shaded = |b: &Buffer, x: u16, y: u16| b.cell((x, y)).unwrap().style() != plain;
+    for y in rect.y + 1..=rect.bottom() {
+        assert!(shaded(&buf, rect.right(), y), "no shadow at {y} col 1");
+        assert!(shaded(&buf, rect.right() + 1, y), "no shadow at {y} col 2");
+    }
+    for x in rect.x + 1..=rect.right() + 1 {
+        assert!(shaded(&buf, x, rect.bottom()), "no shadow under column {x}");
+    }
+    // A third column, and the row under the bottom one, are untouched.
+    for y in rect.y..=rect.bottom() {
+        assert!(!shaded(&buf, rect.right() + 2, y), "shadow too wide at {y}");
+    }
+    for x in rect.x..=rect.right() + 2 {
+        assert!(
+            !shaded(&buf, x, rect.bottom() + 1),
+            "shadow too deep at {x}"
+        );
+    }
+    // The shadow stays outside: the modal's own ground is one colour.
+    let bg = buf.cell((rect.x + 2, rect.y + 2)).unwrap().style().bg;
+    for y in rect.y + 1..rect.bottom() - 1 {
+        for x in rect.x + 1..rect.right() - 1 {
+            assert_eq!(
+                buf.cell((x, y)).unwrap().style().bg,
+                bg,
+                "the shadow reached inside at {x},{y}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_modal_sits_on_its_own_ground_not_the_bar_background() {
+    // The lift is what makes it read as raised rather than as one more pane.
+    let cfg = Config::default();
+    let rect = Rect::new(2, 2, 30, 8);
+    let mut buf = covered(40, 16);
+    ttmux::app::modal(&mut buf, rect, "help", "any key to close", &cfg);
+    let bg = buf.cell((rect.x + 2, rect.y + 2)).unwrap().style().bg;
+    assert!(bg.is_some(), "the modal ground is transparent");
+    assert_ne!(bg, Some(cfg.status.bg.into()), "same ground as the bar");
+    assert_ne!(
+        bg,
+        buf.cell((0u16, 0u16)).unwrap().style().bg,
+        "same ground as the pane behind it"
+    );
+}
+
+#[test]
+fn the_hint_is_dropped_before_the_content_when_the_modal_is_tiny() {
+    let cfg = Config::default();
+    let hint = "any key to close";
+
+    let mut buf = covered(40, 16);
+    let rect = Rect::new(0, 0, 40, 10);
+    let inner = ttmux::app::modal(&mut buf, rect, "help", hint, &cfg);
+    assert!(row_text(&buf, inner.bottom()).contains(hint), "no hint");
+    assert!(row_text(&buf, rect.y).contains("help"), "no title");
+    assert!(
+        inner.bottom() < rect.bottom() - 1,
+        "the hint ate the border"
+    );
+
+    // Three rows leave one for content; the hint is what gives way.
+    let mut buf = covered(40, 16);
+    let rect = Rect::new(0, 0, 40, 3);
+    let inner = ttmux::app::modal(&mut buf, rect, "help", hint, &cfg);
+    assert_eq!(inner.h, 1, "content was traded away for the hint");
+    let screen: String = (0..3).map(|y| row_text(&buf, y)).collect();
+    assert!(!screen.contains(hint), "the hint overlapped the content");
+}
+
+#[test]
+fn every_modal_draws_at_any_size_without_panicking() {
+    let cfg = Config::default();
+    let welcome = ttmux::onboarding::Welcome::new();
+    let settings = ttmux::settings_ui::Settings::new();
+    for (w, h) in [(0, 0), (1, 1), (2, 2), (4, 3), (8, 3), (13, 5), (80, 24)] {
+        let mut buf = Buffer::empty(RRect::new(0, 0, w.max(1), h.max(1)));
+        let rect = Rect::new(0, 0, w, h);
+        for (title, hint) in [
+            ("", ""),
+            ("settings", "esc close"),
+            ("x", &"k".repeat(200)[..]),
+        ] {
+            let inner = ttmux::app::modal(&mut buf, rect, title, hint, &cfg);
+            welcome.draw(&mut buf, inner, &cfg);
+        }
+        settings.draw(&mut buf, rect, &cfg);
+    }
+}

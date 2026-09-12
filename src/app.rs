@@ -568,7 +568,7 @@ impl App {
             }
             RenameTab => {
                 self.overlay = Overlay::Prompt {
-                    label: "Rename tab".into(),
+                    label: "rename tab".into(),
                     input: self.tabs[self.tab].name.clone(),
                 }
             }
@@ -1292,9 +1292,12 @@ fn shadow(buf: &mut Buffer, rect: Rect) {
 /// Dark themes go up and light ones go down, which keeps the contrast with
 /// `status.fg` in the direction it already had. A palette colour has no
 /// arithmetic to do and leans on the border and the shadow instead.
-fn raised(c: Color) -> Color {
+///
+/// Public because anything drawing inside a modal has to paint on the same
+/// ground: [`crate::settings_ui::put`] resets each cell it writes.
+pub fn modal_bg(cfg: &Config) -> Color {
     const STEP: u8 = 20;
-    match c {
+    match cfg.status.bg.into() {
         Color::Rgb(r, g, b) => {
             let up = u16::from(r) + u16::from(g) + u16::from(b) < 384;
             let f = |v: u8| {
@@ -1314,7 +1317,7 @@ fn raised(c: Color) -> Color {
 ///
 /// `modal` and `Settings::on_mouse` both need it, so where a click lands and
 /// where a row was drawn cannot drift apart.
-pub(crate) fn modal_content(rect: Rect) -> Rect {
+pub fn modal_content(rect: Rect) -> Rect {
     let mut inner = rect.shrink(1);
     // The hint is the first thing to go: content outranks it.
     if inner.h > 2 {
@@ -1328,13 +1331,13 @@ pub(crate) fn modal_content(rect: Rect) -> Rect {
 ///
 /// One function so help, settings, the palette, the prompt, the welcome and
 /// the colour picker cannot drift into six different looks.
-pub(crate) fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config) -> Rect {
+pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config) -> Rect {
     let inner = modal_content(rect);
     if rect.w == 0 || rect.h == 0 {
         return inner;
     }
     let fg: Color = cfg.status.fg.into();
-    let bg = raised(cfg.status.bg.into());
+    let bg = modal_bg(cfg);
     shadow(buf, rect);
     render::clear(buf, rect, Style::default().bg(bg).fg(fg));
     render::draw_border(
@@ -1376,7 +1379,7 @@ pub(crate) fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: 
             inner.bottom(),
             hint,
             inner.w,
-            Style::default().fg(fg).add_modifier(Modifier::DIM),
+            Style::default().bg(bg).fg(fg).add_modifier(Modifier::DIM),
         );
     }
     inner
@@ -1408,7 +1411,7 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
         buf,
         rect,
         "commands",
-        "type to filter   ↑↓ select   enter run   esc cancel",
+        "type to filter  ↑↓ select  enter run  esc cancel",
         cfg,
     );
     let style = Style::default().fg(cfg.status.fg.into());
@@ -1450,7 +1453,7 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
         w,
         h,
     );
-    let inner = modal(buf, rect, label, "enter confirm   esc cancel", cfg);
+    let inner = modal(buf, rect, label, "enter confirm  esc cancel", cfg);
     // A 1-row area leaves the border with no interior; set_stringn would then
     // write outside the buffer.
     if inner.h == 0 {
@@ -1668,11 +1671,46 @@ mod tests {
     #[test]
     fn prompt_survives_a_short_area() {
         let cfg = Config::default();
-        for h in [1, 2] {
+        for h in [1, 2, 3, 4, 5] {
             let area = Rect::new(0, 0, 20, h);
             let mut buf = Buffer::empty(area.into());
-            draw_prompt(&mut buf, area, " rename ", "x", &cfg);
+            draw_prompt(&mut buf, area, "rename", "x", &cfg);
         }
+    }
+
+    #[test]
+    fn each_modal_says_how_to_leave_it() {
+        // Every modal is a dead end without its hint: nothing else on screen
+        // says which key gets out.
+        let cfg = Config::default();
+        let area = Rect::new(0, 0, 80, 24);
+        let read = |buf: &Buffer| -> String { buf.content().iter().map(|c| c.symbol()).collect() };
+
+        let mut buf = Buffer::empty(area.into());
+        draw_help(&mut buf, overlay_rect(area), &cfg);
+        assert!(read(&buf).contains("any key to close"), "help");
+
+        let mut buf = Buffer::empty(area.into());
+        draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
+        assert!(read(&buf).contains("enter run"), "palette");
+
+        let mut buf = Buffer::empty(area.into());
+        draw_prompt(&mut buf, area, "rename tab", "x", &cfg);
+        assert!(read(&buf).contains("esc cancel"), "prompt");
+
+        let mut buf = Buffer::empty(area.into());
+        Settings::new().draw(&mut buf, overlay_rect(area), &cfg);
+        let text = read(&buf);
+        assert!(text.contains("esc close"), "settings");
+        assert_eq!(text.matches("esc close").count(), 1, "stacked hints");
+
+        let mut buf = Buffer::empty(area.into());
+        let w = crate::onboarding::Welcome::new();
+        let inner = modal(&mut buf, overlay_rect(area), w.title(), w.hint(), &cfg);
+        w.draw(&mut buf, inner, &cfg);
+        let text = read(&buf);
+        assert!(text.contains("enter confirm"), "welcome");
+        assert_eq!(text.matches("enter confirm").count(), 1, "stacked hints");
     }
 
     #[test]
