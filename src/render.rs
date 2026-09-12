@@ -229,6 +229,18 @@ fn colour(c: vt100::Color) -> Color {
     }
 }
 
+/// Where the underline styles ratatui has no modifier for ride: bits above
+/// its own, holding `SGR 4:n`'s `n` (2 double, 3 curly, 4 dotted, 5 dashed).
+/// `UNDERLINED` is set as well, so a backend that ignores them still draws
+/// a plain underline; the client paints the rest (`client::paint_underlines`).
+const UNDERLINE_SHIFT: u16 = 12;
+
+/// The `SGR 4:n` a cell's modifier carries beyond a single underline, if any.
+pub fn underline_style(m: Modifier) -> Option<u16> {
+    let n = (m.bits() >> UNDERLINE_SHIFT) & 7;
+    (n > 1).then_some(n)
+}
+
 /// Copy a vt100 screen into `rect` (the pane's *inner* rect).
 pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bool) {
     for row in 0..rect.h {
@@ -240,13 +252,19 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
             };
             let mut style = Style::new()
                 .fg(colour(vc.fgcolor()))
-                .bg(colour(vc.bgcolor()));
+                .bg(colour(vc.bgcolor()))
+                .underline_color(colour(vc.underline_color()));
+            let ul = vc.underline_style() as u16;
             for (on, m) in [
                 (vc.bold(), Modifier::BOLD),
                 (vc.italic(), Modifier::ITALIC),
                 (vc.underline(), Modifier::UNDERLINED),
+                (ul > 1, Modifier::from_bits_retain(ul << UNDERLINE_SHIFT)),
                 (vc.inverse(), Modifier::REVERSED),
                 (vc.dim() || dim, Modifier::DIM),
+                (vc.blink(), Modifier::SLOW_BLINK),
+                (vc.hidden(), Modifier::HIDDEN),
+                (vc.strikethrough(), Modifier::CROSSED_OUT),
             ] {
                 if on {
                     style = style.add_modifier(m);
@@ -254,7 +272,9 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
             }
 
             let text = vc.contents();
-            let w = text.width().max(1) as u16;
+            // The emulator decides, so a cluster it could not widen at the
+            // margin does not swallow the cell after it.
+            let w = if vc.is_wide() { 2 } else { 1 };
             let (x, y) = (rect.x.saturating_add(col), rect.y.saturating_add(row));
             put_cell(buf, x, y, if text.is_empty() { " " } else { text }, style);
             if w == 2 {
@@ -699,6 +719,27 @@ mod tests {
         assert_eq!(sym(&buf, 1, 0), "世");
         assert_eq!(sym(&buf, 2, 0), "");
         assert_eq!(sym(&buf, 3, 0), "b");
+    }
+
+    #[test]
+    fn undercurl_and_friends_survive_the_buffer_and_the_wire() {
+        let mut p = vt100::Parser::new(2, 8, 0);
+        p.process("\x1b[4:3;58:2::255:0:0;9m⚠\u{fe0f}".as_bytes());
+        let mut buf = buffer(8, 2);
+        draw_screen(&mut buf, Rect::new(0, 0, 8, 2), p.screen(), false);
+        let cell = &buf[(0u16, 0u16)];
+        assert_eq!(cell.symbol(), "⚠\u{fe0f}");
+        assert_eq!(sym(&buf, 1, 0), "");
+        assert_eq!(cell.underline_color, Color::Rgb(255, 0, 0));
+        assert!(cell
+            .modifier
+            .contains(Modifier::CROSSED_OUT | Modifier::UNDERLINED));
+        assert_eq!(underline_style(cell.modifier), Some(3));
+        // The client learns it from JSON: the bits ratatui has no name for
+        // must come back.
+        let json = serde_json::to_string(&cell.style()).unwrap();
+        let back: Style = serde_json::from_str(&json).unwrap();
+        assert_eq!(underline_style(back.add_modifier), Some(3), "{json}");
     }
 
     #[test]
