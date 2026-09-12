@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-12
 
 - Scripting API: `ttmux send-keys`, `split-window`, `select-pane`,
   `list-panes`, `rename-window`, `display-message`, `run ACTION` and more,
