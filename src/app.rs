@@ -1059,8 +1059,11 @@ fn panel(buf: &mut Buffer, rect: Rect, title: &str, cfg: &Config) -> Rect {
         true,
         false,
         false,
+        // Heavy glyphs: an overlay is a different kind of thing from a pane,
+        // and the doubled stroke says so even when the accent colour does not.
         &crate::config::Appearance {
             border_focused: cfg.status.accent,
+            border_style: crate::config::BorderStyle::Heavy,
             ..cfg.appearance.clone()
         },
     );
@@ -1299,5 +1302,24 @@ mod tests {
         let mut buf = filled();
         Settings::new().draw(&mut buf, rect, &cfg);
         assert_opaque(&buf, "settings");
+    }
+
+    #[test]
+    fn overlays_use_a_heavy_border_whatever_the_panes_use() {
+        // The doubled stroke is what tells an overlay apart from a pane, so it
+        // must not follow the configured pane border style.
+        let mut cfg = Config::default();
+        cfg.appearance.border_style = crate::config::BorderStyle::Curved;
+        let area = Rect::new(0, 0, 80, 24);
+        let rect = overlay_rect(area);
+        let corner = |buf: &Buffer| buf.cell((rect.x, rect.y)).unwrap().symbol().to_string();
+
+        let mut buf = Buffer::empty(area.into());
+        draw_help(&mut buf, rect, &cfg);
+        assert_eq!(corner(&buf), "\u{250f}", "help");
+
+        let mut buf = Buffer::empty(area.into());
+        Settings::new().draw(&mut buf, rect, &cfg);
+        assert_eq!(corner(&buf), "\u{250f}", "settings");
     }
 }
