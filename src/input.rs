@@ -60,7 +60,7 @@ impl Keys {
 
     /// `resolve` with an injectable clock, so the timeout is testable.
     ///
-    /// Note the double-prefix case: `ctrl+a ctrl+a` is not a binding, so it
+    /// Note the double-prefix case: `ctrl+t ctrl+t` is not a binding, so it
     /// comes back as `Passthrough` with `pending()` false. The app then sends
     /// the literal key to the pane by calling [`encode_key`] on the event it
     /// just passed in — which is exactly the tmux "send the prefix" behaviour.
@@ -268,7 +268,7 @@ mod tests {
     fn prefix_then_key_runs_the_binding() {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
-        assert_eq!(k.resolve_at(ctrl('a'), t), Resolution::Pending);
+        assert_eq!(k.resolve_at(ctrl('t'), t), Resolution::Pending);
         assert!(k.pending());
         assert_eq!(
             k.resolve_at(ch('%'), t),
@@ -281,7 +281,7 @@ mod tests {
     fn prefix_expires_after_the_timeout() {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
-        assert_eq!(k.resolve_at(ctrl('a'), t), Resolution::Pending);
+        assert_eq!(k.resolve_at(ctrl('t'), t), Resolution::Pending);
         let late = t + Duration::from_millis(2000);
         // `%` on its own is not bound, so the stale prefix is simply dropped.
         assert_eq!(k.resolve_at(ch('%'), late), Resolution::Passthrough);
@@ -292,7 +292,7 @@ mod tests {
     fn unbound_key_after_prefix_passes_through() {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
-        k.resolve_at(ctrl('a'), t);
+        k.resolve_at(ctrl('t'), t);
         assert_eq!(k.resolve_at(ch('9'), t), Resolution::Passthrough);
         assert!(!k.pending());
     }
@@ -301,8 +301,8 @@ mod tests {
     fn double_prefix_passes_through_for_literal_forwarding() {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
-        k.resolve_at(ctrl('a'), t);
-        assert_eq!(k.resolve_at(ctrl('a'), t), Resolution::Passthrough);
+        k.resolve_at(ctrl('t'), t);
+        assert_eq!(k.resolve_at(ctrl('t'), t), Resolution::Passthrough);
         assert!(!k.pending());
         assert_eq!(encode_key(ctrl('a'), false), b"\x01");
     }
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn reload_clears_pending_state() {
         let mut k = Keys::new(&Config::default());
-        k.resolve_at(ctrl('a'), Instant::now());
+        k.resolve_at(ctrl('t'), Instant::now());
         k.reload(&Config::default());
         assert!(!k.pending());
     }

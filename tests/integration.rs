@@ -42,11 +42,11 @@ fn default_keys_drive_the_default_layout() {
     let cfg = Config::default();
     let mut keys = Keys::new(&cfg);
     assert_eq!(
-        keys.resolve(key('a', KeyModifiers::CONTROL)),
+        keys.resolve(key('t', KeyModifiers::CONTROL)),
         Resolution::Pending
     );
-    let Resolution::Action(action) = keys.resolve(key('%', KeyModifiers::NONE)) else {
-        panic!("prefix + % should split");
+    let Resolution::Action(action) = keys.resolve(key('v', KeyModifiers::NONE)) else {
+        panic!("prefix + v should split");
     };
     assert_eq!(action, Action::Split(Dir::Right));
 
@@ -176,7 +176,7 @@ fn config_survives_a_save_load_round_trip_with_edits() {
     cfg.general.scrollback = 500;
     cfg.status.left = vec!["session".into(), "host".into()];
     cfg.keys
-        .insert("ctrl+a g".into(), "toggle-layout-mode".into());
+        .insert("ctrl+t g".into(), "toggle-layout-mode".into());
     cfg.save(&path).unwrap();
 
     let loaded = Config::load(&path).unwrap();
@@ -185,7 +185,7 @@ fn config_survives_a_save_load_round_trip_with_edits() {
     // And the new binding actually works.
     let mut keys = Keys::new(&loaded);
     assert_eq!(
-        keys.resolve(key('a', KeyModifiers::CONTROL)),
+        keys.resolve(key('t', KeyModifiers::CONTROL)),
         Resolution::Pending
     );
     assert_eq!(

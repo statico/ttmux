@@ -11,7 +11,7 @@ usage: ttmux [options]
     -h, --help            show this message
     -V, --version         show the version
 
-Everything else is configured from inside ttmux: press ctrl+a s.
+Everything else is configured from inside ttmux: press ctrl+t ,.
 ";
 
 fn main() -> ExitCode {
