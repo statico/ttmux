@@ -314,8 +314,8 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         // Also one-shot: a script hands over a command, reads the answer and
         // leaves. It never becomes a viewer, so it never resizes the session.
         Ok(Some(ClientMsg::Command(argv))) => {
-            let (ok, text) = run_command(&hub, argv);
-            let _ = proto::write_msg(&mut out, &ServerMsg::Reply { ok, text });
+            let (code, text) = run_command(&hub, argv);
+            let _ = proto::write_msg(&mut out, &ServerMsg::Reply { code, text });
             return;
         }
         _ => return,
@@ -394,10 +394,10 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 park();
             }
             Ok(Some(ClientMsg::Command(argv))) => {
-                let (ok, text) = run_command(&hub, argv);
+                let (code, text) = run_command(&hub, argv);
                 let st = hub.state.lock().unwrap();
                 if let Some(c) = st.clients.iter().find(|c| c.id == id) {
-                    let _ = c.tx.try_send(ServerMsg::Reply { ok, text });
+                    let _ = c.tx.try_send(ServerMsg::Reply { code, text });
                 }
             }
             Ok(None) | Err(_) => break,
@@ -408,24 +408,24 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
 
 /// Parse one scripted command and run it on the app thread, waiting for the
 /// answer. Parse errors never reach the app: they are the script's mistake.
-fn run_command(hub: &Hub, argv: Vec<String>) -> (bool, String) {
+fn run_command(hub: &Hub, argv: Vec<String>) -> (u8, String) {
     let Some((verb, args)) = argv.split_first() else {
-        return (false, "no command".into());
+        return (script::EXIT_USAGE, "no command".into());
     };
     let cmd = match script::parse(verb, args) {
         Ok(c) => c,
-        Err(e) => return (false, format!("{e:#}")),
+        Err(e) => return (script::EXIT_USAGE, format!("{e:#}")),
     };
     let (tx, rx) = mpsc::sync_channel(1);
     if hub.jobs.send(ScriptJob { cmd, reply: tx }).is_err() {
-        return (false, "session is shutting down".into());
+        return (script::EXIT_ERROR, "session is shutting down".into());
     }
     // The app answers within a tick; a longer wait means it is wedged, and a
     // script that hangs forever is worse than one that reports it.
     match rx.recv_timeout(Duration::from_secs(5)) {
-        Ok(Ok(text)) => (true, text),
-        Ok(Err(e)) => (false, e),
-        Err(_) => (false, "session did not answer".into()),
+        Ok(Ok(text)) => (script::EXIT_OK, text),
+        Ok(Err(e)) => (script::EXIT_ERROR, e),
+        Err(_) => (script::EXIT_ERROR, "session did not answer".into()),
     }
 }
 

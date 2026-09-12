@@ -527,43 +527,36 @@ impl Layout {
 
     /// Swap a pane with the next one in `ids()` order.
     pub fn swap_next(&mut self, id: PaneId) {
-        let Some(other) = self.next(id) else { return };
-        if other == id {
-            return;
+        if let Some(other) = self.next(id) {
+            self.swap(id, other);
+        }
+    }
+
+    /// Exchange the positions of two panes, tiled or floating.
+    pub fn swap(&mut self, a: PaneId, b: PaneId) -> bool {
+        let ids = self.ids();
+        if a == b || !ids.contains(&a) || !ids.contains(&b) {
+            return false;
         }
         if let Some(root) = self.root.as_mut() {
-            swap_leaves(root, id, other);
+            swap_leaves(root, a, b);
         }
-        let a = self.rects.remove(&id);
-        let b = self.rects.remove(&other);
-        if let Some(b) = b {
-            self.rects.insert(id, b);
-        }
-        if let Some(a) = a {
-            self.rects.insert(other, a);
-        }
-        let da = self.desired.remove(&id);
-        let db = self.desired.remove(&other);
-        if let Some(db) = db {
-            self.desired.insert(id, db);
-        }
-        if let Some(da) = da {
-            self.desired.insert(other, da);
-        }
-        for p in self.z.iter_mut() {
-            if *p == id {
-                *p = other;
-            } else if *p == other {
-                *p = id;
+        swap_entry(&mut self.rects, a, b);
+        swap_entry(&mut self.desired, a, b);
+        for p in self.z.iter_mut().chain(self.explicit.iter_mut()) {
+            if *p == a {
+                *p = b;
+            } else if *p == b {
+                *p = a;
             }
         }
-        for p in self.explicit.iter_mut() {
-            if *p == id {
-                *p = other;
-            } else if *p == other {
-                *p = id;
-            }
+        // The zoom is on the slot, not the pane, so it follows the swap.
+        if self.zoomed == Some(a) {
+            self.zoomed = Some(b);
+        } else if self.zoomed == Some(b) {
+            self.zoomed = Some(a);
         }
+        true
     }
 
     /// Rebuild the tree in a canned arrangement, keeping pane order.
@@ -1095,6 +1088,17 @@ impl Layout {
 }
 
 // ------------------------------------------------------------ free functions
+
+/// Give each of the two ids whatever the other had, keeping absent entries absent.
+fn swap_entry<V>(map: &mut HashMap<PaneId, V>, a: PaneId, b: PaneId) {
+    let (va, vb) = (map.remove(&a), map.remove(&b));
+    if let Some(v) = vb {
+        map.insert(a, v);
+    }
+    if let Some(v) = va {
+        map.insert(b, v);
+    }
+}
 
 fn overlap(a0: u16, a1: u16, b0: u16, b1: u16) -> u16 {
     a1.min(b1).saturating_sub(a0.max(b0))
@@ -2115,5 +2119,44 @@ mod tests {
         assert!(!r.intersects(&Rect::new(12, 3, 4, 4)));
         let rt: ratatui::layout::Rect = r.into();
         assert_eq!(Rect::from(rt), r);
+    }
+
+    #[test]
+    fn swap_exchanges_the_rects_of_two_tiled_panes() {
+        let mut l = grid();
+        let (a, b) = (l.rect_of(1).unwrap(), l.rect_of(4).unwrap());
+        assert!(l.swap(1, 4));
+        assert_eq!(l.rect_of(1), Some(b));
+        assert_eq!(l.rect_of(4), Some(a));
+        assert_exact(&l);
+    }
+
+    #[test]
+    fn swap_is_a_no_op_for_an_unknown_pane() {
+        let mut l = grid();
+        let before = l.geometry();
+        assert!(!l.swap(1, 99));
+        assert!(!l.swap(2, 2));
+        assert_eq!(l.geometry(), before);
+    }
+
+    #[test]
+    fn swapping_a_float_with_a_tile_exchanges_which_one_floats() {
+        let mut l = grid();
+        l.toggle_float(2);
+        let (float, tiled) = (l.rect_of(2).unwrap(), l.rect_of(3).unwrap());
+        assert!(l.swap(2, 3));
+        assert!(l.is_floating(3) && !l.is_floating(2));
+        assert_eq!(l.rect_of(3), Some(float));
+        assert_eq!(l.rect_of(2), Some(tiled));
+    }
+
+    #[test]
+    fn swapping_the_zoomed_pane_keeps_the_zoom_on_its_slot() {
+        let mut l = grid();
+        l.set_zoom(Some(1));
+        assert!(l.swap(1, 4));
+        assert_eq!(l.zoomed, Some(4));
+        assert_eq!(l.geometry(), vec![(4, AREA)]);
     }
 }

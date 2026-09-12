@@ -333,6 +333,8 @@ pub struct General {
     pub prefix_timeout_ms: u64,
     /// Stock keymap that `keys` overrides sit on top of.
     pub keys_preset: KeysPreset,
+    /// Show the which-key hint popup while waiting for the chord after the prefix.
+    pub which_key: bool,
 }
 
 impl Default for General {
@@ -347,6 +349,7 @@ impl Default for General {
             passthrough_images: true,
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
+            which_key: true,
         }
     }
 }
@@ -691,6 +694,25 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
 ///
 /// A terminal tool belongs in `~/.config` on macOS too — nobody edits
 /// `~/Library/Application Support` by hand.
+/// Write the config readable only by its owner. Widget commands live in it
+/// and ttmux runs them with `sh -c`, so who can edit the file is who can run
+/// code as this user.
+pub fn write_private(path: &Path, text: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(text.as_bytes())?;
+    Ok(())
+}
+
 pub fn config_path() -> PathBuf {
     if let Ok(p) = std::env::var("TTMUX_CONFIG") {
         return PathBuf::from(p);
@@ -727,11 +749,7 @@ impl Config {
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
-        Ok(())
+        write_private(path, &toml::to_string_pretty(self)?)
     }
 
     /// The preset resolved, then `keys` applied on top. An override whose

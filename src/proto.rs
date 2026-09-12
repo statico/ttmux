@@ -65,10 +65,10 @@ pub enum ServerMsg {
     /// Leave, and say why. The client restores the terminal and exits.
     Bye(String),
     Error(String),
-    /// The answer to a `Command`. `ok` is the process exit status the client
-    /// turns it into; `text` is what it prints.
+    /// The answer to a `Command`. `code` is the exit status the client takes,
+    /// from `script::EXIT_*`; `text` is what it prints.
     Reply {
-        ok: bool,
+        code: u8,
         text: String,
     },
 }

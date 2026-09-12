@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use anyhow::{bail, Result};
+use ttmux::script;
 
 const USAGE: &str = "\
 ttmux — a modern terminal multiplexer
@@ -56,7 +57,7 @@ fn run() -> Result<ExitCode> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}\n{}", ttmux::script::USAGE);
+                print!("{USAGE}\n{}", script::usage());
                 return Ok(ExitCode::SUCCESS);
             }
             "-V" | "--version" => {
@@ -136,29 +137,56 @@ fn run() -> Result<ExitCode> {
         // Scripting: hand the words to the session and print what it says.
         // The verbs and their arguments are tmux's, so `-t` here names a
         // pane or a window, not a session.
-        other if ttmux::script::is_command(other) => {
-            let (ok, text) = ttmux::client::command(&default_session(), &{
-                let mut argv = vec![other.to_string()];
-                argv.extend(rest);
-                argv
-            })?;
-            if !text.is_empty() {
-                if ok {
-                    println!("{text}");
-                } else {
-                    eprintln!("ttmux: {text}");
-                }
-            }
-            if !ok {
-                return Ok(ExitCode::FAILURE);
-            }
+        other if script::is_command(other) => {
+            return Ok(script_command(other, rest));
         }
-        other => bail!(
-            "unknown command {other}\n\n{USAGE}\n{}",
-            ttmux::script::USAGE
-        ),
+        other => bail!("unknown command {other}\n\n{USAGE}\n{}", script::usage()),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Run one scripting command and print the answer. Two of them never need a
+/// session: `--help` is documentation, and `list-commands` is how an agent
+/// learns the API before anything is running.
+fn script_command(verb: &str, rest: Vec<String>) -> ExitCode {
+    // An alias has no help of its own, so it falls through to the session,
+    // which knows what it expands to.
+    if rest.iter().any(|a| a == "-h" || a == "--help") {
+        if let Some(text) = script::help(verb) {
+            print!("{text}");
+            return ExitCode::SUCCESS;
+        }
+    }
+    if verb == "list-commands" {
+        if rest.iter().any(|a| a == "--json") {
+            print!("{}", script::commands_json());
+        } else {
+            print!("{}", script::usage());
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let argv: Vec<String> = std::iter::once(verb.to_string()).chain(rest).collect();
+    let (code, text) = match ttmux::client::command(&default_session(), &argv) {
+        Ok(r) => r,
+        Err(e) => (script::EXIT_ERROR, format!("{e:#}")),
+    };
+    if !text.is_empty() {
+        if code == script::EXIT_OK {
+            print!("{}", ends_with_newline(text));
+        } else {
+            eprintln!("ttmux: {}", text.trim_end());
+        }
+    }
+    ExitCode::from(code)
+}
+
+/// Listings already end in a newline; a one-line answer does not.
+fn ends_with_newline(mut text: String) -> String {
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text
 }
 
 /// The session name a verb was given, e.g. `-t work`. `-d` is a flag, not a
