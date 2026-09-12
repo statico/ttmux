@@ -318,6 +318,57 @@ fn free_mode_lets_a_pane_be_dragged_around() {
 }
 
 #[test]
+fn a_script_types_into_a_pane_and_lists_what_it_finds() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('\u{256d}'));
+
+    // Same socket and session the running server is on, which is all a
+    // script inside a pane inherits from its environment.
+    let run = |h: &Harness, args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))
+            .args(args)
+            .env("TTMUX_CONFIG", &h.cfg)
+            .env("TTMUX_SOCKET", &h.sock)
+            .env("TTMUX_SESSION", "test")
+            .output()
+            .unwrap();
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        )
+    };
+
+    let (ok, out) = run(&h, &["list-panes"]);
+    assert!(
+        ok && out.lines().count() == 1 && out.contains("(active)"),
+        "{out:?}"
+    );
+
+    // The keys land in the shell, which means they went down the same path a
+    // keystroke does: `Enter` is a key name, the rest is text.
+    let (ok, _) = run(&h, &["send-keys", "echo scripted-ok", "Enter"]);
+    assert!(ok);
+    h.wait_for("the scripted command's output", |s| {
+        s.matches("scripted-ok").count() > 1
+    });
+
+    let (ok, _) = run(&h, &["split-window"]);
+    assert!(ok);
+    h.wait_for("a second pane", |s| s.matches('\u{256d}').count() > 1);
+    let (ok, out) = run(&h, &["list-panes"]);
+    assert!(ok && out.lines().count() == 2, "{out:?}");
+
+    let (ok, _) = run(&h, &["rename-window", "scripted"]);
+    assert!(ok);
+    h.wait_for("the new window name", |s| s.contains("scripted"));
+
+    // A target that is not there is an error, not a silent hit on another
+    // pane.
+    let (ok, _) = run(&h, &["send-keys", "-t", "%99", "x"]);
+    assert!(!ok);
+}
+
+#[test]
 fn the_cli_answers_without_a_terminal() {
     let run = |args: &[&str]| {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))

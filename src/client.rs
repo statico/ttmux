@@ -216,7 +216,25 @@ fn paint_loop(sock: &mut UnixStream) -> Result<()> {
             }
             ServerMsg::Bye(_) => return Ok(()),
             ServerMsg::Error(e) => bail!("{e}"),
+            // Only a one-shot command connection gets one of these, and it
+            // never runs the paint loop.
+            ServerMsg::Reply { .. } => {}
         }
+    }
+}
+
+/// Run one scripting command against `session` and hand back the exit status
+/// and what to print.
+pub fn command(session: &str, argv: &[String]) -> Result<(bool, String)> {
+    let path = proto::socket_path(session)?;
+    let mut sock =
+        UnixStream::connect(&path).with_context(|| format!("no server for session {session:?}"))?;
+    proto::write_msg(&mut sock, &ClientMsg::Command(argv.to_vec()))?;
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(10)));
+    match proto::read_msg::<_, ServerMsg>(&mut sock)? {
+        Some(ServerMsg::Reply { ok, text }) => Ok((ok, text)),
+        Some(ServerMsg::Error(e)) => Ok((false, e)),
+        _ => bail!("session {session:?} did not answer"),
     }
 }
 

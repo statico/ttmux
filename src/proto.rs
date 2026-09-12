@@ -44,6 +44,9 @@ pub enum ClientMsg {
     Input(crossterm::event::Event),
     Detach,
     KillServer,
+    /// One scripting command and its arguments, already split by the shell.
+    /// A command is a whole connection: no hello, no view, one reply.
+    Command(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +65,12 @@ pub enum ServerMsg {
     /// Leave, and say why. The client restores the terminal and exits.
     Bye(String),
     Error(String),
+    /// The answer to a `Command`. `ok` is the process exit status the client
+    /// turns it into; `text` is what it prints.
+    Reply {
+        ok: bool,
+        text: String,
+    },
 }
 
 // ------------------------------------------------------------------ framing

@@ -24,6 +24,9 @@ options:
     -V, --version         show the version
 
 Everything else is configured from inside ttmux: press ctrl+t ,.
+
+Scripting commands act on the session named by $TTMUX_SESSION, which every
+pane already has set:
 ";
 
 /// The session `ttmux` with no `-t` means. `$TTMUX_SESSION` is what the app
@@ -53,7 +56,7 @@ fn run() -> Result<ExitCode> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
-                print!("{USAGE}");
+                print!("{USAGE}\n{}", ttmux::script::USAGE);
                 return Ok(ExitCode::SUCCESS);
             }
             "-V" | "--version" => {
@@ -130,7 +133,30 @@ fn run() -> Result<ExitCode> {
             }
             ttmux::proto::cleanup_stale();
         }
-        other => bail!("unknown command {other}\n\n{USAGE}"),
+        // Scripting: hand the words to the session and print what it says.
+        // The verbs and their arguments are tmux's, so `-t` here names a
+        // pane or a window, not a session.
+        other if ttmux::script::is_command(other) => {
+            let (ok, text) = ttmux::client::command(&default_session(), &{
+                let mut argv = vec![other.to_string()];
+                argv.extend(rest);
+                argv
+            })?;
+            if !text.is_empty() {
+                if ok {
+                    println!("{text}");
+                } else {
+                    eprintln!("ttmux: {text}");
+                }
+            }
+            if !ok {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+        other => bail!(
+            "unknown command {other}\n\n{USAGE}\n{}",
+            ttmux::script::USAGE
+        ),
     }
     Ok(ExitCode::SUCCESS)
 }

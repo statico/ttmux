@@ -13,6 +13,7 @@ pub mod onboarding;
 pub mod proto;
 pub mod pty;
 pub mod render;
+pub mod script;
 pub mod server;
 pub mod settings_ui;
 pub mod status;
