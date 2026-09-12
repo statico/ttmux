@@ -2,6 +2,7 @@
 pub mod action;
 pub mod agent;
 pub mod app;
+pub mod color_picker;
 pub mod config;
 pub mod graphics;
 pub mod input;
