@@ -64,6 +64,10 @@ struct State {
     screen: Buffer,
     cursor: Option<(u16, u16)>,
     next_id: u64,
+    /// Held so shutdown can wait for the last frame to reach the wire. A
+    /// writer killed mid-frame hands its client a truncated one, which the
+    /// client reports as an error rather than as the session ending.
+    writers: Vec<thread::JoinHandle<()>>,
 }
 
 /// Everything the client threads, the backend and the host share.
@@ -301,9 +305,12 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         _ => return,
     };
     let _ = rd.set_read_timeout(None);
+    // A client that stops reading must not wedge the writer: the queue fills,
+    // the socket buffer fills, and then shutdown waits on a thread that is
+    // blocked forever. A client this far behind is gone.
+    let _ = out.set_write_timeout(Some(Duration::from_secs(2)));
 
     let (tx, rx) = mpsc::sync_channel(QUEUE);
-    let reply = tx.clone();
     let id = {
         let mut st = hub.state.lock().unwrap();
         let id = st.next_id;
@@ -326,15 +333,16 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         id
     };
     {
-        let hub = hub.clone();
-        thread::spawn(move || {
+        let inner = hub.clone();
+        let writer = thread::spawn(move || {
             for msg in rx {
                 if proto::write_msg(&mut out, &msg).is_err() {
                     break;
                 }
             }
-            hub.drop_client(id);
+            inner.drop_client(id);
         });
+        hub.state.lock().unwrap().writers.push(writer);
     }
 
     loop {
@@ -354,7 +362,14 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 let _ = hub.events.send(ev);
             }
             Ok(Some(ClientMsg::Detach)) => {
-                let _ = reply.try_send(ServerMsg::Bye("detached".into()));
+                // Through the client entry rather than a sender of our own:
+                // a clone held here outlives `park()` below, and shutdown
+                // waits on the writer that the last sender keeps alive.
+                let st = hub.state.lock().unwrap();
+                if let Some(c) = st.clients.iter().find(|c| c.id == id) {
+                    let _ = c.tx.try_send(ServerMsg::Bye("detached".into()));
+                }
+                drop(st);
                 break;
             }
             Ok(Some(ClientMsg::Hello { .. })) => {}
@@ -517,6 +532,7 @@ fn run(listener: UnixListener) -> Result<()> {
             screen: Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
             cursor: None,
             next_id: 1,
+            writers: vec![],
         }),
         events: tx,
         kill: AtomicBool::new(false),
@@ -553,5 +569,12 @@ fn run(listener: UnixListener) -> Result<()> {
     // Dropping the app kills every pane and its process group.
     drop(app);
     hub.detach_all("server exiting");
+    // `detach_all` dropped every sender, so each writer ends once it has
+    // drained. Joining outside the lock, because the writers take it on the
+    // way out.
+    let writers = std::mem::take(&mut hub.state.lock().unwrap().writers);
+    for w in writers {
+        let _ = w.join();
+    }
     result
 }
