@@ -614,6 +614,16 @@ impl App {
                 self.set_focus(id);
                 Ok(String::new())
             }
+            Cmd::ZoomPane { target } => {
+                // tmux zooms the pane you name, so the focus follows it: a
+                // zoomed pane nobody is typing into is not what was asked for.
+                let id = self.pane_or_focus(target)?;
+                let tab = self.tab_of(id)?;
+                self.select_tab(tab);
+                self.set_focus(id);
+                self.dispatch(Action::ToggleZoom)?;
+                Ok(String::new())
+            }
             Cmd::ResizePane { target, dir, n } => {
                 let id = self.pane_or_focus(target)?;
                 let tab = self.tab_of(id)?;
@@ -839,34 +849,7 @@ impl App {
     }
 
     fn list_sessions(&self, json: bool) -> String {
-        let rows: Vec<(String, bool)> = crate::proto::list_sessions()
-            .into_iter()
-            .map(|(name, path)| (name, crate::proto::is_live(&path)))
-            .collect();
-        if json {
-            let sessions: Vec<serde_json::Value> = rows
-                .iter()
-                .map(|(name, live)| {
-                    serde_json::json!({
-                        "name": name,
-                        "live": live,
-                        "attached": *name == self.session,
-                    })
-                })
-                .collect();
-            return json_line(&serde_json::json!({ "sessions": sessions }));
-        }
-        let mut out = String::new();
-        for (name, live) in rows {
-            let live = if live { "live" } else { "stale" };
-            let here = if name == self.session {
-                " (this one)"
-            } else {
-                ""
-            };
-            let _ = writeln!(out, "{name}: {live}{here}");
-        }
-        out
+        crate::proto::sessions_report(json, Some(&self.session))
     }
 
     fn list_keys(&self, json: bool) -> String {

@@ -489,6 +489,22 @@ fn alias(verb: &str) -> Option<(&'static str, &'static [&'static str])> {
     })
 }
 
+/// Whether a command offers `--json`. The CLI asks too, so `-h` and
+/// `--json` mean the same thing in both places.
+pub fn takes_json(verb: &str) -> bool {
+    has_flag(verb, "--json")
+}
+
+/// Whether a command declares a flag by either of its spellings.
+pub fn has_flag(verb: &str, name: &str) -> bool {
+    let real = alias(verb).map_or(verb, |(real, _)| real);
+    spec(real).is_some_and(|s| {
+        s.flags
+            .iter()
+            .any(|f| f.long == name || f.short == Some(name))
+    })
+}
+
 /// The whole command list, grouped, for `ttmux --help`.
 pub fn usage() -> String {
     let mut out = String::from("scripting commands:\n");
@@ -511,7 +527,9 @@ pub fn usage() -> String {
 
 /// Help for one command: what it does, its flags, and examples.
 pub fn help(name: &str) -> Option<String> {
-    let c = spec(name)?;
+    // An alias documents itself with the help of what it expands to; there
+    // is nothing else to say about it.
+    let c = spec(alias(name).map_or(name, |(real, _)| real))?;
     let mut out = format!("{}\n\nusage: ttmux {}\n", c.about, c.usage());
     if !c.flags.is_empty() {
         out.push_str("\nflags:\n");
@@ -587,6 +605,10 @@ pub enum Cmd {
         dir: Dir,
     },
     SelectPane(PaneId),
+    /// Zoom a pane, which is a resize to the whole window.
+    ZoomPane {
+        target: Option<PaneId>,
+    },
     ResizePane {
         target: Option<PaneId>,
         dir: Dir,
@@ -686,7 +708,9 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         return parse(real, &all);
     }
     let mut a = Args::new(args);
-    let json = a.flag(&["--json"]);
+    // Only the commands that offer `--json` may eat it. Anywhere else it is
+    // a stray word, and `end` has to still be able to see it and complain.
+    let json = takes_json(verb) && a.flag(&["--json"]);
     let cmd = match verb {
         "send-keys" => {
             let target = a.pane_target()?;
@@ -748,7 +772,7 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             let n = a.number()?;
             a.end(verb)?;
             match (zoom, dir) {
-                (true, _) => Cmd::Run(Action::ToggleZoom),
+                (true, _) => Cmd::ZoomPane { target },
                 (false, Some(dir)) => Cmd::ResizePane {
                     target,
                     dir,
@@ -907,6 +931,9 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "run" => {
             let spec = a.joined();
+            if spec.trim().is_empty() {
+                bail!("run needs an action; `ttmux list-keys` prints them all");
+            }
             match Action::from_str(&spec) {
                 Ok(action) => Cmd::Run(action),
                 Err(e) => bail!("run: {e}"),
@@ -1181,7 +1208,7 @@ mod tests {
                 n: 10
             }
         );
-        assert_eq!(parsed("resize-pane -Z"), Cmd::Run(Action::ToggleZoom));
+        assert_eq!(parsed("resize-pane -Z"), Cmd::ZoomPane { target: None });
         assert!(fails("resize-pane 4"));
     }
 
@@ -1301,6 +1328,52 @@ mod tests {
     }
 
     /// Split on spaces, keeping '...' together, the way a shell would.
+    #[test]
+    fn json_is_only_swallowed_by_the_commands_that_offer_it() {
+        // `-h` is --horizontal to split-window, and --json is a stray word
+        // to send-keys. A flag one command owns is text to another.
+        assert!(takes_json("list-panes"));
+        assert!(
+            takes_json("lsp"),
+            "an alias inherits the flags it expands to"
+        );
+        assert!(!takes_json("send-keys"));
+        assert!(has_flag("split-window", "-h"));
+        assert!(has_flag("join-pane", "-h"));
+        assert!(!has_flag("kill-pane", "-h"));
+
+        // --json reaches the pane as text rather than vanishing.
+        let Cmd::SendKeys { keys, .. } = parse("send-keys", &split("-l --json")).unwrap() else {
+            panic!("not send-keys")
+        };
+        assert_eq!(keys.len(), "--json".len());
+        assert!(parse("kill-pane", &split("--json")).is_err());
+    }
+
+    #[test]
+    fn zoom_zooms_the_pane_it_was_given() {
+        assert_eq!(
+            parse("resize-pane", &split("-t %3 -Z")).unwrap(),
+            Cmd::ZoomPane { target: Some(3) }
+        );
+        assert_eq!(
+            parse("resize-pane", &split("-Z")).unwrap(),
+            Cmd::ZoomPane { target: None }
+        );
+    }
+
+    #[test]
+    fn an_alias_borrows_the_help_of_what_it_expands_to() {
+        assert_eq!(help("lsp"), help("list-panes"));
+        assert!(help("display").unwrap().contains("display-message"));
+    }
+
+    #[test]
+    fn run_with_no_action_is_an_error_rather_than_a_no_op() {
+        assert!(parse("run", &[]).is_err());
+        assert!(parse("run", &split("   ")).is_err());
+    }
+
     #[test]
     fn every_command_has_help_and_appears_in_the_usage() {
         let all = usage();
