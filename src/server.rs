@@ -7,9 +7,10 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -440,26 +441,61 @@ pub fn spawn(session: &str) -> Result<()> {
         0 => {}
         _ => unsafe { libc::_exit(0) },
     }
-    devnull();
+    redirect_stdio(&log_path(session));
     let code = i32::from(serve(listener, &path).is_err());
     unsafe { libc::_exit(code) }
 }
 
+/// Where the daemon's stderr goes. `$TTMUX_LOG` overrides it.
+pub fn log_path(session: &str) -> PathBuf {
+    if let Some(p) = std::env::var_os("TTMUX_LOG") {
+        return PathBuf::from(p);
+    }
+    proto::socket_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("{session}.log"))
+}
+
 /// stdio still points at the user's terminal until this runs, and the daemon
 /// writing to it would scribble over the client's screen.
-fn devnull() {
+///
+/// stderr goes to a file rather than to /dev/null: a panic in a detached
+/// session is otherwise completely silent, which leaves a crash with no
+/// evidence at all.
+fn redirect_stdio(log: &Path) {
     unsafe {
-        let fd = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null >= 0 {
+            libc::dup2(null, 0);
+            libc::dup2(null, 1);
+            if null > 2 {
+                libc::close(null);
+            }
+        }
+        let Ok(c) = std::ffi::CString::new(log.as_os_str().as_bytes()) else {
+            return;
+        };
+        let fd = libc::open(
+            c.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o600,
+        );
         if fd < 0 {
+            if null >= 0 {
+                libc::dup2(null, 2);
+            }
             return;
         }
-        for target in 0..3 {
-            libc::dup2(fd, target);
-        }
+        libc::dup2(fd, 2);
         if fd > 2 {
             libc::close(fd);
         }
     }
+    eprintln!(
+        "--- ttmux {} started, pid {}",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
 }
 
 /// Run the session until it quits. Consumes the already-bound listener.
