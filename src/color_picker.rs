@@ -183,7 +183,12 @@ impl Picker {
     }
 
     pub fn on_mouse(&mut self, ev: MouseEvent, r: Rect) -> Outcome {
-        if !matches!(ev.kind, MouseEventKind::Down(MouseButton::Left)) {
+        // Drag as well as click: holding the button and moving over the grid
+        // walks the swatches, which is how a colour gets picked by eye.
+        if !matches!(
+            ev.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        ) {
             return Outcome::Continue;
         }
         let gy = r.y.saturating_add(GRID_Y);
@@ -421,6 +426,31 @@ mod tests {
         };
         assert_eq!(p.on_mouse(click, r), Outcome::Continue);
         let Color::Rgb(cr, cg, cb) = grid()[3][5] else {
+            unreachable!()
+        };
+        assert_eq!(p.value(), format!("#{cr:02x}{cg:02x}{cb:02x}"));
+    }
+
+    #[test]
+    fn dragging_across_the_grid_follows_the_pointer() {
+        let mut p = Picker::new("#000000");
+        let r = Rect::new(0, 0, 60, 20);
+        let at = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        p.on_mouse(
+            at(MouseEventKind::Down(MouseButton::Left), 5, GRID_Y + 3),
+            r,
+        );
+        p.on_mouse(
+            at(MouseEventKind::Drag(MouseButton::Left), 9, GRID_Y + 1),
+            r,
+        );
+        assert_eq!((p.row, p.col), (1, 9));
+        let Color::Rgb(cr, cg, cb) = grid()[1][9] else {
             unreachable!()
         };
         assert_eq!(p.value(), format!("#{cr:02x}{cg:02x}{cb:02x}"));
