@@ -75,11 +75,20 @@ vim. You can rebind all of them.
 | <kbd>ctrl+t</kbd> <kbd>z</kbd> | Zoom the focused pane |
 | <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | New, next, or previous tab |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
+| <kbd>ctrl+t</kbd> <kbd>shift+a</kbd> / <kbd>a</kbd> | Rename the tab, or the pane |
 | <kbd>ctrl+t</kbd> <kbd>,</kbd> | Settings |
 | <kbd>ctrl+t</kbd> <kbd>?</kbd> | Help |
 | <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | Close the pane, or quit ttmux |
 
 Press <kbd>ctrl+t</kbd> <kbd>?</kbd> in the app for the full list.
+
+A name you type is yours. A program can set a title with an escape
+sequence, but that title never replaces a name you set, and it names the
+pane, not the tab. The tab takes the title only while it holds one pane.
+
+Every text field takes the readline keys: <kbd>ctrl+a</kbd>,
+<kbd>ctrl+e</kbd>, <kbd>ctrl+w</kbd>, <kbd>ctrl+k</kbd>, <kbd>ctrl+u</kbd>,
+<kbd>alt+b</kbd>, and <kbd>alt+f</kbd>.
 
 ## Free mode
 
