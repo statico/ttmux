@@ -1051,7 +1051,7 @@ fn overlay_rect(area: Rect) -> Rect {
 fn panel(buf: &mut Buffer, rect: Rect, title: &str, cfg: &Config) -> Rect {
     let fg: Color = cfg.status.fg.into();
     let bg: Color = cfg.status.bg.into();
-    buf.set_style(rect.into(), Style::default().bg(bg).fg(fg));
+    render::clear(buf, rect, Style::default().bg(bg).fg(fg));
     render::draw_border(
         buf,
         rect,
@@ -1260,5 +1260,41 @@ mod tests {
         let area = Rect::new(0, 0, 2, 5);
         let mut buf = Buffer::empty(area.into());
         draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
+    }
+
+    #[test]
+    fn overlays_hide_the_panes_behind_them() {
+        // Overlays are painted over panes already in the buffer, so every cell
+        // inside one must be overwritten -- restyling alone leaves the pane's
+        // text showing through the overlay's gaps.
+        let cfg = Config::default();
+        let area = Rect::new(0, 0, 80, 24);
+        let rect = overlay_rect(area);
+        let overlays: Vec<(&str, Box<dyn Fn(&mut Buffer)>)> = vec![
+            ("help", Box::new(|b: &mut Buffer| draw_help(b, rect, &cfg))),
+            (
+                "palette",
+                Box::new(|b: &mut Buffer| draw_palette(b, rect, "", 0, &cfg)),
+            ),
+            (
+                "settings",
+                Box::new(|b: &mut Buffer| Settings::new().draw(b, rect, &cfg)),
+            ),
+        ];
+        for (name, draw) in overlays {
+            let mut buf = Buffer::empty(area.into());
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    buf.cell_mut((x, y)).unwrap().set_symbol("X");
+                }
+            }
+            draw(&mut buf);
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right() {
+                    let sym = buf.cell((x, y)).unwrap().symbol().to_string();
+                    assert_ne!(sym, "X", "{name} leaked the pane at {x},{y}");
+                }
+            }
+        }
     }
 }
