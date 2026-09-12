@@ -51,6 +51,7 @@ fn scene(cfg: &Config, layout: &Layout, focus: u32, w: u16, h: u16) -> Buffer {
             alerts: 0,
             message: None,
             pending_prefix: false,
+            custom: &Default::default(),
         };
         status::draw(
             &mut buf,

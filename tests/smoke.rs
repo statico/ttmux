@@ -13,6 +13,7 @@ struct Harness {
     parser: vt100::Parser,
     rx: std::sync::mpsc::Receiver<Vec<u8>>,
     sock: std::path::PathBuf,
+    cfg: std::path::PathBuf,
     _dir: tempfile::TempDir,
 }
 
@@ -24,6 +25,19 @@ impl Harness {
     /// No config on disk, which is what puts the app on the welcome screen.
     fn start_first_run(cols: u16, rows: u16) -> Harness {
         Harness::spawn(cols, rows, false)
+    }
+
+    /// Starts with `toml` already on disk, for the config-driven tests.
+    fn start_with_config(cols: u16, rows: u16, toml: &str) -> Harness {
+        let h = Harness::spawn(cols, rows, true);
+        std::fs::write(&h.cfg, toml).unwrap();
+        h
+    }
+
+    /// Rewrites the config while ttmux is running. Hot reload is what turns
+    /// this into a repaint.
+    fn write_config(&self, toml: &str) {
+        std::fs::write(&self.cfg, toml).unwrap();
     }
 
     fn spawn(cols: u16, rows: u16, configured: bool) -> Harness {
@@ -71,6 +85,7 @@ impl Harness {
         });
 
         Harness {
+            cfg: cfg_path,
             writer: pair.master.take_writer().unwrap(),
             _child: child,
             parser: vt100::Parser::new(rows, cols, 0),
@@ -340,12 +355,15 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
     // is the one path where nothing explicitly kills the process group. A
     // backgrounded grandchild is the thing that survives if it regresses.
     let marker = "ttmux-orphan-probe-4311";
+    // An odd duration, because the probe is `pgrep -f` and a plain `sleep
+    // 300` matches anyone else's sleep on the machine as well as ours.
+    let secs = "43110";
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
     // `set -m` is what a shell with job control does, and it is the hard
     // case: the background job gets a process group of its own, so killing
     // the shell's group never reaches it. Linux shells do this on a tty.
-    h.send(format!("set -m; sleep 300 & echo {marker}-up\n").as_bytes());
+    h.send(format!("set -m; sleep {secs} & echo {marker}-up\n").as_bytes());
     h.wait_for("the backgrounded child", |s| {
         s.contains(&format!("{marker}-up"))
     });
@@ -369,7 +387,7 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let out = std::process::Command::new("pgrep")
-            .args(["-f", "sleep 300"])
+            .args(["-f", &format!("sleep {secs}")])
             .output()
             .unwrap();
         let hits = String::from_utf8_lossy(&out.stdout);
@@ -493,4 +511,85 @@ fn a_pane_honours_hvp_cursor_positioning() {
         "content wrapped past its row:\n{}",
         h.screen()
     );
+}
+
+/// A footer with one custom widget in it and nothing else to get in the way.
+fn widget_config(command: &str, interval: u64) -> String {
+    format!(
+        r#"
+[status.footer]
+enabled = true
+left = ["probe"]
+center = []
+right = []
+
+[status.widgets.probe]
+command = "{command}"
+interval = {interval}
+"#
+    )
+}
+
+#[test]
+fn a_custom_widget_shows_what_its_command_printed() {
+    let mut h = Harness::start_with_config(80, 24, &widget_config("echo wid''get-ok", 60));
+    h.wait_for("the widget's output in the bar", |s| {
+        s.contains("widget-ok")
+    });
+}
+
+#[test]
+fn a_custom_widget_honours_tmux_colour_markup() {
+    // The markup must not reach the screen as literal text; only `hot` does.
+    let mut h = Harness::start_with_config(
+        80,
+        24,
+        &widget_config("echo '#[fg=red,bold]h''ot#[default]'", 60),
+    );
+    h.wait_for("the styled output", |s| s.contains("hot"));
+    assert!(
+        !h.screen().contains("fg=red"),
+        "markup was painted literally:\n{}",
+        h.screen()
+    );
+}
+
+#[test]
+fn editing_the_config_on_disk_reloads_it_without_a_keypress() {
+    let mut h = Harness::start_with_config(80, 24, &widget_config("echo be''fore", 60));
+    h.wait_for("the first version", |s| s.contains("before"));
+
+    h.write_config(&widget_config("echo af''ter", 60));
+    // No input is sent: noticing this is the whole assertion.
+    h.wait_for("the reloaded version", |s| s.contains("after"));
+}
+
+#[test]
+fn a_widget_re_runs_on_its_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("n");
+    std::fs::write(&f, "1").unwrap();
+    let cmd = format!(
+        "cat {0}; awk '{{print $1+1}}' {0} > {0}.new; mv {0}.new {0}",
+        f.display()
+    );
+    let mut h = Harness::start_with_config(80, 24, &widget_config(&cmd, 1));
+
+    // The count it starts at is whatever the run took, so the assertion is
+    // that the bar changes on its own, not that it shows any one number.
+    h.wait_for("the first run", |s| {
+        footer(s).chars().any(|c| c.is_ascii_digit())
+    });
+    let first = footer(&h.screen());
+    h.wait_for("a later run", |s| footer(s) != first);
+}
+
+/// The status bar, which is the bottom line of the screen.
+fn footer(screen: &str) -> String {
+    screen
+        .lines()
+        .next_back()
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }

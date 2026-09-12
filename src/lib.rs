@@ -15,3 +15,4 @@ pub mod render;
 pub mod server;
 pub mod settings_ui;
 pub mod status;
+pub mod widget;
