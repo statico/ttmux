@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use crossterm::{cursor::MoveTo, execute, queue, terminal};
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -1419,7 +1420,13 @@ impl App {
         if ev.kind == KeyEventKind::Release {
             return Ok(false);
         }
-        // Overlays swallow keys first.
+        // Overlays swallow keys first, with emacs's list keys read as the
+        // arrows so every menu walks the same way.
+        let ev = if matches!(self.overlay, Overlay::None) {
+            ev
+        } else {
+            emacs_arrows(ev)
+        };
         match &mut self.overlay {
             Overlay::Help { scroll } => {
                 let max = help_max_scroll(&self.cfg, self.area);
@@ -1533,7 +1540,11 @@ impl App {
         match ev.code {
             KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Up => *sel = sel.saturating_sub(1),
-            KeyCode::Down => *sel += 1,
+            // Clamped here, not only when drawn, so Up after overshooting
+            // the end moves at once.
+            KeyCode::Down => {
+                *sel = (*sel + 1).min(Self::palette_matches(query.text()).len().saturating_sub(1))
+            }
             KeyCode::Enter => {
                 let hits = Self::palette_matches(query.text());
                 let action = hits.get((*sel).min(hits.len().saturating_sub(1))).copied();
@@ -2405,6 +2416,21 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &LineEdit, cfg:
     );
 }
 
+/// ctrl+n and ctrl+p as Down and Up, ctrl+g as Esc. Text fields have no use
+/// for these, so every list in an overlay gets them for free.
+fn emacs_arrows(ev: KeyEvent) -> KeyEvent {
+    if ev.modifiers != KeyModifiers::CONTROL {
+        return ev;
+    }
+    let code = match ev.code {
+        KeyCode::Char('n') => KeyCode::Down,
+        KeyCode::Char('p') => KeyCode::Up,
+        KeyCode::Char('g') => KeyCode::Esc,
+        _ => return ev,
+    };
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 /// Fold freshly captured images into the standing set for a pane.
 ///
 /// A new image at a cell supersedes the one already there. Without this an
@@ -2553,6 +2579,27 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert_eq!(a.tabs[a.tab].name, "new");
+    }
+
+    #[test]
+    fn ctrl_n_and_ctrl_p_walk_the_palette_and_ctrl_g_closes_it() {
+        let mut a = app();
+        a.dispatch(Action::CommandPalette).unwrap();
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        for c in "nnnp".chars() {
+            a.on_key(ctrl(c)).unwrap();
+        }
+        assert!(matches!(a.overlay, Overlay::Palette { sel: 2, .. }));
+        for _ in 0..1000 {
+            a.on_key(ctrl('n')).unwrap();
+        }
+        a.on_key(ctrl('p')).unwrap();
+        let Overlay::Palette { sel, .. } = a.overlay else {
+            panic!()
+        };
+        assert_eq!(sel, App::palette_matches("").len() - 2);
+        a.on_key(ctrl('g')).unwrap();
+        assert!(matches!(a.overlay, Overlay::None));
     }
 
     #[test]
