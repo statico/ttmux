@@ -16,4 +16,5 @@ The first release. Beta software.
   wants you.
 - Inline images pass through for the kitty, iTerm2, and sixel protocols.
 - Three keybinding presets: vim, tmux, and screen.
+- A Homebrew formula: `brew install statico/tap/ttmux`.
 - macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64.
