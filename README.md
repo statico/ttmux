@@ -109,6 +109,16 @@ Developed against Ghostty and iTerm2; anything with 24-bit colour and SGR mouse
 reporting works, including Alacritty, kitty, WezTerm and Terminal.app (which
 falls back to 256 colours).
 
+On Ghostty the default `alt+left` and `alt+right` never arrive: Ghostty binds
+them to the readline word motions and rewrites them before any encoding
+happens, so ttmux cannot see them. Unbind them in Ghostty's config to get
+horizontal focus movement back:
+
+```
+keybind = alt+left=unbind
+keybind = alt+right=unbind
+```
+
 ## Platforms
 
 macOS on Apple silicon and Intel, and Linux (x86_64 and aarch64). CI builds and
