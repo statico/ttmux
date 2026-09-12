@@ -88,6 +88,8 @@ pub enum Action {
     ReloadConfig,
     /// Leave ttmux (kills children).
     Quit,
+    /// Leave this view but keep the session and its panes running.
+    Detach,
     /// Send the leader chord itself to the pane, tmux's `send-prefix`.
     SendPrefix,
     /// Do nothing (useful for unbinding).
@@ -128,6 +130,7 @@ impl fmt::Display for Action {
             NextAlert => write!(f, "next-alert"),
             ReloadConfig => write!(f, "reload-config"),
             Quit => write!(f, "quit"),
+            Detach => write!(f, "detach"),
             SendPrefix => write!(f, "send-prefix"),
             Nop => write!(f, "nop"),
         }
@@ -185,6 +188,7 @@ impl FromStr for Action {
             "next-alert" => NextAlert,
             "reload-config" => ReloadConfig,
             "quit" => Quit,
+            "detach" => Detach,
             "send-prefix" => SendPrefix,
             "nop" | "" => Nop,
             other => return Err(format!("unknown action: {other}")),
@@ -227,6 +231,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::ReloadConfig,
     Action::SendPrefix,
     Action::Quit,
+    Action::Detach,
 ];
 
 #[cfg(test)]
