@@ -74,6 +74,10 @@ vim. You can rebind all of them.
 | <kbd>ctrl+t</kbd> <kbd>f</kbd> | Float one pane |
 | <kbd>ctrl+t</kbd> <kbd>z</kbd> | Zoom the focused pane |
 | <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | New, next, or previous tab |
+| <kbd>ctrl+t</kbd> <kbd>&lt;</kbd> / <kbd>&gt;</kbd> | Move this tab left or right |
+| <kbd>ctrl+t</kbd> <kbd>!</kbd> | Break the pane out into its own tab |
+| <kbd>ctrl+t</kbd> <kbd>@</kbd> | Join the pane into another tab |
+| <kbd>ctrl+t</kbd> <kbd>:</kbd> | The command line |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
 | <kbd>ctrl+t</kbd> <kbd>shift+a</kbd> / <kbd>a</kbd> | Rename the tab, or the pane |
 | <kbd>ctrl+t</kbd> <kbd>,</kbd> | Settings |
@@ -81,6 +85,13 @@ vim. You can rebind all of them.
 | <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | Close the pane, or quit ttmux |
 
 Press <kbd>ctrl+t</kbd> <kbd>?</kbd> in the app for the full list.
+
+Hold the prefix and a popup lists what can follow it, like which-key in
+neovim. Turn it off with `general.which-key = false`.
+
+<kbd>ctrl+t</kbd> <kbd>:</kbd> opens a command line for the scripting
+commands below. <kbd>Tab</kbd> completes a command or a flag, and the row
+above shows the usage of the command you are typing.
 
 A name you type is yours. A program can set a title with an escape
 sequence, but that title never replaces a name you set, and it names the
@@ -127,6 +138,8 @@ ttmux list-panes                          # %2: [80x24] zsh (active)
 ttmux list-windows                        # 1:build (2 panes) (active)
 ttmux rename-window build                 # name a window
 ttmux display-message "done"              # show text in the status bar
+ttmux join-pane -s %3 -t 2                # move a pane into window 2
+ttmux break-pane                          # and back out into its own
 ttmux run toggle-zoom                     # any key-binding action
 ```
 
@@ -136,7 +149,8 @@ With no target the command acts on the focused pane. The session is the one
 prints the full list.
 
 [API.md](API.md) is the full reference: every command, every flag, the exit
-codes, and recipes.
+codes, and recipes. `ttmux <command> --help` prints one command, and
+`ttmux list-commands --json` prints the whole API for an agent to read.
 
 ## Config
 

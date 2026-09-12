@@ -19,6 +19,7 @@ use ratatui::Terminal;
 
 use crate::action::{Action, Dir, ALL_ACTIONS};
 use crate::agent::{AgentState, Watcher};
+use crate::cmdline::{CmdLine, Outcome as CmdOutcome};
 use crate::config::{Bar, BorderStyle, Config};
 use crate::graphics::Image;
 use crate::input::{encode_key, encode_mouse, Keys, Resolution};
@@ -114,7 +115,9 @@ struct Tab {
 
 enum Overlay {
     None,
-    Help,
+    Help {
+        scroll: usize,
+    },
     Settings(Settings),
     Palette {
         query: LineEdit,
@@ -126,6 +129,7 @@ enum Overlay {
         target: Rename,
     },
     Welcome(crate::onboarding::Welcome),
+    Command(CmdLine),
 }
 
 /// Pretty JSON with a trailing newline, so a script can pipe it straight
@@ -154,6 +158,9 @@ fn parse_scalar(word: &str) -> toml::Value {
 enum Rename {
     Tab,
     Pane(PaneId),
+    /// Not a rename: the number of the tab to move this pane into. It shares
+    /// the prompt because the prompt is just "ask for one line".
+    JoinTo(PaneId),
 }
 
 pub struct App {
@@ -1064,6 +1071,23 @@ impl App {
                 self.tab_mut().layout.swap_next(id);
                 self.sync_sizes();
             }
+            BreakPane => {
+                let id = self.focus();
+                if let Err(e) = self.break_pane(id) {
+                    self.note(format!("{e:#}"));
+                }
+            }
+            JoinPane => {
+                if self.tabs.len() < 2 {
+                    self.note("only one tab");
+                } else {
+                    self.overlay = Overlay::Prompt {
+                        label: format!("Join pane into tab (1-{})", self.tabs.len()),
+                        input: LineEdit::default(),
+                        target: Rename::JoinTo(self.focus()),
+                    }
+                }
+            }
             ToggleLayoutMode => {
                 let t = self.tab_mut();
                 let m = match t.layout.mode {
@@ -1134,6 +1158,21 @@ impl App {
                     target: Rename::Tab,
                 }
             }
+            MoveTab(d) => {
+                let to = match d {
+                    Dir::Left | Dir::Up => self.tab.checked_sub(1),
+                    Dir::Right | Dir::Down => {
+                        (self.tab + 1 < self.tabs.len()).then_some(self.tab + 1)
+                    }
+                };
+                if let Some(to) = to {
+                    self.tabs.swap(self.tab, to);
+                    // `last_tab` names a position, and both positions just
+                    // changed what they hold.
+                    self.last_tab = None;
+                    self.tab = to;
+                }
+            }
             RenamePane => {
                 let id = self.focus();
                 let now = self
@@ -1164,8 +1203,8 @@ impl App {
             }
             ToggleHelp => {
                 self.overlay = match self.overlay {
-                    Overlay::Help => Overlay::None,
-                    _ => Overlay::Help,
+                    Overlay::Help { .. } => Overlay::None,
+                    _ => Overlay::Help { scroll: 0 },
                 }
             }
             CommandPalette => {
@@ -1174,6 +1213,7 @@ impl App {
                     sel: 0,
                 }
             }
+            CommandLine => self.overlay = Overlay::Command(CmdLine::new()),
             NextAlert => match self.next_alert() {
                 Some((tab, id)) => {
                     self.tab = tab;
@@ -1298,8 +1338,15 @@ impl App {
         }
         // Overlays swallow keys first.
         match &mut self.overlay {
-            Overlay::Help => {
-                self.overlay = Overlay::None;
+            Overlay::Help { scroll } => {
+                let max = help_max_scroll(&self.cfg, self.area);
+                match ev.code {
+                    KeyCode::Up | KeyCode::Char('k') => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => *scroll = (*scroll + 1).min(max),
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::PageDown => *scroll = (*scroll + 10).min(max),
+                    _ => self.overlay = Overlay::None,
+                }
                 return Ok(true);
             }
             Overlay::Settings(s) => {
@@ -1308,6 +1355,10 @@ impl App {
             }
             Overlay::Palette { .. } => return self.palette_key(ev).map(|_| true),
             Overlay::Prompt { .. } => return self.prompt_key(ev).map(|_| true),
+            Overlay::Command(c) => {
+                let out = c.key(ev);
+                return self.after_command_line(out).map(|_| true);
+            }
             Overlay::Welcome(w) => {
                 let out = w.on_key(ev, &mut self.cfg);
                 return self.after_welcome(out).map(|_| true);
@@ -1442,9 +1493,41 @@ impl App {
                             s.pane.title_override = Some(name);
                         }
                     }
+                    Rename::JoinTo(id) => match name.trim().parse::<usize>() {
+                        Ok(n) if n >= 1 && n <= self.tabs.len() && n - 1 != self.tab => {
+                            if let Err(e) = self.move_pane_to_tab(id, n - 1, false) {
+                                self.note(format!("{e:#}"));
+                            }
+                        }
+                        _ => self.note(format!("no tab {name}")),
+                    },
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// What the `:` line asked for. A command runs through the same parser
+    /// and the same `script` as one typed in a shell, so the two cannot drift.
+    fn after_command_line(&mut self, out: CmdOutcome) -> Result<()> {
+        let line = match out {
+            CmdOutcome::Stay => return Ok(()),
+            CmdOutcome::Cancel => {
+                self.overlay = Overlay::None;
+                return Ok(());
+            }
+            CmdOutcome::Run(line) => line,
+        };
+        self.overlay = Overlay::None;
+        let words = crate::script::split(&line);
+        let Some((verb, args)) = words.split_first() else {
+            return Ok(());
+        };
+        match crate::script::parse(verb, args).and_then(|c| self.script(c)) {
+            Ok(text) if text.is_empty() => {}
+            Ok(text) => self.note(text.lines().next().unwrap_or_default().to_string()),
+            Err(e) => self.note(format!("{e:#}")),
         }
         Ok(())
     }
@@ -1852,8 +1935,8 @@ impl App {
 
             match &self.overlay {
                 Overlay::None => {}
-                Overlay::Help => {
-                    draw_help(buf, overlay_rect(self.area), &self.cfg);
+                Overlay::Help { scroll } => {
+                    draw_help(buf, overlay_rect(self.area), &self.cfg, *scroll);
                     cursor = None;
                 }
                 Overlay::Settings(s) => {
@@ -1873,11 +1956,23 @@ impl App {
                     draw_prompt(buf, self.area, label, input, &self.cfg);
                     cursor = None;
                 }
+                Overlay::Command(c) => {
+                    c.draw(buf, self.area, &self.cfg);
+                    cursor = None;
+                }
+            }
+
+            // The which-key popup: a prefix is held, so show what can follow
+            // it rather than making the binding a memory test.
+            if self.cfg.general.which_key {
+                if let Some(prefix) = self.keys.pending_prefix() {
+                    crate::whichkey::draw(buf, self.area, prefix, &self.cfg);
+                }
             }
 
             // An overlay owns the screen, but graphics sit in a layer above
             // every cell, so an image would float on top of it.
-            if !matches!(self.overlay, Overlay::None) {
+            if !matches!(self.overlay, Overlay::None | Overlay::Command(_)) {
                 places.clear();
             }
 
@@ -2126,12 +2221,19 @@ pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config
     inner
 }
 
-fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
-    let inner = modal(buf, rect, "Help", "Press any key to close.", cfg);
+fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
     let (map, _) = cfg.keymap();
+    // The keymap is longer than any screen is tall, so the help scrolls
+    // rather than quietly hiding the bindings past the bottom.
+    let hint = format!(
+        "{}/{} — up and down scroll, any other key closes.",
+        scroll + 1,
+        map.len()
+    );
+    let inner = modal(buf, rect, "Help", &hint, cfg);
     let style = Style::default().fg(cfg.status.fg.into());
     let accent = Style::default().fg(cfg.status.accent.into());
-    for (i, (binding, action)) in map.iter().enumerate() {
+    for (i, (binding, action)) in map.iter().skip(scroll).enumerate() {
         let y = inner.y + i as u16;
         if y >= inner.y + inner.h {
             break;
@@ -2145,6 +2247,12 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
             style,
         );
     }
+}
+
+/// How far `help` can scroll: the last page still fills the box.
+fn help_max_scroll(cfg: &Config, area: Rect) -> usize {
+    let rows = modal_content(overlay_rect(area)).h as usize;
+    cfg.keymap().0.len().saturating_sub(rows)
 }
 
 fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg: &Config) {
@@ -2539,8 +2647,8 @@ mod tests {
         let read = |buf: &Buffer| -> String { buf.content().iter().map(|c| c.symbol()).collect() };
 
         let mut buf = Buffer::empty(area.into());
-        draw_help(&mut buf, overlay_rect(area), &cfg);
-        assert!(read(&buf).contains("any key to close"), "help");
+        draw_help(&mut buf, overlay_rect(area), &cfg, 0);
+        assert!(read(&buf).contains("any other key closes"), "help");
 
         let mut buf = Buffer::empty(area.into());
         draw_palette(&mut buf, overlay_rect(area), &LineEdit::default(), 0, &cfg);
@@ -2600,7 +2708,7 @@ mod tests {
         };
 
         let mut buf = filled();
-        draw_help(&mut buf, rect, &cfg);
+        draw_help(&mut buf, rect, &cfg, 0);
         assert_opaque(&buf, "help");
 
         let mut buf = filled();
@@ -2623,7 +2731,7 @@ mod tests {
         let corner = |buf: &Buffer| buf.cell((rect.x, rect.y)).unwrap().symbol().to_string();
 
         let mut buf = Buffer::empty(area.into());
-        draw_help(&mut buf, rect, &cfg);
+        draw_help(&mut buf, rect, &cfg, 0);
         assert_eq!(corner(&buf), "\u{250f}", "help");
 
         let mut buf = Buffer::empty(area.into());

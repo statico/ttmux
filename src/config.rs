@@ -625,6 +625,12 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+t p", "prev-tab"),
             ("ctrl+t &", "close-tab"),
             ("ctrl+t ctrl+t", "last-tab"),
+            // tmux's break-pane and join-pane, on the same two keys.
+            ("ctrl+t !", "break-pane"),
+            ("ctrl+t @", "join-pane"),
+            ("ctrl+t <", "move-tab left"),
+            ("ctrl+t >", "move-tab right"),
+            ("ctrl+t :", "command-line"),
             // tmux's `select-layout tiled`. There is no grid preset here, and
             // even-horizontal is the nearest "make it all equal".
             ("ctrl+t =", "set-preset even-horizontal"),
@@ -662,6 +668,8 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b &", "close-tab"),
             ("ctrl+b ,", "rename-tab"),
             ("ctrl+b .", "rename-pane"),
+            ("ctrl+b !", "break-pane"),
+            ("ctrl+b :", "command-line"),
             ("ctrl+b ?", "help"),
             ("ctrl+b space", "next-preset"),
             ("ctrl+b [", "scroll-up 10"),
@@ -677,6 +685,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a shift+a", "rename-tab"),
             ("ctrl+a a", "rename-pane"),
             ("ctrl+a shift+k", "close-pane"),
+            ("ctrl+a :", "command-line"),
             ("ctrl+a ?", "help"),
             ("ctrl+a esc", "scroll-up 10"),
             ("ctrl+a d", "detach"),

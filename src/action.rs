@@ -54,6 +54,10 @@ pub enum Action {
     MovePane(Dir, u16),
     /// Swap focused pane with the next one (tiling only).
     SwapNext,
+    /// Move the focused pane out into a tab of its own (tmux's break-pane).
+    BreakPane,
+    /// Move the focused pane into another tab, asking which one.
+    JoinPane,
     /// Toggle between tiling and free (floating) layout.
     ToggleLayoutMode,
     /// Cycle tiling presets: even-h, even-v, main-v, main-h.
@@ -73,6 +77,8 @@ pub enum Action {
     /// Back to the tab you were on before this one (tmux's `last-window`).
     LastTab,
     RenameTab,
+    /// Move this tab one place left or right in the tab bar.
+    MoveTab(Dir),
     /// Name the focused pane. A name set here outlives anything the program
     /// in it sets with an escape sequence.
     RenamePane,
@@ -85,6 +91,8 @@ pub enum Action {
     ToggleSettings,
     ToggleHelp,
     CommandPalette,
+    /// The `:` line, where a scripting command can be typed.
+    CommandLine,
     /// Jump to the next pane flagged by an agent alert.
     NextAlert,
     /// Reload the config file from disk.
@@ -111,6 +119,8 @@ impl fmt::Display for Action {
             Resize(d, n) => write!(f, "resize {} {}", d.as_str(), n),
             MovePane(d, n) => write!(f, "move {} {}", d.as_str(), n),
             SwapNext => write!(f, "swap-next"),
+            BreakPane => write!(f, "break-pane"),
+            JoinPane => write!(f, "join-pane"),
             ToggleLayoutMode => write!(f, "toggle-layout-mode"),
             NextPreset => write!(f, "next-preset"),
             SetPreset(p) => write!(f, "set-preset {}", p.as_str()),
@@ -123,6 +133,7 @@ impl fmt::Display for Action {
             SelectTab(i) => write!(f, "select-tab {i}"),
             LastTab => write!(f, "last-tab"),
             RenameTab => write!(f, "rename-tab"),
+            MoveTab(d) => write!(f, "move-tab {}", d.as_str()),
             RenamePane => write!(f, "rename-pane"),
             ScrollUp(n) => write!(f, "scroll-up {n}"),
             ScrollDown(n) => write!(f, "scroll-down {n}"),
@@ -131,6 +142,7 @@ impl fmt::Display for Action {
             ToggleSettings => write!(f, "settings"),
             ToggleHelp => write!(f, "help"),
             CommandPalette => write!(f, "command-palette"),
+            CommandLine => write!(f, "command-line"),
             NextAlert => write!(f, "next-alert"),
             ReloadConfig => write!(f, "reload-config"),
             Quit => write!(f, "quit"),
@@ -170,6 +182,8 @@ impl FromStr for Action {
                 MovePane(d, dir_n(1))
             }
             "swap-next" => SwapNext,
+            "break-pane" => BreakPane,
+            "join-pane" => JoinPane,
             "toggle-layout-mode" => ToggleLayoutMode,
             "next-preset" => NextPreset,
             "set-preset" => SetPreset(arg.ok_or("`set-preset` needs a name")?.parse()?),
@@ -182,6 +196,7 @@ impl FromStr for Action {
             "select-tab" => SelectTab(arg.and_then(|a| a.parse().ok()).unwrap_or(1)),
             "last-tab" => LastTab,
             "rename-tab" => RenameTab,
+            "move-tab" => MoveTab(dir()?),
             "rename-pane" => RenamePane,
             "scroll-up" => ScrollUp(num(1) as usize),
             "scroll-down" => ScrollDown(num(1) as usize),
@@ -190,6 +205,7 @@ impl FromStr for Action {
             "settings" => ToggleSettings,
             "help" => ToggleHelp,
             "command-palette" => CommandPalette,
+            "command-line" => CommandLine,
             "next-alert" => NextAlert,
             "reload-config" => ReloadConfig,
             "quit" => Quit,
@@ -213,6 +229,8 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::FocusNext,
     Action::FocusPrev,
     Action::SwapNext,
+    Action::BreakPane,
+    Action::JoinPane,
     Action::ToggleLayoutMode,
     Action::NextPreset,
     Action::SetPreset(Preset::EvenHorizontal),
@@ -227,12 +245,15 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::PrevTab,
     Action::LastTab,
     Action::RenameTab,
+    Action::MoveTab(Dir::Left),
+    Action::MoveTab(Dir::Right),
     Action::RenamePane,
     Action::ScrollTop,
     Action::ScrollBottom,
     Action::ToggleSettings,
     Action::ToggleHelp,
     Action::CommandPalette,
+    Action::CommandLine,
     Action::NextAlert,
     Action::ReloadConfig,
     Action::SendPrefix,

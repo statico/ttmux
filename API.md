@@ -11,6 +11,16 @@ their own.
 The names and short flags follow tmux, so a tmux script mostly runs
 unchanged.
 
+Three ways to reach these commands:
+
+- `ttmux <command>` from a shell, inside or outside a pane.
+- <kbd>ctrl+t</kbd> <kbd>:</kbd> inside ttmux. Tab completes a command or a
+  flag, and the row above shows its usage.
+- `ttmux list-commands --json` for an agent that wants the whole API first.
+
+`ttmux <command> --help` prints one command. `--help` and `list-commands`
+need no running session.
+
 ## How a command is addressed
 
 Every command goes to one session. The session is the one `$TTMUX_SESSION`
