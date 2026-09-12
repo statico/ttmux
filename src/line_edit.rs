@@ -81,7 +81,9 @@ impl LineEdit {
                 'c' => self.recase(|w| {
                     let mut cs = w.chars();
                     cs.next().map_or(String::new(), |f| {
-                        f.to_uppercase().chain(cs.flat_map(char::to_lowercase)).collect()
+                        f.to_uppercase()
+                            .chain(cs.flat_map(char::to_lowercase))
+                            .collect()
                     })
                 }),
                 _ => return false,
