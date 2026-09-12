@@ -301,6 +301,9 @@ impl App {
                 let (cols, rows) = (r.w.max(1), r.h.max(1));
                 if slot.pane.cols != cols || slot.pane.rows != rows {
                     slot.pane.resize(cols, rows);
+                    // Reflow moves every line, so the cells the standing
+                    // images were captured at no longer mean anything.
+                    slot.images.clear();
                 }
             }
         }
@@ -917,10 +920,11 @@ impl App {
             return;
         }
         if let Some(s) = self.slots.get_mut(&id) {
-            if !wants_mouse(s.pane.screen()) {
-                return;
-            }
-            if let Some(bytes) = encode_mouse(ev, ev.column - inner.x, ev.row - inner.y) {
+            let sc = s.pane.screen();
+            let (mode, encoding) = (sc.mouse_protocol_mode(), sc.mouse_protocol_encoding());
+            if let Some(bytes) =
+                encode_mouse(ev, ev.column - inner.x, ev.row - inner.y, mode, encoding)
+            {
                 s.pane.send(&bytes);
             }
         }
@@ -955,11 +959,16 @@ impl App {
                     Event::Paste(text) => {
                         let id = self.focus();
                         if let Some(s) = self.slots.get_mut(&id) {
-                            // Bracketed paste, so the shell can tell it apart
-                            // from typing.
-                            s.pane.send(b"\x1b[200~");
+                            // Only a guest that set DECSET 2004 parses the
+                            // brackets; to anything else they are literal text.
+                            let bracket = s.pane.screen().bracketed_paste();
+                            if bracket {
+                                s.pane.send(b"\x1b[200~");
+                            }
                             s.pane.send(text.as_bytes());
-                            s.pane.send(b"\x1b[201~");
+                            if bracket {
+                                s.pane.send(b"\x1b[201~");
+                            }
                         }
                     }
                     Event::Resize(w, h) => {
@@ -1061,6 +1070,13 @@ impl App {
         let mut hits = vec![];
         let mut places: Vec<(PaneId, Rect)> = vec![];
 
+        // The cell diff and the image replay are two separate writes, so the
+        // host can paint between them and tear. Both tuios and OpenTUI wrap
+        // the frame in DECSET 2026 and neither probes for support first:
+        // tuios records that querying is what made it unreliable, since a
+        // host over SSH or Apple Terminal never answers, and an unknown DEC
+        // private mode is ignored anyway.
+        host.passthrough(b"\x1b[?2026h")?;
         term.draw(|f| {
             let buf = f.buffer_mut();
             buf.set_style(body.into(), Style::default());
@@ -1181,7 +1197,9 @@ impl App {
                 f.set_cursor_position(Position::new(x, y));
             }
         })?;
-        self.replay_images(&places, host)?;
+        let replayed = self.replay_images(&places, host);
+        host.passthrough(b"\x1b[?2026l")?;
+        replayed?;
         self.tab_hits = hits;
         Ok(())
     }
@@ -1203,8 +1221,8 @@ impl App {
             if slot.pane.scroll != 0 {
                 slot.images.clear();
             }
-            let (rows, cols) = (slot.pane.rows, slot.pane.cols);
-            slot.images.retain(|i| i.row < rows && i.col < cols);
+            let cols = slot.pane.cols;
+            slot.images.retain(|i| i.col < cols);
         }
         let pending = self.slots.values().any(|s| !s.images.is_empty());
         if !pending && !self.drew_graphics {
@@ -1212,22 +1230,34 @@ impl App {
         }
         // Kitty keeps a placement until told to drop it; iTerm2 and sixel
         // images are cell content, which the repaint above already erased.
-        let mut out: Vec<u8> = b"\x1b_Ga=d\x1b\\".to_vec();
+        // Each placement moves the host cursor, so save it first: the
+        // position `term.draw` just set has to survive the replay. From the
+        // kitty placement path in tuios.
+        let mut out: Vec<u8> = b"\x1b7\x1b_Ga=d\x1b\\".to_vec();
         let mut drew = false;
         for (id, inner) in places {
             let Some(slot) = self.slots.get(id) else {
                 continue;
             };
             for img in &slot.images {
-                let (x, y) = (inner.x + img.col, inner.y + img.row);
-                if !inner.contains(x, y) {
+                let x = inner.x + img.col;
+                if x >= inner.right() {
                     continue;
                 }
+                // tuios: an image placed past the last row makes the host
+                // scroll to make room, and the next frame places at the same
+                // now-scrolled cell, duplicating for ever. Clamp into the
+                // pane and the screen, so the overflow is clipped by the
+                // host rather than the whole image being hidden.
+                let y = (inner.y + img.row)
+                    .min(inner.bottom().saturating_sub(1))
+                    .min(self.area.h.saturating_sub(1));
                 queue!(out, MoveTo(x, y))?;
                 out.write_all(&img.bytes)?;
                 drew = true;
             }
         }
+        out.extend_from_slice(b"\x1b8");
         host.passthrough(&out)?;
         self.drew_graphics = drew;
         Ok(())
@@ -1845,6 +1875,112 @@ mod tests {
         let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let mut host = FakeHost::default();
         assert_eq!(a.main_loop(&mut term, &mut host).unwrap(), Exit::Detached);
+    }
+
+    /// An app whose single pane runs `cmd` under `sh`, for tests that need
+    /// the guest to set a mode of its own.
+    fn app_running(cmd: &str) -> App {
+        let cfg = Config {
+            general: General {
+                shell: "/bin/sh".into(),
+                shell_args: vec!["-c".into(), cmd.into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        App::new(cfg, PathBuf::from("/dev/null"), Rect::new(0, 0, 80, 24)).expect("spawn app")
+    }
+
+    /// Pump the focused pane until `f` holds, or give up after a second.
+    fn pump_until(a: &mut App, f: impl Fn(&App) -> bool) -> bool {
+        let id = a.focus();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            a.slots.get_mut(&id).unwrap().pane.pump();
+            if f(a) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        f(a)
+    }
+
+    #[test]
+    fn a_paste_is_bracketed_only_when_the_guest_enabled_2004() {
+        // The pty echoes what ttmux writes to it, escapes included (as `^[`),
+        // so the pane's own screen shows exactly what was sent. The guest
+        // only has to stay alive and, in the second case, ask for 2004.
+        for (cmd, want) in [
+            ("sleep 60", false),
+            ("printf '\\033[?2004h'; sleep 60", true),
+        ] {
+            let mut a = app_running(cmd);
+            assert!(
+                pump_until(&mut a, |a| a.slots[&a.focus()]
+                    .pane
+                    .screen()
+                    .bracketed_paste()
+                    == want),
+                "guest never reached bracketed_paste()=={want}"
+            );
+
+            let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            let mut host = FakeHost::with(vec![Event::Paste("hello".into())]);
+            assert_eq!(a.main_loop(&mut term, &mut host).unwrap(), Exit::Detached);
+            assert!(
+                pump_until(&mut a, |a| a.slots[&a.focus()]
+                    .pane
+                    .screen()
+                    .contents()
+                    .contains("hello")),
+                "the paste never reached the guest"
+            );
+            let seen = a.slots[&a.focus()].pane.screen().contents();
+            for slot in a.slots.values_mut() {
+                slot.pane.kill();
+            }
+            assert_eq!(
+                seen.contains("200~"),
+                want,
+                "guest with 2004={want} saw {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_frame_is_wrapped_in_synchronized_output() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+        a.draw(&mut term, &mut host).unwrap();
+        assert!(
+            host.out.starts_with(b"\x1b[?2026h") && host.out.ends_with(b"\x1b[?2026l"),
+            "frame not wrapped: {:?}",
+            String::from_utf8_lossy(&host.out)
+        );
+    }
+
+    #[test]
+    fn an_image_past_the_pane_bottom_is_clipped_not_dropped() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+
+        let id = a.focus();
+        let inner = a.inner(a.tabs[a.tab].layout.rect_of(id).unwrap());
+        a.slots.get_mut(&id).unwrap().images.push(Image {
+            row: inner.h + 5,
+            col: 0,
+            bytes: b"PAYLOAD".to_vec(),
+        });
+        a.draw(&mut term, &mut host).unwrap();
+
+        let out = String::from_utf8_lossy(&host.out).into_owned();
+        assert!(out.contains("PAYLOAD"), "overflowing image was dropped");
+        let last = format!("\x1b[{};{}H", inner.bottom(), inner.x + 1);
+        assert!(out.contains(&last), "not clamped to the last row: {out:?}");
+        // The host cursor the frame set has to survive the replay.
+        assert!(out.contains('\u{1b}') && out.contains("\x1b7") && out.contains("\x1b8"));
     }
 
     #[test]

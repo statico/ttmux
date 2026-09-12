@@ -174,8 +174,9 @@ impl Keys {
 }
 /// Encode a key event the way a terminal would, for writing to the pty.
 pub fn encode_key(ev: KeyEvent, app_cursor_keys: bool) -> Vec<u8>;
-/// Encode a mouse event as SGR (1006) for panes that asked for mouse reporting.
-pub fn encode_mouse(ev: MouseEvent, col: u16, row: u16) -> Option<Vec<u8>>;
+/// Encode a mouse event in the guest's declared encoding, dropping the events
+/// its declared mode does not report.
+pub fn encode_mouse(ev: MouseEvent, col: u16, row: u16, mode: MouseProtocolMode, encoding: MouseProtocolEncoding) -> Option<Vec<u8>>;
 ```
 
 ## src/render.rs
