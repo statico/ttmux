@@ -1162,7 +1162,7 @@ impl App {
             if !self.cfg.general.passthrough_images {
                 continue;
             }
-            slot.images.extend(new);
+            merge_images(&mut slot.images, new);
             // Scrolling back makes the recorded cell meaningless: the image
             // belongs to a line that is no longer where it was.
             if slot.pane.scroll != 0 {
@@ -1332,6 +1332,16 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
     );
 }
 
+/// Fold freshly captured images into the standing set for a pane.
+///
+/// A new image at a cell supersedes the one already there. Without this an
+/// animating pane appends one image per pump for ever, and every stale one
+/// is re-emitted to the terminal on every frame.
+fn merge_images(standing: &mut Vec<Image>, new: Vec<Image>) {
+    standing.retain(|i| !new.iter().any(|n| n.row == i.row && n.col == i.col));
+    standing.extend(new);
+}
+
 // ------------------------------------------------------------- tests
 
 #[cfg(test)]
@@ -1389,6 +1399,28 @@ mod tests {
             ..Default::default()
         };
         App::new(cfg, PathBuf::from("/dev/null"), Rect::new(0, 0, 80, 24)).expect("spawn app")
+    }
+
+    fn img(row: u16, col: u16, tag: u8) -> Image {
+        Image {
+            row,
+            col,
+            bytes: vec![tag],
+        }
+    }
+
+    #[test]
+    fn a_redrawn_image_replaces_the_one_at_that_cell() {
+        let mut standing = vec![];
+        for tag in 0..20 {
+            merge_images(&mut standing, vec![img(3, 4, tag)]);
+        }
+        assert_eq!(standing.len(), 1, "one cell accumulated {standing:?}");
+        assert_eq!(standing[0].bytes, vec![19], "kept a stale image");
+
+        // A different cell is a different placement, not a replacement.
+        merge_images(&mut standing, vec![img(3, 5, 99)]);
+        assert_eq!(standing.len(), 2);
     }
 
     #[test]
