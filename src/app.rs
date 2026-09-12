@@ -30,8 +30,14 @@ use crate::widget;
 
 /// How long a transient status message stays up.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
-/// Event-loop tick. Fast enough to feel live, slow enough to stay idle-cheap.
-const TICK: Duration = Duration::from_millis(8);
+/// Event-loop tick while something is happening. The loop cannot wait on the
+/// terminal and on the panes at once, so this bounds how long a keystroke and
+/// the program's answer to it each sit unnoticed.
+const TICK_BUSY: Duration = Duration::from_millis(1);
+/// The tick once everything has been quiet, where a wakeup is only battery.
+const TICK_IDLE: Duration = Duration::from_millis(16);
+/// How long after the last keystroke or byte the loop stays on the fast tick.
+const BUSY_FOR: Duration = Duration::from_millis(400);
 
 /// Where a running `App` gets its input and where out-of-band bytes go.
 pub trait Host {
@@ -725,52 +731,56 @@ impl App {
 
     // ------------------------------------------------------------- input
 
-    fn on_key(&mut self, ev: KeyEvent) -> Result<()> {
+    /// True if the frame has to be repainted. A key that goes straight to a
+    /// pane changes nothing ttmux draws; the program's echo does, and
+    /// repainting for both is a whole wasted frame per keystroke.
+    fn on_key(&mut self, ev: KeyEvent) -> Result<bool> {
         if ev.kind == KeyEventKind::Release {
-            return Ok(());
+            return Ok(false);
         }
         // Overlays swallow keys first.
         match &mut self.overlay {
             Overlay::Help => {
                 self.overlay = Overlay::None;
-                return Ok(());
+                return Ok(true);
             }
             Overlay::Settings(s) => {
                 let out = s.on_key(ev, &mut self.cfg);
-                return self.after_settings(out);
+                return self.after_settings(out).map(|_| true);
             }
-            Overlay::Palette { .. } => return self.palette_key(ev),
-            Overlay::Prompt { .. } => return self.prompt_key(ev),
+            Overlay::Palette { .. } => return self.palette_key(ev).map(|_| true),
+            Overlay::Prompt { .. } => return self.prompt_key(ev).map(|_| true),
             Overlay::Welcome(w) => {
                 let out = w.on_key(ev, &mut self.cfg);
-                return self.after_welcome(out);
+                return self.after_welcome(out).map(|_| true);
             }
             Overlay::None => {}
         }
 
         match self.keys.resolve(ev) {
-            Resolution::Action(a) => self.dispatch(a),
-            Resolution::Pending => Ok(()),
-            Resolution::Passthrough => {
-                self.type_into_pane(ev);
-                Ok(())
-            }
+            Resolution::Action(a) => self.dispatch(a).map(|_| true),
+            // The status bar shows that a prefix is held.
+            Resolution::Pending => Ok(true),
+            Resolution::Passthrough => Ok(self.type_into_pane(ev)),
         }
     }
 
-    /// Write a key to the focused pane as a terminal would.
-    fn type_into_pane(&mut self, ev: KeyEvent) {
+    /// Write a key to the focused pane as a terminal would. True if the view
+    /// moved, which only happens when the pane was scrolled back.
+    fn type_into_pane(&mut self, ev: KeyEvent) -> bool {
         let id = self.focus();
         let Some(s) = self.slots.get_mut(&id) else {
-            return;
+            return false;
         };
         // Typing anywhere jumps back to the live view, like a real terminal.
+        let scrolled = s.pane.scroll != 0;
         s.pane.scroll_to_bottom();
         let app_cursor = s.pane.screen().application_cursor();
         let bytes = encode_key(ev, app_cursor);
         if !bytes.is_empty() {
             s.pane.send(&bytes);
         }
+        scrolled
     }
 
     fn after_settings(&mut self, out: Outcome) -> Result<()> {
@@ -988,20 +998,31 @@ impl App {
     {
         let mut dirty = true;
         let mut last_tick = Instant::now();
+        let mut last_busy = Instant::now();
         loop {
             if let Some(e) = self.exit() {
                 return Ok(e);
             }
             // A dead event source is not a crash: the panes are untouched and
             // only this view ends, which is exactly what detaching means.
-            let ev = match host.poll(TICK) {
+            let tick = if last_busy.elapsed() < BUSY_FOR {
+                TICK_BUSY
+            } else {
+                TICK_IDLE
+            };
+            let ev = match host.poll(tick) {
                 Ok(ev) => ev,
                 Err(_) => return Ok(Exit::Detached),
             };
             if let Some(ev) = ev {
-                match ev {
+                dirty |= match ev {
                     Event::Key(k) => self.on_key(k)?,
-                    Event::Mouse(m) => self.on_mouse(m)?,
+                    Event::Mouse(m) => {
+                        self.on_mouse(m)?;
+                        true
+                    }
+                    // Like typing: what lands on the screen is the pane's
+                    // echo, and that marks the frame dirty on its own.
                     Event::Paste(text) => {
                         let id = self.focus();
                         if let Some(s) = self.slots.get_mut(&id) {
@@ -1016,14 +1037,16 @@ impl App {
                                 s.pane.send(b"\x1b[201~");
                             }
                         }
+                        false
                     }
                     Event::Resize(w, h) => {
                         self.area = Rect::new(0, 0, w, h);
                         self.relayout();
+                        true
                     }
-                    _ => {}
-                }
-                dirty = true;
+                    _ => false,
+                };
+                last_busy = Instant::now();
             }
 
             let mut output = false;
@@ -1037,18 +1060,19 @@ impl App {
             }
             if output {
                 dirty = true;
+                last_busy = Instant::now();
             }
             // The clock widget and the agent busy->idle grace timer both move
             // on their own, so redraw at least once a second regardless of I/O.
-            let tick = last_tick.elapsed() >= Duration::from_secs(1);
-            if tick {
+            let second = last_tick.elapsed() >= Duration::from_secs(1);
+            if second {
                 last_tick = Instant::now();
                 dirty = true;
             }
-            if output || tick {
+            if output || second {
                 self.update_agents(host)?;
             }
-            if tick {
+            if second {
                 self.reload_if_changed();
                 self.widgets.tick();
             }
@@ -1708,6 +1732,22 @@ mod tests {
         // The written file is what suppresses the picker next launch.
         let again = App::new(Config::load(&path).unwrap(), path, Rect::new(0, 0, 80, 24)).unwrap();
         assert!(matches!(again.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn typing_into_a_pane_asks_for_no_repaint_but_a_command_does() {
+        let mut a = app();
+        // A wasted frame per keystroke is what this costs when it regresses.
+        assert!(
+            !a.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))
+                .unwrap(),
+            "a key bound to nothing goes to the pane"
+        );
+        assert!(
+            a.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL))
+                .unwrap(),
+            "the prefix shows in the status bar"
+        );
     }
 
     #[test]
