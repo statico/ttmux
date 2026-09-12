@@ -954,6 +954,10 @@ impl App {
                 }
             }
 
+            if let Some((_, _, half)) = self.tabs[self.tab].layout.snap_target() {
+                render::draw_snap_preview(buf, half, self.cfg.status.accent.into());
+            }
+
             if let Some(sr) = self.status_rect() {
                 let tabs: Vec<(String, bool)> = self
                     .tabs

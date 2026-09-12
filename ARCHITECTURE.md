@@ -44,7 +44,14 @@ impl From<ratatui::layout::Rect> for Rect;
 
 pub enum Mode { Tiling, Free }
 pub enum Preset { EvenHorizontal, EvenVertical, MainVertical, MainHorizontal, Tree }
-pub enum DragKind { Move, ResizeEdge(Dir), Divider(usize) }
+pub enum DragKind {
+    Move,
+    /// Float edge or corner; each flag is one side that follows the pointer.
+    Resize { left: bool, right: bool, top: bool, bottom: bool },
+    /// Tiled pane grabbed by the title run of its top border, to snap elsewhere.
+    Grab,
+    Divider(usize),
+}
 
 pub struct Layout { pub mode: Mode, pub preset: Preset, pub zoomed: Option<PaneId>, /* private */ }
 
@@ -82,6 +89,9 @@ impl Layout {
     pub fn drag_start(&mut self, x: u16, y: u16) -> bool;
     pub fn drag_to(&mut self, x: u16, y: u16);
     pub fn drag_end(&mut self);
+    /// Mid-drag snap destination for a `Grab`: (target pane, side, the half it
+    /// would land in). `None` unless a tiled pane is being dragged over another.
+    pub fn snap_target(&self) -> Option<(PaneId, Dir, Rect)>;
     pub fn dragging(&self) -> bool;
 }
 ```
@@ -166,6 +176,8 @@ pub fn frame_chars(style: BorderStyle) -> Frame;
 pub fn draw_border(buf: &mut Buffer, rect: Rect, title: &str, focused: bool, alert: bool, zoomed: bool, cfg: &Appearance);
 pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bool);
 pub fn draw_shadow(buf: &mut Buffer, rect: Rect);
+/// Tint the half a dragged pane would snap into, keeping the symbols under it.
+pub fn draw_snap_preview(buf: &mut Buffer, rect: Rect, accent: Color);
 ```
 `rect` is the *outer* rect including the border; `draw_screen` is given the
 inner rect. Both clip to the buffer.

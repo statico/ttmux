@@ -225,6 +225,26 @@ fn clicking_a_pane_moves_focus_and_dragging_a_divider_resizes() {
 }
 
 #[test]
+fn dragging_a_tile_by_its_title_snaps_it_into_another_pane() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x14%"); // split right: two panes side by side
+    h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
+    let tops_on_row0 = |s: &str| s.lines().next().unwrap_or("").matches('╭').count();
+    h.wait_for("two panes on the top row", |s| tops_on_row0(s) == 2);
+
+    // Grab the right-hand pane by its title and drop it on the bottom half of
+    // the left one. The columns become stacked rows, so the top row of the
+    // screen ends up with a single pane on it.
+    h.send(&mouse(0, 41, 0, false));
+    h.send(&mouse(32, 20, 20, false));
+    h.send(&mouse(0, 20, 20, true));
+    h.wait_for("the panes to stack", |s| {
+        tops_on_row0(s) == 1 && s.matches('╭').count() == 2
+    });
+}
+
+#[test]
 fn free_mode_lets_a_pane_be_dragged_around() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));

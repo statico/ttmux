@@ -229,6 +229,20 @@ pub fn clear(buf: &mut Buffer, rect: Rect, style: Style) {
     }
 }
 
+/// Tint the half a dragged pane would snap into. Symbols are left alone, so
+/// the pane underneath stays recognisable, and the accent is a configured
+/// colour, so it reads on a light theme as well as a dark one.
+pub fn draw_snap_preview(buf: &mut Buffer, rect: Rect, accent: Color) {
+    let style = Style::new().bg(accent).fg(Color::Black);
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(style);
+            }
+        }
+    }
+}
+
 /// Darken the L-shaped band one cell right of and below `rect`.
 pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
     if rect.w == 0 || rect.h == 0 {
