@@ -110,16 +110,9 @@ fn run() -> Result<ExitCode> {
             let name = target(&rest, &["-t", "-s"])?.unwrap_or_else(default_session);
             ttmux::client::attach(&name, create)?;
         }
-        "ls" | "list-sessions" => {
+        "ls" => {
             ttmux::proto::cleanup_stale();
-            for (name, path) in ttmux::proto::list_sessions() {
-                let live = if ttmux::proto::is_live(&path) {
-                    "live"
-                } else {
-                    "stale"
-                };
-                println!("{name}: {live}");
-            }
+            print!("{}", ttmux::proto::sessions_report(false, None));
         }
         "kill-session" => {
             let name = target(&rest, &["-t", "-s"])?
@@ -149,15 +142,36 @@ fn run() -> Result<ExitCode> {
 /// session: `--help` is documentation, and `list-commands` is how an agent
 /// learns the API before anything is running.
 fn script_command(verb: &str, rest: Vec<String>) -> ExitCode {
-    // An alias has no help of its own, so it falls through to the session,
-    // which knows what it expands to.
-    if rest.iter().any(|a| a == "-h" || a == "--help") {
+    // `-h` is `--horizontal` to split-window and join-pane, so it only means
+    // help where the command does not claim it.
+    let short_h = script::has_flag(verb, "-h");
+    if rest
+        .iter()
+        .any(|a| a == "--help" || (a == "-h" && !short_h))
+    {
         if let Some(text) = script::help(verb) {
             print!("{text}");
             return ExitCode::SUCCESS;
         }
     }
+    // Listing the sessions is the one command that must work when none is
+    // running: "is anything up?" is the question you ask before attaching.
+    if verb == "list-sessions" {
+        ttmux::proto::cleanup_stale();
+        let json = rest.iter().any(|a| a == "--json");
+        if rest.iter().any(|a| a != "--json") {
+            eprintln!("ttmux: list-sessions takes only --json");
+            return ExitCode::from(script::EXIT_USAGE);
+        }
+        let here = std::env::var("TTMUX_SESSION").ok();
+        print!("{}", ttmux::proto::sessions_report(json, here.as_deref()));
+        return ExitCode::SUCCESS;
+    }
     if verb == "list-commands" {
+        if rest.iter().any(|a| a != "--json") {
+            eprintln!("ttmux: list-commands takes only --json");
+            return ExitCode::from(script::EXIT_USAGE);
+        }
         if rest.iter().any(|a| a == "--json") {
             print!("{}", script::commands_json());
         } else {

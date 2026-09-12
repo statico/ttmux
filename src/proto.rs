@@ -4,6 +4,7 @@
 //! next to the pty traffic they describe, and a readable wire is worth more
 //! here than the bytes it costs.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::MetadataExt;
@@ -201,6 +202,42 @@ pub fn list_sessions() -> Vec<(String, PathBuf)> {
 }
 
 /// Can anything still be reached at `path`? A crashed server leaves the file.
+/// The `list-sessions` answer. Both the CLI and a running session print it,
+/// so `ttmux list-sessions` reads the same with or without a server: only
+/// the "this one" marker needs a session to know about.
+pub fn sessions_report(json: bool, current: Option<&str>) -> String {
+    let rows: Vec<(String, bool)> = list_sessions()
+        .into_iter()
+        .map(|(name, path)| (name, is_live(&path)))
+        .collect();
+    if json {
+        let sessions: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(name, live)| {
+                serde_json::json!({
+                    "name": name,
+                    "live": live,
+                    "attached": Some(name.as_str()) == current,
+                })
+            })
+            .collect();
+        return serde_json::to_string_pretty(&serde_json::json!({ "sessions": sessions }))
+            .unwrap_or_default()
+            + "\n";
+    }
+    let mut out = String::new();
+    for (name, live) in rows {
+        let live = if live { "live" } else { "stale" };
+        let here = if Some(name.as_str()) == current {
+            " (this one)"
+        } else {
+            ""
+        };
+        let _ = writeln!(out, "{name}: {live}{here}");
+    }
+    out
+}
+
 pub fn is_live(path: &Path) -> bool {
     UnixStream::connect(path).is_ok()
 }
