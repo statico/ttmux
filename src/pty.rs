@@ -382,6 +382,19 @@ impl Pane {
             // A grandchild that outlives the shell keeps the pty slave open, so
             // the reader thread would sit in read() forever holding the fd.
             unsafe { libc::killpg(pg, libc::SIGKILL) };
+            // A shell with job control puts `cmd &` in a process group of its
+            // own, which the killpg above never reaches. The session is the
+            // one grouping that holds every descendant, and setsid() made the
+            // child's pid its session id.
+            //
+            // ponytail: shells out to pkill; a /proc walk plus a sysctl for
+            // macOS is the alternative, and it is a lot of code for a path
+            // that runs once per pane at exit.
+            let _ = std::process::Command::new("pkill")
+                .args(["-9", "-s", &pg.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
         }
         // Nothing else waits on this child once the app drops the pane, and
         // Child's Drop doesn't reap: without this it stays <defunct>.
