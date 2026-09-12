@@ -20,6 +20,10 @@ const BEL: u8 = 0x07;
 /// image; past that the pane is spewing, not drawing.
 const MAX_SEQ: usize = 4 * 1024 * 1024;
 
+/// Biggest kitty image kept once its chunks are joined: a 4K RGBA frame is
+/// about 45MB of base64.
+pub const MAX_IMAGE: usize = 64 * 1024 * 1024;
+
 /// One captured graphics sequence, with the pane cursor cell it started at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Image {
@@ -63,6 +67,24 @@ pub struct Scanner {
     esc: bool,
     /// This sequence blew the size cap; swallow it to its terminator.
     dropped: bool,
+    /// A kitty image sent in chunks (`m=1`) so far. The chunks only mean
+    /// something together: replayed one by one, the host sees headless
+    /// chunks and cut-off transmissions, and prints base64.
+    chunks: Vec<u8>,
+    /// The image being chunked blew a cap; swallow the rest of its chunks.
+    chunks_dropped: bool,
+    /// The dropped sequence said more chunks follow, read before its bytes
+    /// were released.
+    dropped_more: bool,
+}
+
+/// Whether a kitty APC says more chunks follow.
+fn more_chunks(seq: &[u8]) -> bool {
+    let body = &seq[3..];
+    let end = body.iter().position(|b| *b == b';' || *b == ESC);
+    body[..end.unwrap_or(body.len())]
+        .split(|b| *b == b',')
+        .any(|kv| kv == b"m=1")
 }
 
 enum Verdict {
@@ -158,6 +180,34 @@ impl Scanner {
                     }
                 }
                 State::Body(k) => {
+                    // An ESC that does not start ST cancels the string, as in
+                    // any terminal: mpv's status line, written from another
+                    // thread, lands inside its image chunks. Kept, the image
+                    // carries the status line to the host on every replay and
+                    // the host prints the rest of the base64 over the window.
+                    if self.esc && b != b'\\' {
+                        self.esc = false;
+                        if k == Kind::Apc {
+                            self.chunks_dropped = !self.chunks.is_empty()
+                                || if self.dropped {
+                                    self.dropped_more
+                                } else {
+                                    more_chunks(&self.buf)
+                                };
+                            self.chunks = Vec::new();
+                        }
+                        // vt100 gets the cancelled bytes and ignores them the
+                        // same way; this ESC opens whatever comes next.
+                        if !std::mem::take(&mut self.dropped) {
+                            let mut body = std::mem::take(&mut self.buf);
+                            body.pop();
+                            out.push(Piece::Plain(Cow::Owned(body)));
+                        }
+                        self.buf = vec![ESC];
+                        self.state = State::Maybe;
+                        i -= 1;
+                        continue;
+                    }
                     // ponytail: an unterminated sequence eats the pane's
                     // output — under the cap it is buffered, over the cap it
                     // is swallowed, and either way nothing reaches vt100 until
@@ -167,6 +217,7 @@ impl Scanner {
                     if !self.dropped {
                         if self.buf.len() >= MAX_SEQ {
                             self.dropped = true;
+                            self.dropped_more = k == Kind::Apc && more_chunks(&self.buf);
                             // Not `clear()`: release the 4MB, the pane is spewing.
                             self.buf = Vec::new();
                         } else {
@@ -180,8 +231,31 @@ impl Scanner {
                     let done = (self.esc && b == b'\\') || (k == Kind::Osc && b == BEL);
                     self.esc = false;
                     if done {
-                        if !std::mem::take(&mut self.dropped) {
-                            out.push(Piece::Image(std::mem::take(&mut self.buf)));
+                        let seq = std::mem::take(&mut self.buf);
+                        let dropped = std::mem::take(&mut self.dropped);
+                        if k != Kind::Apc {
+                            if !dropped {
+                                out.push(Piece::Image(seq));
+                            }
+                        } else if dropped || self.chunks_dropped {
+                            self.chunks_dropped = if dropped {
+                                self.dropped_more
+                            } else {
+                                more_chunks(&seq)
+                            };
+                            self.chunks = Vec::new();
+                        } else if more_chunks(&seq) {
+                            if self.chunks.len() + seq.len() > MAX_IMAGE {
+                                self.chunks = Vec::new();
+                                self.chunks_dropped = true;
+                            } else {
+                                self.chunks.extend_from_slice(&seq);
+                            }
+                        } else if self.chunks.is_empty() {
+                            out.push(Piece::Image(seq));
+                        } else {
+                            self.chunks.extend_from_slice(&seq);
+                            out.push(Piece::Image(std::mem::take(&mut self.chunks)));
                         }
                         self.state = State::Ground;
                         plain = i;
@@ -229,6 +303,49 @@ mod tests {
             assert_eq!(plain, b"beforeafter", "{:?}", seq);
             assert_eq!(imgs, vec![seq.to_vec()], "{:?}", seq);
         }
+    }
+
+    #[test]
+    fn a_chunked_kitty_image_is_one_image() {
+        // mpv's `--vo=kitty` frame: a header chunk, middle chunks, a last one.
+        let chunks: [&[u8]; 3] = [
+            b"\x1b_Ga=T,f=24,s=2,v=1,m=1;AAAA\x1b\\",
+            b"\x1b_Gm=1;BBBB\x1b\\",
+            b"\x1b_Gm=0;CC\x1b\\",
+        ];
+        let whole = chunks.concat();
+        let (plain, imgs) = run(&[&whole[..10], &whole[10..], b"x"]);
+        assert_eq!(plain, b"x");
+        assert_eq!(imgs, vec![whole.clone()]);
+
+        // Too big to keep: the whole image goes, not its tail, and the
+        // scanner is ready for the next one.
+        let mut big = b"\x1b_Ga=T,m=1;".to_vec();
+        big.resize(MAX_SEQ - 10, b'A');
+        big.extend_from_slice(b"\x1b\\");
+        let mut input = vec![];
+        for _ in 0..MAX_IMAGE / big.len() + 1 {
+            input.extend_from_slice(&big);
+        }
+        input.extend_from_slice(chunks[2]);
+        input.extend_from_slice(KITTY);
+        assert_eq!(run(&[&input]).1, vec![KITTY.to_vec()]);
+    }
+
+    #[test]
+    fn an_escape_inside_a_sequence_cancels_it() {
+        // A status line written into the middle of a chunked image: the
+        // image is abandoned, the status line reaches vt100 intact, and the
+        // chunks still to come are not replayed without their start.
+        let input: &[u8] = b"\x1b_Ga=T,m=1;AA\x1b\\\x1b_Gm=1;BB\x1b[1K\rV: 1\
+                             CC\x1b\\\x1b_Gm=0;DD\x1b\\";
+        let (plain, imgs) = run(&[input]);
+        assert!(imgs.is_empty(), "{imgs:?}");
+        assert_eq!(plain, b"\x1b_Gm=1;BB\x1b[1K\rV: 1CC\x1b\\");
+        // The same bytes one at a time, then a good image straight after.
+        let mut bytes: Vec<&[u8]> = input.chunks(1).collect();
+        bytes.push(KITTY);
+        assert_eq!(run(&bytes), (plain, vec![KITTY.to_vec()]));
     }
 
     #[test]

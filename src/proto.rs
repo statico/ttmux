@@ -22,8 +22,9 @@ use serde::{Deserialize, Serialize};
 pub const PROTOCOL: u32 = 1;
 
 /// Refuse a frame larger than this rather than allocating what the peer asked
-/// for. A whole 200x60 repaint is well under a megabyte of JSON.
-pub const MAX_FRAME: u32 = 4 << 20;
+/// for. A whole 200x60 repaint is well under a megabyte of JSON; the biggest
+/// frames are inline images, up to `graphics::MAX_IMAGE`.
+pub const MAX_FRAME: u32 = 96 << 20;
 
 /// One painted cell, as ratatui's `Backend::draw` hands them over.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,7 +72,7 @@ pub enum ServerMsg {
     Clear,
     Cursor(Option<(u16, u16)>),
     /// Write these bytes to the terminal verbatim: inline-image replays.
-    Passthrough(Vec<u8>),
+    Passthrough(#[serde(with = "text_bytes")] Vec<u8>),
     /// Leave, and say why. The client restores the terminal and exits.
     Bye(String),
     Error(String),
@@ -86,6 +87,33 @@ pub enum ServerMsg {
 // ------------------------------------------------------------------ framing
 
 /// 4-byte little-endian length, then JSON.
+/// Terminal bytes as a JSON string when they are UTF-8, which image payloads
+/// always are: as an array of numbers a 4MB frame is 14MB of JSON. Arrays
+/// still read, so a newer client can talk to an older server.
+mod text_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(b: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        match std::str::from_utf8(b) {
+            Ok(text) => s.serialize_str(text),
+            Err(_) => s.collect_seq(b),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Bytes(Vec<u8>),
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Text(t) => t.into_bytes(),
+            Either::Bytes(b) => b,
+        })
+    }
+}
+
 pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
     let body = serde_json::to_vec(msg).map_err(io::Error::other)?;
     let len = u32::try_from(body.len())
@@ -317,6 +345,7 @@ mod tests {
             ServerMsg::Cursor(Some((7, 8))),
             ServerMsg::Cursor(None),
             ServerMsg::Passthrough(vec![0x1b, b'_', 7]),
+            ServerMsg::Passthrough(vec![0xff, 0]),
             ServerMsg::Bye("detached".into()),
             ServerMsg::Error("nope".into()),
         ]);

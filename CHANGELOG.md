@@ -28,6 +28,9 @@
   2031), and XTGETTCAP answers for truecolor, undercurl, cursor shape,
   OSC 52 and synchronized output.
 - Colour replies end the way the question did, BEL or ST.
+- Video through kitty graphics (`mpv --vo=kitty`) plays instead of printing
+  base64: chunked images are replayed whole, a stray escape cancels an
+  image the way terminals do, and a big image no longer disconnects you.
 - A performance test guards parsing, drawing and redraw size; `make
   bench` prints the numbers.
 
