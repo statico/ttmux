@@ -96,6 +96,7 @@ enum Overlay {
     Settings(Settings),
     Palette { query: String, sel: usize },
     Prompt { label: String, input: String },
+    Welcome(crate::onboarding::Welcome),
 }
 
 pub struct App {
@@ -187,6 +188,10 @@ fn restore() -> Result<()> {
 impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf, area: Rect) -> Result<App> {
         let keys = Keys::new(&cfg);
+        // No config file means nobody has chosen a keymap yet, so offer the
+        // choice before the first keystroke lands on a default they did not
+        // pick. Answering it writes the file, which is what retires this.
+        let first_run = !cfg_path.exists();
         let mut app = App {
             keys,
             cfg,
@@ -206,6 +211,9 @@ impl App {
             detached: false,
         };
         app.new_tab()?;
+        if first_run {
+            app.overlay = Overlay::Welcome(crate::onboarding::Welcome::new());
+        }
         Ok(app)
     }
 
@@ -684,6 +692,10 @@ impl App {
             }
             Overlay::Palette { .. } => return self.palette_key(ev),
             Overlay::Prompt { .. } => return self.prompt_key(ev),
+            Overlay::Welcome(w) => {
+                let out = w.on_key(ev, &mut self.cfg);
+                return self.after_welcome(out);
+            }
             Overlay::None => {}
         }
 
@@ -726,6 +738,24 @@ impl App {
                 match self.cfg.save(&self.cfg_path) {
                     Ok(()) => self.note(format!("saved {}", self.cfg_path.display())),
                     Err(e) => self.note(format!("save failed: {e}")),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The picker writes the config itself: the file's absence is what put
+    /// the overlay on screen, so creating it is how the choice sticks.
+    fn after_welcome(&mut self, out: crate::onboarding::Outcome) -> Result<()> {
+        use crate::onboarding::Outcome as W;
+        match out {
+            W::Continue => {}
+            W::Done => self.overlay = Overlay::None,
+            W::Save => {
+                let cfg = self.cfg.clone();
+                self.apply_config(cfg);
+                if let Err(e) = self.cfg.save(&self.cfg_path) {
+                    self.note(format!("save failed: {e}"));
                 }
             }
         }
@@ -1130,6 +1160,11 @@ impl App {
                     draw_palette(buf, overlay_rect(self.area), query, *sel, &self.cfg);
                     cursor = None;
                 }
+                Overlay::Welcome(w) => {
+                    let rect = overlay_rect(self.area);
+                    let inner = panel(buf, rect, w.title(), &self.cfg);
+                    w.draw(buf, inner, &self.cfg);
+                }
                 Overlay::Prompt { label, input } => {
                     draw_prompt(buf, self.area, label, input, &self.cfg);
                     cursor = None;
@@ -1421,6 +1456,34 @@ mod tests {
         // A different cell is a different placement, not a replacement.
         merge_images(&mut standing, vec![img(3, 5, 99)]);
         assert_eq!(standing.len(), 2);
+    }
+
+    #[test]
+    fn a_missing_config_opens_the_welcome_and_answering_it_writes_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ttmux.toml");
+        let cfg = Config {
+            general: General {
+                shell: "/bin/cat".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut a = App::new(cfg, path.clone(), Rect::new(0, 0, 80, 24)).unwrap();
+        assert!(matches!(a.overlay, Overlay::Welcome(_)));
+
+        // Pick the tmux preset, then dismiss the closing screen.
+        a.on_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(a.cfg.general.keys_preset, crate::config::KeysPreset::Tmux);
+        assert!(path.exists(), "the choice was not written");
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(a.overlay, Overlay::None));
+
+        // The written file is what suppresses the picker next launch.
+        let again = App::new(Config::load(&path).unwrap(), path, Rect::new(0, 0, 80, 24)).unwrap();
+        assert!(matches!(again.overlay, Overlay::None));
     }
 
     #[test]

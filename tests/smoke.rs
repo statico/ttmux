@@ -17,6 +17,15 @@ struct Harness {
 
 impl Harness {
     fn start(cols: u16, rows: u16) -> Harness {
+        Harness::spawn(cols, rows, true)
+    }
+
+    /// No config on disk, which is what puts the app on the welcome screen.
+    fn start_first_run(cols: u16, rows: u16) -> Harness {
+        Harness::spawn(cols, rows, false)
+    }
+
+    fn spawn(cols: u16, rows: u16, configured: bool) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -33,7 +42,14 @@ impl Harness {
         cmd.env("TERM", "xterm-256color");
         cmd.env("SHELL", "/bin/sh");
         cmd.env("PS1", "$ ");
-        cmd.env("TTMUX_CONFIG", dir.path().join("ttmux.toml"));
+        let cfg_path = dir.path().join("ttmux.toml");
+        // An empty file is a default config, and its mere existence is what
+        // tells the app this is not a first run. Without it every smoke test
+        // would open on the keymap picker.
+        if configured {
+            std::fs::write(&cfg_path, "").unwrap();
+        }
+        cmd.env("TTMUX_CONFIG", &cfg_path);
         cmd.env("TTMUX_SESSION", "test");
         let child = pair.slave.spawn_command(cmd).unwrap();
         drop(pair.slave);
@@ -386,4 +402,30 @@ fn the_help_overlay_hides_the_pane_behind_it() {
             "help let the pane through on row {y}: {line:?}"
         );
     }
+}
+
+#[test]
+fn a_first_run_offers_the_keymap_picker_and_then_gets_out_of_the_way() {
+    let mut h = Harness::start_first_run(80, 24);
+    h.wait_for("the welcome panel", |s| {
+        s.contains("welcome to ttmux") && s.contains("Modern")
+    });
+    // It says the choice is not permanent, which is the whole point of
+    // showing it before anyone has learned a key.
+    h.wait_for("the reassurance", |s| s.contains("changed later"));
+
+    // Pick stock tmux, and the closing screen names that preset's keys.
+    h.send(b"2");
+    h.wait_for("the closing screen", |s| {
+        s.contains("You're set") && s.contains("ctrl+b")
+    });
+
+    h.send(b"\r");
+    h.wait_for("the picker to get out of the way", |s| {
+        !s.contains("You're set") && s.contains('\u{256d}')
+    });
+
+    // The preset it wrote is live: ctrl+b % splits, ctrl+t does nothing.
+    h.send(b"\x02%");
+    h.wait_for("a second pane", |s| s.matches('\u{256d}').count() >= 2);
 }
