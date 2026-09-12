@@ -148,6 +148,10 @@ impl Pane {
             cmd.cwd(dir);
         }
         cmd.env("TERM", "xterm-256color");
+        // Every colour a pane emits reaches the outer terminal as 24-bit, so
+        // say so: without it a program downgrades to the 16 ANSI colours and
+        // paints, say, a badge as reverse video.
+        cmd.env("COLORTERM", "truecolor");
         cmd.env("TTMUX", "1");
         cmd.env("TTMUX_PANE", id.to_string());
         Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)
@@ -557,6 +561,18 @@ mod tests {
     fn osc_sets_the_title() {
         let mut p = pane("printf '\\033]0;mytitle\\007'", 40, 10);
         assert!(pump_until(&mut p, |p| p.title() == "mytitle"));
+    }
+
+    #[test]
+    fn a_pane_advertises_truecolor() {
+        let mut cfg = Config::default();
+        cfg.general.shell = "/bin/sh".into();
+        cfg.general.shell_args = vec!["-c".into(), "printf %s \"$COLORTERM\"".into()];
+        let mut p = Pane::spawn(1, &cfg, None, 40, 4).unwrap();
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("truecolor")));
     }
 
     #[test]
