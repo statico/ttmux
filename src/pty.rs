@@ -578,15 +578,9 @@ mod tests {
         // and the text lands wherever the cursor happened to be.
         let mut p = pane("printf '\\033[3;5fX\\033[0;1fY'", 40, 10);
         assert!(pump_until(&mut p, |p| p.screen().contents().contains('X')));
-        assert_eq!(
-            p.screen().cell(2, 4).map(|c| c.contents()),
-            Some("X".into())
-        );
+        assert_eq!(p.screen().cell(2, 4).map(|c| c.contents()), Some("X"));
         // A row or column of 0 means 1, same as for CUP.
-        assert_eq!(
-            p.screen().cell(0, 0).map(|c| c.contents()),
-            Some("Y".into())
-        );
+        assert_eq!(p.screen().cell(0, 0).map(|c| c.contents()), Some("Y"));
     }
 
     #[test]
