@@ -102,10 +102,19 @@ impl Welcome {
         }
     }
 
+    /// The navigation line; the modal chrome draws it, so the panel body
+    /// never spells the same keys out a second time.
+    pub fn hint(&self) -> &'static str {
+        match self.step {
+            Step::Pick => "↑↓ or 1-3 choose   enter confirm",
+            Step::Ready => "any key to start",
+        }
+    }
+
     pub fn title(&self) -> &'static str {
         match self.step {
-            Step::Pick => " welcome to ttmux ",
-            Step::Ready => " you're set ",
+            Step::Pick => "welcome to ttmux",
+            Step::Ready => "you're set",
         }
     }
 
@@ -130,8 +139,6 @@ impl Welcome {
             row.dim,
         );
         row.line("option can be changed later in settings.", row.dim);
-        row.skip();
-        row.line("↑↓ or 1-3 to choose, enter to confirm.", row.accent);
     }
 }
 
@@ -160,8 +167,6 @@ fn draw_ready(buf: &mut Buffer, inner: Rect, cfg: &Config) {
     }
     row.skip();
     row.line("Enjoy.", row.plain);
-    row.skip();
-    row.line("Any key to start.", row.dim);
 }
 
 /// The first binding for `action`, or a placeholder when it is unbound.

@@ -206,7 +206,6 @@ impl Picker {
     pub fn draw(&self, buf: &mut Buffer, r: Rect, cfg: &Config) {
         let plain = Style::default().fg(cfg.status.fg.into());
         let dim = plain.add_modifier(Modifier::DIM);
-        let accent = Style::default().fg(cfg.status.accent.into());
         let line = |buf: &mut Buffer, dy: u16, text: &str, style: Style| {
             let y = r.y.saturating_add(dy);
             if dy < r.h {
@@ -292,9 +291,6 @@ impl Picker {
                 put(buf, cx, r.y + gy, ch, 1, Style::default().bg(*c).fg(fg));
             }
         }
-        // Only drawn when the panel has a spare row; the settings footer
-        // carries the same keys.
-        line(buf, HEIGHT, "tab: swatches / hex / rgb", accent);
     }
 }
 
