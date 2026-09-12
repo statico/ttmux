@@ -2,9 +2,10 @@
 # documents itself by existing.
 
 CARGO ?= cargo
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release run install test fmt lint check clean
+.PHONY: help build release run install test fmt lint check clean tag
 
 help: ## Show this help
 	@printf '\033[1mttmux\033[0m — make targets\n\n'
@@ -41,3 +42,8 @@ check: ## What CI runs: formatting, lints, tests
 
 clean: ## Remove build artifacts
 	$(CARGO) clean
+
+# Pushing the tag is what starts .github/workflows/release.yml.
+tag: check ## Tag the version in Cargo.toml and push it, which cuts a release
+	git tag -a v$(VERSION) -m 'ttmux v$(VERSION)'
+	git push origin v$(VERSION)
