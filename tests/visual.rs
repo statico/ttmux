@@ -340,6 +340,18 @@ fn the_hint_is_dropped_before_the_content_when_the_modal_is_tiny() {
 }
 
 #[test]
+fn modal_content_is_inset_from_the_border() {
+    let cfg = Config::default();
+    let mut buf = covered(40, 16);
+    let rect = Rect::new(2, 1, 30, 10);
+    let inner = ttmux::app::modal(&mut buf, rect, "help", "any key to close", &cfg);
+    // A cell of padding at the sides and a row under the title chip, so text
+    // never sits against the rule.
+    assert_eq!((inner.x, inner.y), (rect.x + 2, rect.y + 2));
+    assert_eq!(inner.right(), rect.right() - 2);
+}
+
+#[test]
 fn every_modal_draws_at_any_size_without_panicking() {
     let cfg = Config::default();
     let welcome = ttmux::onboarding::Welcome::new();
