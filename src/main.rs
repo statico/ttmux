@@ -110,10 +110,6 @@ fn run() -> Result<ExitCode> {
             let name = target(&rest, &["-t", "-s"])?.unwrap_or_else(default_session);
             ttmux::client::attach(&name, create)?;
         }
-        "ls" => {
-            ttmux::proto::cleanup_stale();
-            print!("{}", ttmux::proto::sessions_report(false, None));
-        }
         "kill-session" => {
             let name = target(&rest, &["-t", "-s"])?
                 .ok_or_else(|| anyhow::anyhow!("kill-session needs -t NAME"))?;
@@ -156,7 +152,7 @@ fn script_command(verb: &str, rest: Vec<String>) -> ExitCode {
     }
     // Listing the sessions is the one command that must work when none is
     // running: "is anything up?" is the question you ask before attaching.
-    if verb == "list-sessions" {
+    if script::spec_name(verb) == Some("list-sessions") {
         ttmux::proto::cleanup_stale();
         let json = rest.iter().any(|a| a == "--json");
         if rest.iter().any(|a| a != "--json") {
