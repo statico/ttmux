@@ -10,7 +10,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::{cursor::MoveTo, execute, queue, terminal};
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
@@ -31,6 +31,45 @@ use crate::status;
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
 /// Event-loop tick. Fast enough to feel live, slow enough to stay idle-cheap.
 const TICK: Duration = Duration::from_millis(8);
+
+/// Where a running `App` gets its input and where out-of-band bytes go.
+pub trait Host {
+    /// Wait up to `timeout` for one event. `Ok(None)` means the timeout
+    /// elapsed; `Err` means the source is gone and the loop should end.
+    fn poll(&mut self, timeout: Duration) -> Result<Option<Event>>;
+    /// Bytes for the attached terminal verbatim -- inline-image replays and
+    /// the bell. These cannot go through the cell buffer.
+    fn passthrough(&mut self, bytes: &[u8]) -> Result<()>;
+}
+
+/// The local terminal: crossterm's event queue and this process's stdout.
+pub struct LocalHost;
+
+impl Host for LocalHost {
+    fn poll(&mut self, timeout: Duration) -> Result<Option<Event>> {
+        if event::poll(timeout)? {
+            Ok(Some(event::read()?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn passthrough(&mut self, bytes: &[u8]) -> Result<()> {
+        let mut out = io::stdout();
+        out.write_all(bytes)?;
+        out.flush()?;
+        Ok(())
+    }
+}
+
+/// Why `main_loop` returned. The driver decides what that costs the session:
+/// `Quit` ends it and kills every pane; `Detached` leaves the panes running
+/// and only drops this view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    Quit,
+    Detached,
+}
 
 // ------------------------------------------------------------------ state
 
@@ -79,7 +118,10 @@ pub struct App {
     /// Whether the last frame emitted any graphics, so a frame with none
     /// still issues one delete pass to wipe what the last one placed.
     drew_graphics: bool,
-    quit: bool,
+    /// Set by the `quit` action: tear the session down, panes included.
+    pub quit: bool,
+    /// Set by the `detach` action: end this view only, panes keep running.
+    pub detached: bool,
 }
 
 // ------------------------------------------------------------------ entry
@@ -103,7 +145,8 @@ pub fn run() -> Result<()> {
     let result = (|| {
         let size = term.size()?;
         let mut app = App::new(cfg, path, Rect::new(0, 0, size.width, size.height))?;
-        app.main_loop(&mut term)
+        app.main_loop(&mut term, &mut LocalHost)?;
+        Ok(())
     })();
     restore()?;
     result
@@ -160,6 +203,7 @@ impl App {
             session: std::env::var("TTMUX_SESSION").unwrap_or_else(|_| "main".into()),
             drew_graphics: false,
             quit: false,
+            detached: false,
         };
         app.new_tab()?;
         Ok(app)
@@ -568,6 +612,7 @@ impl App {
                 }
             }
             Quit => self.quit = true,
+            Detach => self.detached = true,
             Nop => {}
         }
         Ok(())
@@ -853,12 +898,28 @@ impl App {
 
     // ------------------------------------------------------------- loop
 
-    fn main_loop(&mut self, term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    pub fn main_loop<B: Backend>(
+        &mut self,
+        term: &mut Terminal<B>,
+        host: &mut dyn Host,
+    ) -> Result<Exit>
+    where
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         let mut dirty = true;
         let mut last_tick = Instant::now();
-        while !self.quit {
-            if event::poll(TICK)? {
-                match event::read()? {
+        loop {
+            if let Some(e) = self.exit() {
+                return Ok(e);
+            }
+            // A dead event source is not a crash: the panes are untouched and
+            // only this view ends, which is exactly what detaching means.
+            let ev = match host.poll(TICK) {
+                Ok(ev) => ev,
+                Err(_) => return Ok(Exit::Detached),
+            };
+            if let Some(ev) = ev {
+                match ev {
                     Event::Key(k) => self.on_key(k)?,
                     Event::Mouse(m) => self.on_mouse(m)?,
                     Event::Paste(text) => {
@@ -900,11 +961,11 @@ impl App {
                 dirty = true;
             }
             if output || tick {
-                self.update_agents();
+                self.update_agents(host)?;
             }
             self.reap();
-            if self.quit {
-                break;
+            if let Some(e) = self.exit() {
+                return Ok(e);
             }
 
             if self
@@ -917,16 +978,24 @@ impl App {
             }
 
             if dirty {
-                self.draw(term)?;
+                self.draw(term, host)?;
                 dirty = false;
             }
         }
-        Ok(())
     }
 
-    fn update_agents(&mut self) {
+    /// Whether the loop is over, and on whose terms.
+    fn exit(&self) -> Option<Exit> {
+        match (self.quit, self.detached) {
+            (true, _) => Some(Exit::Quit),
+            (_, true) => Some(Exit::Detached),
+            _ => None,
+        }
+    }
+
+    fn update_agents(&mut self, host: &mut dyn Host) -> Result<()> {
         if !self.cfg.agents.enabled {
-            return;
+            return Ok(());
         }
         let bell_on = self.cfg.agents.bell_on_attention;
         let mut ring = false;
@@ -942,14 +1011,17 @@ impl App {
         }
         if ring {
             // Pass the bell through to the outer terminal so the OS notifies.
-            let _ = io::stdout().write_all(b"\x07");
-            let _ = io::stdout().flush();
+            host.passthrough(b"\x07")?;
         }
+        Ok(())
     }
 
     // ------------------------------------------------------------ render
 
-    fn draw(&mut self, term: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+    pub fn draw<B: Backend>(&mut self, term: &mut Terminal<B>, host: &mut dyn Host) -> Result<()>
+    where
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
         // Snapshot what the closure needs; `draw` borrows `self` mutably.
         let body = self.body();
         if self.tabs.is_empty() {
@@ -1074,7 +1146,7 @@ impl App {
                 f.set_cursor_position(Position::new(x, y));
             }
         })?;
-        self.replay_images(&places)?;
+        self.replay_images(&places, host)?;
         self.tab_hits = hits;
         Ok(())
     }
@@ -1084,7 +1156,7 @@ impl App {
     /// Terminals draw images into their own layer at the real cursor, not
     /// into ratatui's buffer, so this has to run once `term.draw` has
     /// finished painting or the next diff simply covers them.
-    fn replay_images(&mut self, places: &[(PaneId, Rect)]) -> Result<()> {
+    fn replay_images(&mut self, places: &[(PaneId, Rect)], host: &mut dyn Host) -> Result<()> {
         for slot in self.slots.values_mut() {
             let new = slot.pane.take_images();
             if !self.cfg.general.passthrough_images {
@@ -1103,10 +1175,9 @@ impl App {
         if !pending && !self.drew_graphics {
             return Ok(());
         }
-        let mut out = io::stdout();
         // Kitty keeps a placement until told to drop it; iTerm2 and sixel
         // images are cell content, which the repaint above already erased.
-        out.write_all(b"\x1b_Ga=d\x1b\\")?;
+        let mut out: Vec<u8> = b"\x1b_Ga=d\x1b\\".to_vec();
         let mut drew = false;
         for (id, inner) in places {
             let Some(slot) = self.slots.get(id) else {
@@ -1122,7 +1193,7 @@ impl App {
                 drew = true;
             }
         }
-        out.flush()?;
+        host.passthrough(&out)?;
         self.drew_graphics = drew;
         Ok(())
     }
@@ -1267,6 +1338,45 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
 mod tests {
     use super::*;
     use crate::config::General;
+    use crossterm::event::KeyModifiers;
+    use ratatui::backend::TestBackend;
+
+    /// A `Host` with a scripted event queue: an empty queue is a gone source,
+    /// which is how these tests end a `main_loop` without a real terminal.
+    #[derive(Default)]
+    struct FakeHost {
+        events: std::collections::VecDeque<Event>,
+        out: Vec<u8>,
+        polls: usize,
+    }
+
+    impl FakeHost {
+        fn with(events: Vec<Event>) -> FakeHost {
+            FakeHost {
+                events: events.into(),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl Host for FakeHost {
+        fn poll(&mut self, _timeout: Duration) -> Result<Option<Event>> {
+            self.polls += 1;
+            self.events
+                .pop_front()
+                .map(Some)
+                .ok_or_else(|| anyhow::anyhow!("source gone"))
+        }
+
+        fn passthrough(&mut self, bytes: &[u8]) -> Result<()> {
+            self.out.extend_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    fn key(c: char, mods: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
 
     /// An app with one tab and one pane. `cat` is a cheap child that stays
     /// alive without writing anything, so nothing races with the assertions.
@@ -1436,5 +1546,81 @@ mod tests {
         let mut buf = Buffer::empty(area.into());
         Settings::new().draw(&mut buf, rect, &cfg);
         assert_eq!(corner(&buf), "\u{250f}", "settings");
+    }
+
+    #[test]
+    fn detach_is_an_action_and_exits_without_quitting() {
+        assert_eq!("detach".parse(), Ok(Action::Detach));
+        assert_eq!(Action::Detach.to_string(), "detach");
+        assert!(ALL_ACTIONS.contains(&Action::Detach));
+
+        let mut a = app();
+        a.dispatch(Action::Detach).unwrap();
+        assert_eq!(a.exit(), Some(Exit::Detached));
+        assert!(!a.quit, "detach must not tear the session down");
+
+        let mut a = app();
+        a.dispatch(Action::Quit).unwrap();
+        assert_eq!(a.exit(), Some(Exit::Quit));
+    }
+
+    #[test]
+    fn a_scripted_host_drives_the_loop_with_no_terminal() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        // The default keymap: ctrl+t is the prefix, shift+Q quits.
+        let mut host = FakeHost::with(vec![
+            Event::Resize(60, 20),
+            Event::Paste("hello".into()),
+            key('t', KeyModifiers::CONTROL),
+            key('Q', KeyModifiers::SHIFT),
+            // Never reached: the quit above ends the loop first.
+            key('x', KeyModifiers::NONE),
+        ]);
+
+        assert_eq!(a.main_loop(&mut term, &mut host).unwrap(), Exit::Quit);
+        assert_eq!(a.area, Rect::new(0, 0, 60, 20), "resize reached the app");
+        assert_eq!(host.events.len(), 1, "loop stopped at the quit key");
+        // Something was actually painted through the backend.
+        let painted = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|c| c.symbol() != " ");
+        assert!(painted);
+    }
+
+    #[test]
+    fn a_gone_host_detaches_rather_than_erroring() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+        assert_eq!(a.main_loop(&mut term, &mut host).unwrap(), Exit::Detached);
+    }
+
+    #[test]
+    fn images_and_the_bell_go_to_the_host_not_stdout() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+
+        let id = a.focus();
+        a.slots.get_mut(&id).unwrap().images.push(Image {
+            row: 0,
+            col: 0,
+            bytes: b"\x1b_Gf=100;PAYLOAD\x1b\\".to_vec(),
+        });
+        a.draw(&mut term, &mut host).unwrap();
+        assert!(
+            host.out.windows(7).any(|w| w == b"PAYLOAD"),
+            "image replay did not reach the host"
+        );
+
+        host.out.clear();
+        // A pane bell is an attention trigger, and attention rings once.
+        a.slots.get_mut(&id).unwrap().pane.bell = true;
+        a.update_agents(&mut host).unwrap();
+        assert!(host.out.contains(&0x07), "bell did not reach the host");
     }
 }
