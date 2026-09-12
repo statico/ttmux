@@ -216,3 +216,57 @@ impl Settings {
 
 ## src/app.rs
 Owned by the lead. Wires everything: event loop, tabs, panes, dispatch.
+
+The loop is generic over the terminal so the same `App` runs against the
+local terminal or against a client on the far end of a socket:
+
+```rust
+/// Where a running `App` gets its input and where out-of-band bytes go.
+pub trait Host {
+    fn poll(&mut self, timeout: Duration) -> anyhow::Result<Option<Event>>;
+    /// Bytes for the attached terminal verbatim -- inline-image replays and
+    /// the bell. These cannot go through the cell buffer.
+    fn passthrough(&mut self, bytes: &[u8]) -> anyhow::Result<()>;
+}
+/// The local terminal: crossterm's event queue and this process's stdout.
+pub struct LocalHost;
+
+/// Quit ends the session and kills every pane; Detached leaves the panes
+/// running and only drops this view.
+pub enum Exit { Quit, Detached }
+
+impl App {
+    pub fn main_loop<B: Backend>(&mut self, term: &mut Terminal<B>, host: &mut dyn Host) -> Result<Exit>;
+    pub fn draw<B: Backend>(&mut self, term: &mut Terminal<B>, host: &mut dyn Host) -> Result<()>;
+}
+pub fn run() -> Result<()>;  // LocalHost + CrosstermBackend, the in-process mode
+```
+
+A `poll` that errors is a detach, not a crash: a dead socket means the view
+ended.
+
+## src/proto.rs
+Length-prefixed JSON over a unix socket, between the client and the server
+that owns the ptys.
+
+```rust
+pub const PROTOCOL: u32;   // part of the socket path, so a new binary starts
+                           // its own server and old clients keep the old one
+pub const MAX_FRAME: u32;  // a declared length is never allocated blindly
+pub struct WireCell { pub x: u16, pub y: u16, pub symbol: String, pub style: Style }
+pub enum ClientMsg { Hello { proto, cols, rows, term }, Input(crossterm::event::Event), Detach, KillServer }
+pub enum ServerMsg { Welcome { proto, version }, Draw(Vec<WireCell>), Clear, Cursor(Option<(u16,u16)>), Passthrough(Vec<u8>), Bye(String), Error(String) }
+
+pub fn write_msg<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()>;
+/// `Ok(None)` only at a clean frame boundary, so the caller can tell
+/// "peer detached" from "peer died".
+pub fn read_msg<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<Option<T>>;
+pub fn socket_dir() -> io::Result<PathBuf>;   // 0700 and owned by you, or it errors
+pub fn socket_path(session: &str) -> io::Result<PathBuf>;  // $TTMUX_SOCKET wins
+pub fn list_sessions() -> Vec<(String, PathBuf)>;
+pub fn is_live(path: &Path) -> bool;
+pub fn cleanup_stale();
+```
+
+There is no separate resize message: a client's `Event::Resize` is the
+resize path, and the server's area is the minimum over attached clients.
