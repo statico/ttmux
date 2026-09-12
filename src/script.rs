@@ -121,7 +121,9 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "select-pane" => {
             let dir = a.direction();
-            match (a.pane_target()?, dir) {
+            let target = a.pane_target()?;
+            a.end(verb)?;
+            match (target, dir) {
                 (Some(_), Some(_)) => bail!("select-pane takes a target or a direction, not both"),
                 (Some(id), None) => Cmd::SelectPane(id),
                 (None, Some(d)) => Cmd::Run(Action::Focus(d)),
@@ -136,14 +138,24 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             } else if a.flag("-l") {
                 Cmd::Run(Action::LastTab)
             } else {
-                match a.window_target()? {
+                let target = a.window_target()?;
+                a.end(verb)?;
+                match target {
                     Some(n) => Cmd::SelectWindow(n),
                     None => bail!("select-window needs -t N, -n, -p or -l"),
                 }
             }
         }
-        "kill-pane" => Cmd::KillPane(a.pane_target()?),
-        "kill-window" => Cmd::KillWindow(a.window_target()?),
+        "kill-pane" => {
+            let target = a.pane_target()?;
+            a.end(verb)?;
+            Cmd::KillPane(target)
+        }
+        "kill-window" => {
+            let target = a.window_target()?;
+            a.end(verb)?;
+            Cmd::KillWindow(target)
+        }
         "rename-window" => {
             let target = a.window_target()?;
             let name = a.joined();
@@ -160,8 +172,14 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             }
             Cmd::RenamePane { target, name }
         }
-        "list-panes" => Cmd::ListPanes,
-        "list-windows" => Cmd::ListWindows,
+        "list-panes" => {
+            a.end(verb)?;
+            Cmd::ListPanes
+        }
+        "list-windows" => {
+            a.end(verb)?;
+            Cmd::ListWindows
+        }
         "display-message" => {
             let text = a.joined();
             if text.is_empty() {
@@ -395,6 +413,12 @@ mod tests {
                 name: "build and test".into(),
             }
         );
+    }
+
+    #[test]
+    fn a_misspelled_flag_is_an_error_rather_than_silence() {
+        assert!(parse("list-panes", &["-x".into()]).is_err());
+        assert!(parse("kill-pane", &["-t".into(), "%1".into(), "oops".into()]).is_err());
     }
 
     #[test]
