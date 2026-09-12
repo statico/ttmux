@@ -26,14 +26,29 @@ Three ways to reach these commands:
 
 Every command goes to one session. The session is the one `$TTMUX_SESSION`
 names. Every pane already has it set, so a script inside a pane needs no
-target. Outside a pane the default is `main`.
+target. Outside a pane the default is `main`; set `TTMUX_SESSION=work` to
+reach another.
 
 Inside the session, `-t` picks what the command acts on:
 
 | Command takes | What `-t` accepts | With no `-t` |
 |---|---|---|
-| A pane | a pane id from `list-panes`, such as `%3` or plain `3` | the focused pane |
+| A pane | a pane id from `list-panes`, such as `%3` or plain `3` | the pane the script runs in, else the focused pane |
 | A window | a window number, counted from 1 | the current window |
+
+The pane a script runs in is `$TTMUX_PANE`, which every pane has set, the
+way tmux sets `$TMUX_PANE`. So a script that captures or splits "its own"
+pane keeps working while you click around in other panes. From a shell
+outside ttmux, or from the <kbd>:</kbd> line, there is no such pane and the
+focused one is used.
+
+`split-window`, `new-window` and `break-pane` print what they made: the new
+pane's id, or the new window's number. Capture it instead of guessing:
+
+```
+pane=$(ttmux split-window -h)
+ttmux send-keys -t "$pane" 'make test' Enter
+```
 
 Every short flag has a long spelling. `-t` is `--target`, and `-s` is
 `--source`. The value can follow the flag or join it with `=`, so
@@ -79,19 +94,22 @@ ttmux send-keys -l Enter
 ### capture-pane
 
 ```
-ttmux capture-pane [-t PANE] [-S]
+ttmux capture-pane [-t PANE] [-S [LINE]] [-p]
 ```
 
-Print what a pane shows, for reading a build or a test run.
+Print what a pane shows, for reading a build or a test run. Trailing blank
+lines are dropped.
 
 | Flag | Meaning |
 |---|---|
-| `-t`, `--target PANE` | the pane to act on. Default is the focused one |
-| `-S`, `--history` | include the scrollback, not only the visible screen |
+| `-t`, `--target PANE` | the pane to act on. Default is the caller's pane, else the focused one |
+| `-S`, `--start [LINE]` | include scrollback. Bare `-S` or `-S -` is all of it, as in tmux. `-S -50` is the 50 lines above the screen |
+| `-p`, `--print` | print to stdout, which this command always does. Accepted so a tmux script runs as written |
 
 ```
 ttmux capture-pane
-ttmux capture-pane -t %2 --history
+ttmux capture-pane -t %2 -S -
+ttmux capture-pane -p -S -50
 ```
 
 ### split-window
@@ -100,7 +118,8 @@ ttmux capture-pane -t %2 --history
 ttmux split-window [-t PANE] [-h] [-v]
 ```
 
-Split a pane in two.
+Split a pane in two, and print the new pane's id, such as `%2`. The new
+pane takes the focus. A pane too small to split is an error.
 
 | Flag | Meaning |
 |---|---|
@@ -199,7 +218,7 @@ ttmux join-pane -s %4 -t 1 -h
 ttmux break-pane [-t PANE]
 ```
 
-Move a pane into a new window of its own.
+Move a pane into a new window of its own, and print that window's number.
 
 | Flag | Meaning |
 |---|---|
@@ -269,7 +288,7 @@ ttmux list-panes -a --json
 ttmux new-window [-n NAME]
 ```
 
-Open a window.
+Open a window, focus it, and print its number.
 
 | Flag | Meaning |
 |---|---|
@@ -520,11 +539,10 @@ ttmux run 'select-tab 2'
 ### Run a build in a second pane and read the result
 
 ```
-ttmux split-window -h
-ttmux list-panes
-ttmux send-keys -t %2 'make check' Enter
+build=$(ttmux split-window -h)
+ttmux send-keys -t "$build" 'make check' Enter
 sleep 60
-ttmux capture-pane -t %2 --history > /tmp/build.log
+ttmux capture-pane -t "$build" -S - > /tmp/build.log
 ttmux display-message 'build log is in /tmp/build.log'
 ```
 
@@ -534,29 +552,29 @@ ttmux display-message 'build log is in /tmp/build.log'
 #!/bin/sh
 ttmux new-window -n work
 ttmux rename-pane editor
-ttmux split-window -h
-ttmux rename-pane -t %2 server
-ttmux split-window -v
-ttmux rename-pane -t %3 logs
+server=$(ttmux split-window -h)
+ttmux rename-pane -t "$server" server
+logs=$(ttmux split-window -v)
+ttmux rename-pane -t "$logs" logs
 ttmux select-layout main-vertical
-ttmux send-keys -t %2 'npm run dev' Enter
-ttmux send-keys -t %3 'tail -f log/dev.log' Enter
-ttmux select-pane -t %1
+ttmux send-keys -t "$server" 'npm run dev' Enter
+ttmux send-keys -t "$logs" 'tail -f log/dev.log' Enter
+ttmux select-pane -t "$TTMUX_PANE"
 ```
 
 ### Drive a long-running agent pane and watch for output
 
 ```
 #!/bin/sh
-ttmux split-window -v
-ttmux rename-pane -t %2 agent
-ttmux send-keys -t %2 'claude' Enter
-ttmux send-keys -t %2 'fix the failing test' Enter
-while ! ttmux capture-pane -t %2 | grep -q 'Done'; do
+agent=$(ttmux split-window -v)
+ttmux rename-pane -t "$agent" agent
+ttmux send-keys -t "$agent" 'claude' Enter
+ttmux send-keys -t "$agent" 'fix the failing test' Enter
+while ! ttmux capture-pane -t "$agent" | grep -q 'Done'; do
   sleep 5
 done
 ttmux display-message 'the agent finished'
-ttmux select-pane -t %2
+ttmux select-pane -t "$agent"
 ```
 
 ### Move a pane into another window
@@ -572,9 +590,9 @@ ttmux select-layout even-horizontal
 ### Park a pane in its own window, then bring it back
 
 ```
-ttmux break-pane -t %3
-ttmux rename-window scratch
-ttmux move-window -t 1
+scratch=$(ttmux break-pane -t %3)
+ttmux rename-window -t "$scratch" scratch
+ttmux move-window -s "$scratch" -t 1
 ttmux join-pane -s %3 -t 2
 ttmux select-window -t 2
 ```
@@ -593,7 +611,12 @@ ttmux set-option appearance.gap 0
 ## For agents
 
 - `ttmux list-commands --json` prints the whole surface: every command, its
-  flags, its examples, and the exit codes. Read it once instead of guessing.
+  flags, its tmux aliases, its examples, and the exit codes. Read it once
+  instead of guessing.
+- Leave `-t` off to act on your own pane. `$TTMUX_PANE` is its id, for when
+  you need to say it out loud, as in `select-pane -t "$TTMUX_PANE"`.
+- `split-window` prints the id of the pane it made. Keep it, and target that
+  pane by id from then on.
 - `ttmux <command> --help` prints one command: what it does, its flags, and
   its examples.
 - Use `--json` for anything you parse. A table is for people, and its shape

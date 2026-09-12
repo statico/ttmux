@@ -27,7 +27,7 @@ use ratatui::Terminal;
 
 use crate::app::{App, Exit, Host, ScriptJob};
 use crate::config::Config;
-use crate::layout::Rect;
+use crate::layout::{PaneId, Rect};
 use crate::proto::{self, ClientMsg, ServerMsg, WireCell};
 use crate::script;
 
@@ -313,8 +313,8 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         }
         // Also one-shot: a script hands over a command, reads the answer and
         // leaves. It never becomes a viewer, so it never resizes the session.
-        Ok(Some(ClientMsg::Command(argv))) => {
-            let (code, text) = run_command(&hub, argv);
+        Ok(Some(ClientMsg::Command { argv, pane })) => {
+            let (code, text) = run_command(&hub, argv, pane);
             let _ = proto::write_msg(&mut out, &ServerMsg::Reply { code, text });
             return;
         }
@@ -393,8 +393,8 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 hub.kill.store(true, Ordering::SeqCst);
                 park();
             }
-            Ok(Some(ClientMsg::Command(argv))) => {
-                let (code, text) = run_command(&hub, argv);
+            Ok(Some(ClientMsg::Command { argv, pane })) => {
+                let (code, text) = run_command(&hub, argv, pane);
                 let st = hub.state.lock().unwrap();
                 if let Some(c) = st.clients.iter().find(|c| c.id == id) {
                     let _ = c.tx.try_send(ServerMsg::Reply { code, text });
@@ -408,7 +408,7 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
 
 /// Parse one scripted command and run it on the app thread, waiting for the
 /// answer. Parse errors never reach the app: they are the script's mistake.
-fn run_command(hub: &Hub, argv: Vec<String>) -> (u8, String) {
+fn run_command(hub: &Hub, argv: Vec<String>, caller: Option<PaneId>) -> (u8, String) {
     let Some((verb, args)) = argv.split_first() else {
         return (script::EXIT_USAGE, "no command".into());
     };
@@ -417,7 +417,15 @@ fn run_command(hub: &Hub, argv: Vec<String>) -> (u8, String) {
         Err(e) => return (script::EXIT_USAGE, format!("{e:#}")),
     };
     let (tx, rx) = mpsc::sync_channel(1);
-    if hub.jobs.send(ScriptJob { cmd, reply: tx }).is_err() {
+    if hub
+        .jobs
+        .send(ScriptJob {
+            cmd,
+            caller,
+            reply: tx,
+        })
+        .is_err()
+    {
         return (script::EXIT_ERROR, "session is shutting down".into());
     }
     // The app answers within a tick; a longer wait means it is wedged, and a

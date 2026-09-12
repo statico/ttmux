@@ -131,8 +131,9 @@ tmux script mostly runs unchanged.
 
 ```
 ttmux send-keys -t %2 "make test" Enter   # type into a pane
-ttmux split-window -h                     # split side by side
-ttmux new-window                          # open a tab
+ttmux split-window -h                     # split side by side, prints %2
+ttmux capture-pane -t %2 -S -             # read a pane, scrollback and all
+ttmux new-window                          # open a tab, prints its number
 ttmux select-pane -t %2                   # or -L -R -U -D
 ttmux list-panes                          # %2: [80x24] zsh (active)
 ttmux list-windows                        # 1:build (2 panes) (active)
@@ -144,9 +145,9 @@ ttmux run toggle-zoom                     # any key-binding action
 ```
 
 A target is a pane id from `list-panes`, or a window number counted from 1.
-With no target the command acts on the focused pane. The session is the one
-`$TTMUX_SESSION` names, which every pane already has set. `ttmux --help`
-prints the full list.
+With no target the command acts on the pane it was run from, or the focused
+pane outside ttmux. The session is the one `$TTMUX_SESSION` names, which
+every pane already has set. `ttmux --help` prints the full list.
 
 [API.md](API.md) is the full reference: every command, every flag, the exit
 codes, and recipes. `ttmux <command> --help` prints one command, and

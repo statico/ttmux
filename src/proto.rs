@@ -47,7 +47,12 @@ pub enum ClientMsg {
     KillServer,
     /// One scripting command and its arguments, already split by the shell.
     /// A command is a whole connection: no hello, no view, one reply.
-    Command(Vec<String>),
+    /// `pane` is the pane the script runs in (`$TTMUX_PANE`), which is what a
+    /// command with no `-t` acts on, as in tmux. `None` means the focused one.
+    Command {
+        argv: Vec<String>,
+        pane: Option<crate::layout::PaneId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
