@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1 — 2026-09-12
+
+- The settings screen has an About section with the version and the
+  project URL.
+
 ## 0.3.0 — 2026-09-12
 
 - Scripting API: `ttmux send-keys`, `split-window`, `select-pane`,
