@@ -1318,12 +1318,29 @@ pub fn modal_bg(cfg: &Config) -> Color {
 /// `modal` and `Settings::on_mouse` both need it, so where a click lands and
 /// where a row was drawn cannot drift apart.
 pub fn modal_content(rect: Rect) -> Rect {
-    let mut inner = rect.shrink(1);
+    let mut inner = modal_box(rect);
     // The hint is the first thing to go: content outranks it.
-    if inner.h > 2 {
+    if inner.h > 1 {
         inner.h -= 1;
     }
     inner
+}
+
+/// Everything inside the border, hint row included.
+///
+/// Text flush against the border is hard to read, so this is inset one cell
+/// at the sides and one row under the title chip.
+fn modal_box(rect: Rect) -> Rect {
+    let mut b = rect.shrink(1);
+    if b.w > 2 {
+        b.x += 1;
+        b.w -= 2;
+    }
+    if b.h > 2 {
+        b.y += 1;
+        b.h -= 1;
+    }
+    b
 }
 
 /// The chrome every modal wears: shadow, raised ground, heavy accent border,
@@ -1372,7 +1389,7 @@ pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config
         );
     }
 
-    if !hint.is_empty() && inner.h < rect.shrink(1).h {
+    if !hint.is_empty() && inner.h < modal_box(rect).h {
         crate::settings_ui::put(
             buf,
             inner.x,
