@@ -113,6 +113,28 @@ ttmux kill-session -t work  # stop one
 an upgrade never kills a running session. Detach, install, then attach again
 with the old binary until you are ready to move.
 
+## Scripting
+
+Every pane can drive the session it lives in. The commands are tmux's, so a
+tmux script mostly runs unchanged.
+
+```
+ttmux send-keys -t %2 "make test" Enter   # type into a pane
+ttmux split-window -h                     # split side by side
+ttmux new-window                          # open a tab
+ttmux select-pane -t %2                   # or -L -R -U -D
+ttmux list-panes                          # %2: [80x24] zsh (active)
+ttmux list-windows                        # 1:build (2 panes) (active)
+ttmux rename-window build                 # name a window
+ttmux display-message "done"              # show text in the status bar
+ttmux run toggle-zoom                     # any key-binding action
+```
+
+A target is a pane id from `list-panes`, or a window number counted from 1.
+With no target the command acts on the focused pane. The session is the one
+`$TTMUX_SESSION` names, which every pane already has set. `ttmux --help`
+prints the full list.
+
 ## Config
 
 The file is `~/.config/ttmux/ttmux.toml`. ttmux writes it for you on the

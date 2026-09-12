@@ -1,11 +1,12 @@
 //! The application: terminal setup, the event loop, and action dispatch.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -25,6 +26,7 @@ use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
 use crate::line_edit::{LineEdit, CARET};
 use crate::pty::Pane;
 use crate::render;
+use crate::script::Cmd;
 use crate::settings_ui::{Outcome, Settings};
 use crate::status;
 use crate::widget;
@@ -40,6 +42,13 @@ const TICK_IDLE: Duration = Duration::from_millis(16);
 /// How long after the last keystroke or byte the loop stays on the fast tick.
 const BUSY_FOR: Duration = Duration::from_millis(400);
 
+/// One scripted command waiting for the app thread, with the channel its
+/// answer goes back on.
+pub struct ScriptJob {
+    pub cmd: Cmd,
+    pub reply: std::sync::mpsc::SyncSender<Result<String, String>>,
+}
+
 /// Where a running `App` gets its input and where out-of-band bytes go.
 pub trait Host {
     /// Wait up to `timeout` for one event. `Ok(None)` means the timeout
@@ -48,6 +57,11 @@ pub trait Host {
     /// Bytes for the attached terminal verbatim -- inline-image replays and
     /// the bell. These cannot go through the cell buffer.
     fn passthrough(&mut self, bytes: &[u8]) -> Result<()>;
+    /// Scripted commands that have arrived since the last call. Only the
+    /// session server has a socket for them, so the default is none.
+    fn commands(&mut self) -> Vec<ScriptJob> {
+        Vec::new()
+    }
 }
 
 /// The local terminal: crossterm's event queue and this process's stdout.
@@ -520,6 +534,132 @@ impl App {
 
     fn note(&mut self, msg: impl Into<String>) {
         self.message = Some((msg.into(), Instant::now()));
+    }
+
+    /// Run one scripted command, from `ttmux send-keys` and friends. The
+    /// string is what the caller prints: empty for a command that only acts.
+    pub fn script(&mut self, cmd: Cmd) -> Result<String> {
+        match cmd {
+            Cmd::Run(action) => {
+                self.dispatch(action)?;
+                Ok(String::new())
+            }
+            Cmd::SendKeys { target, keys } => {
+                let id = self.pane_or_focus(target)?;
+                for ev in keys {
+                    let Some(s) = self.slots.get_mut(&id) else {
+                        break;
+                    };
+                    // Same path a keystroke takes, so application cursor mode
+                    // and the jump back to the live view both still apply.
+                    s.pane.scroll_to_bottom();
+                    let app_cursor = s.pane.screen().application_cursor();
+                    let bytes = encode_key(ev, app_cursor);
+                    if !bytes.is_empty() {
+                        s.pane.send(&bytes);
+                    }
+                }
+                Ok(String::new())
+            }
+            Cmd::SelectPane(id) => {
+                let tab = self.tab_of(id)?;
+                self.select_tab(tab);
+                self.set_focus(id);
+                Ok(String::new())
+            }
+            Cmd::SelectWindow(n) => {
+                let i = self.window_index(n)?;
+                self.select_tab(i);
+                Ok(String::new())
+            }
+            Cmd::KillPane(target) => {
+                let id = self.pane_or_focus(target)?;
+                self.close_pane(id);
+                Ok(String::new())
+            }
+            Cmd::KillWindow(target) => {
+                let i = match target {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                self.close_tab_at(i);
+                Ok(String::new())
+            }
+            Cmd::RenameWindow { target, name } => {
+                let i = match target {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                self.tabs[i].name = name;
+                self.tabs[i].renamed = true;
+                Ok(String::new())
+            }
+            Cmd::RenamePane { target, name } => {
+                let id = self.pane_or_focus(target)?;
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.pane.title_override = Some(name);
+                }
+                Ok(String::new())
+            }
+            Cmd::ListPanes => {
+                let focus = self.focus();
+                let mut out = String::new();
+                for (id, rect) in self.tabs[self.tab].layout.geometry() {
+                    let title = self
+                        .slots
+                        .get(&id)
+                        .map(|s| s.pane.title())
+                        .unwrap_or_default();
+                    let active = if id == focus { " (active)" } else { "" };
+                    let _ = writeln!(out, "%{id}: [{}x{}] {title}{active}", rect.w, rect.h);
+                }
+                Ok(out)
+            }
+            Cmd::ListWindows => {
+                let mut out = String::new();
+                for (i, t) in self.tabs.iter().enumerate() {
+                    let panes = t.layout.ids().len();
+                    let active = if i == self.tab { " (active)" } else { "" };
+                    let _ = writeln!(
+                        out,
+                        "{}: {} ({panes} panes){active}",
+                        i + 1,
+                        self.tab_label(i, t)
+                    );
+                }
+                Ok(out)
+            }
+            Cmd::Display(text) => {
+                self.note(text);
+                Ok(String::new())
+            }
+        }
+    }
+
+    /// A named pane, or the focused one. A script that names a pane that has
+    /// exited must hear about it rather than typing into another one.
+    fn pane_or_focus(&self, target: Option<PaneId>) -> Result<PaneId> {
+        match target {
+            None => Ok(self.focus()),
+            Some(id) if self.slots.contains_key(&id) => Ok(id),
+            Some(id) => bail!("no pane %{id}"),
+        }
+    }
+
+    fn tab_of(&self, id: PaneId) -> Result<usize> {
+        self.tabs
+            .iter()
+            .position(|t| t.layout.ids().contains(&id))
+            .ok_or_else(|| anyhow::anyhow!("no pane %{id}"))
+    }
+
+    /// Windows are numbered from 1 on the status bar, so a script counts
+    /// them the way the screen does.
+    fn window_index(&self, n: usize) -> Result<usize> {
+        match n.checked_sub(1) {
+            Some(i) if i < self.tabs.len() => Ok(i),
+            _ => bail!("no window {n}"),
+        }
     }
 
     fn dispatch(&mut self, action: Action) -> Result<()> {
@@ -1112,6 +1252,13 @@ impl App {
                     }
                     _ => false,
                 };
+                last_busy = Instant::now();
+            }
+
+            for job in host.commands() {
+                let out = self.script(job.cmd).map_err(|e| format!("{e:#}"));
+                let _ = job.reply.try_send(out);
+                dirty = true;
                 last_busy = Instant::now();
             }
 

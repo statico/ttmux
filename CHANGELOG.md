@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Scripting API: `ttmux send-keys`, `split-window`, `select-pane`,
+  `list-panes`, `rename-window`, `display-message`, `run ACTION` and more,
+  with tmux's names and targets.
+
 ## 0.2.0 — 2026-09-11
 
 - Custom status widgets: a widget runs a shell command on an interval and

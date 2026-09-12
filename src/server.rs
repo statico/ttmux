@@ -25,10 +25,11 @@ use ratatui::layout::{Position, Size};
 use ratatui::style::Style;
 use ratatui::Terminal;
 
-use crate::app::{App, Exit, Host};
+use crate::app::{App, Exit, Host, ScriptJob};
 use crate::config::Config;
 use crate::layout::Rect;
 use crate::proto::{self, ClientMsg, ServerMsg, WireCell};
+use crate::script;
 
 /// What the session is sized to before anyone attaches, and what it keeps
 /// when the last client leaves: a detached session has to be *some* size.
@@ -74,6 +75,9 @@ struct State {
 struct Hub {
     state: Mutex<State>,
     events: Sender<Event>,
+    /// Scripted commands on their way to the app thread, which picks them up
+    /// on its next pass round the loop.
+    jobs: Sender<ScriptJob>,
     kill: AtomicBool,
 }
 
@@ -237,6 +241,7 @@ impl Backend for WireBackend {
 struct ServerHost {
     hub: Arc<Hub>,
     rx: Receiver<Event>,
+    jobs: Receiver<ScriptJob>,
 }
 
 impl Host for ServerHost {
@@ -256,6 +261,10 @@ impl Host for ServerHost {
     fn passthrough(&mut self, bytes: &[u8]) -> Result<()> {
         self.hub.broadcast(&ServerMsg::Passthrough(bytes.to_vec()));
         Ok(())
+    }
+
+    fn commands(&mut self) -> Vec<ScriptJob> {
+        self.jobs.try_iter().collect()
     }
 }
 
@@ -301,6 +310,13 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         Ok(Some(ClientMsg::KillServer)) => {
             hub.kill.store(true, Ordering::SeqCst);
             park();
+        }
+        // Also one-shot: a script hands over a command, reads the answer and
+        // leaves. It never becomes a viewer, so it never resizes the session.
+        Ok(Some(ClientMsg::Command(argv))) => {
+            let (ok, text) = run_command(&hub, argv);
+            let _ = proto::write_msg(&mut out, &ServerMsg::Reply { ok, text });
+            return;
         }
         _ => return,
     };
@@ -377,10 +393,40 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 hub.kill.store(true, Ordering::SeqCst);
                 park();
             }
+            Ok(Some(ClientMsg::Command(argv))) => {
+                let (ok, text) = run_command(&hub, argv);
+                let st = hub.state.lock().unwrap();
+                if let Some(c) = st.clients.iter().find(|c| c.id == id) {
+                    let _ = c.tx.try_send(ServerMsg::Reply { ok, text });
+                }
+            }
             Ok(None) | Err(_) => break,
         }
     }
     hub.drop_client(id);
+}
+
+/// Parse one scripted command and run it on the app thread, waiting for the
+/// answer. Parse errors never reach the app: they are the script's mistake.
+fn run_command(hub: &Hub, argv: Vec<String>) -> (bool, String) {
+    let Some((verb, args)) = argv.split_first() else {
+        return (false, "no command".into());
+    };
+    let cmd = match script::parse(verb, args) {
+        Ok(c) => c,
+        Err(e) => return (false, format!("{e:#}")),
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    if hub.jobs.send(ScriptJob { cmd, reply: tx }).is_err() {
+        return (false, "session is shutting down".into());
+    }
+    // The app answers within a tick; a longer wait means it is wedged, and a
+    // script that hangs forever is worse than one that reports it.
+    match rx.recv_timeout(Duration::from_secs(5)) {
+        Ok(Ok(text)) => (true, text),
+        Ok(Err(e)) => (false, e),
+        Err(_) => (false, "session did not answer".into()),
+    }
 }
 
 /// Hold a connection open until the process exits, so that the peer's EOF
@@ -526,6 +572,7 @@ fn run(listener: UnixListener) -> Result<()> {
     let cfg = loaded.unwrap_or_default();
     let (w, h) = DEFAULT_SIZE;
     let (tx, rx) = mpsc::channel();
+    let (jobs_tx, jobs_rx) = mpsc::channel();
     let hub = Arc::new(Hub {
         state: Mutex::new(State {
             clients: vec![],
@@ -535,6 +582,7 @@ fn run(listener: UnixListener) -> Result<()> {
             next_id: 1,
             writers: vec![],
         }),
+        jobs: jobs_tx,
         events: tx,
         kill: AtomicBool::new(false),
     });
@@ -547,6 +595,7 @@ fn run(listener: UnixListener) -> Result<()> {
     let mut host = ServerHost {
         hub: hub.clone(),
         rx,
+        jobs: jobs_rx,
     };
     {
         let hub = hub.clone();
