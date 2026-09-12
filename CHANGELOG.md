@@ -4,6 +4,13 @@
 
 - The settings screen has an About section with the version and the
   project URL.
+- Settings and help look cleaner: colour swatches beside hex values, dots
+  for switches, spaced leaders, and hints that light up their keys.
+- Every text field takes ctrl+y (yank), ctrl+t (transpose), alt+backspace
+  and alt+u/l/c on top of the readline keys it already had.
+- ctrl+n and ctrl+p move through every list, and ctrl+g cancels an overlay.
+- The which-key popup paints its labels on its own background and keeps
+  its shadow off the status bar.
 
 ## 0.3.0 — 2026-09-12
 
