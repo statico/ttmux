@@ -553,9 +553,11 @@ impl Pane {
         let was = theme_of(&sink.colours);
         sink.colours = colours;
         let now = theme_of(&sink.colours);
-        if sink.theme_reports && now.is_some() && now != was {
-            let report = format!("\x1b[?997;{}n", now.unwrap());
-            self.send(report.as_bytes());
+        match now {
+            Some(n) if sink.theme_reports && now != was => {
+                self.send(format!("\x1b[?997;{n}n").as_bytes());
+            }
+            _ => {}
         }
     }
 
