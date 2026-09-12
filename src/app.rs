@@ -67,6 +67,11 @@ pub trait Host {
     fn commands(&mut self) -> Vec<ScriptJob> {
         Vec::new()
     }
+    /// The outer terminal's (foreground, background) as `rgb:` specs, when a
+    /// client newly reported them.
+    fn colours(&mut self) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// The local terminal: crossterm's event queue and this process's stdout.
@@ -203,6 +208,15 @@ pub struct App {
     /// Whether the last frame emitted any graphics, so a frame with none
     /// still issues one delete pass to wipe what the last one placed.
     drew_graphics: bool,
+    /// The cursor shape last sent to the outer terminal.
+    cursor_shape: u16,
+    /// The pane last told it has focus, `None` while the outer terminal is
+    /// in the background.
+    focus_told: Option<PaneId>,
+    /// Whether the outer terminal window has focus.
+    host_focused: bool,
+    /// The outer terminal's colours, for panes that ask with OSC 10 and 11.
+    colours: Option<(String, String)>,
     /// Set by the `quit` action: tear the session down, panes included.
     pub quit: bool,
     /// Set by the `detach` action: end this view only, panes keep running.
@@ -256,7 +270,7 @@ fn enter(cfg: &Config) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     if cfg.general.mouse {
         execute!(out, event::EnableMouseCapture)?;
     }
-    execute!(out, event::EnableBracketedPaste)?;
+    execute!(out, event::EnableBracketedPaste, event::EnableFocusChange)?;
     Ok(Terminal::new(CrosstermBackend::new(out))?)
 }
 
@@ -265,7 +279,9 @@ fn restore() -> Result<()> {
     let _ = execute!(
         out,
         event::DisableBracketedPaste,
+        event::DisableFocusChange,
         event::DisableMouseCapture,
+        crossterm::cursor::SetCursorStyle::DefaultUserShape,
         terminal::LeaveAlternateScreen
     );
     terminal::disable_raw_mode()?;
@@ -304,6 +320,10 @@ impl App {
             session: std::env::var("TTMUX_SESSION").unwrap_or_else(|_| "main".into()),
             caller: None,
             drew_graphics: false,
+            cursor_shape: 0,
+            focus_told: None,
+            host_focused: true,
+            colours: None,
             quit: false,
             detached: false,
         };
@@ -401,6 +421,22 @@ impl App {
         }
     }
 
+    /// Send focus-out and focus-in to the panes that asked (DECSET 1004)
+    /// whenever the pane with focus changes, whatever changed it: a key, a
+    /// click, a script, a closed pane or the outer window losing focus.
+    fn tell_focus(&mut self) {
+        let now = (self.host_focused && !self.tabs.is_empty()).then(|| self.focus());
+        if now == self.focus_told {
+            return;
+        }
+        for (id, focused) in [(self.focus_told, false), (now, true)] {
+            if let Some(s) = id.and_then(|id| self.slots.get_mut(&id)) {
+                s.pane.focus_changed(focused);
+            }
+        }
+        self.focus_told = now;
+    }
+
     fn tab_mut(&mut self) -> &mut Tab {
         &mut self.tabs[self.tab]
     }
@@ -432,7 +468,8 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         // Real size is pushed by sync_sizes once the layout knows about it.
-        let pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24)?;
+        let mut pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24)?;
+        pane.set_colours(self.colours.clone());
         self.slots.insert(
             id,
             Slot {
@@ -1777,7 +1814,9 @@ impl App {
                             if bracket {
                                 s.pane.send(b"\x1b[200~");
                             }
-                            s.pane.send(text.as_bytes());
+                            // A pasted end marker would end the paste early and
+                            // run the rest as typed commands.
+                            s.pane.send(text.replace("\x1b[201~", "").as_bytes());
                             if bracket {
                                 s.pane.send(b"\x1b[201~");
                             }
@@ -1789,7 +1828,10 @@ impl App {
                         self.relayout();
                         true
                     }
-                    _ => false,
+                    Event::FocusGained | Event::FocusLost => {
+                        self.host_focused = matches!(ev, Event::FocusGained);
+                        false
+                    }
                 };
                 last_busy = Instant::now();
             }
@@ -1803,6 +1845,13 @@ impl App {
                 last_busy = Instant::now();
             }
 
+            if let Some(colours) = host.colours() {
+                self.colours = Some(colours);
+                for s in self.slots.values_mut() {
+                    s.pane.set_colours(self.colours.clone());
+                }
+            }
+
             let mut output = false;
             let ids: Vec<PaneId> = self.slots.keys().copied().collect();
             for id in ids {
@@ -1810,8 +1859,13 @@ impl App {
                     if s.pane.pump() {
                         output = true;
                     }
+                    let bytes = s.pane.take_host_bytes();
+                    if !bytes.is_empty() {
+                        host.passthrough(&bytes)?;
+                    }
                 }
             }
+            self.tell_focus();
             if output {
                 dirty = true;
                 last_busy = Instant::now();
@@ -2078,6 +2132,15 @@ impl App {
             }
         })?;
         let replayed = self.replay_images(&places, host);
+        // The focused pane's cursor shape: a bar in neovim's insert mode.
+        let shape = self
+            .slots
+            .get(&self.focus())
+            .map_or(0, |s| s.pane.cursor_shape());
+        if shape != self.cursor_shape {
+            host.passthrough(format!("\x1b[{shape} q").as_bytes())?;
+            self.cursor_shape = shape;
+        }
         host.passthrough(b"\x1b[?2026l")?;
         replayed?;
         self.tab_hits = hits;
