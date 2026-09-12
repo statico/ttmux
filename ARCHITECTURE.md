@@ -56,6 +56,9 @@ pub enum DragKind {
     /// Tiled pane grabbed by the title run of its top border, to snap elsewhere.
     Grab,
     Divider(usize),
+    /// Where two perpendicular dividers cross: dragging moves both, which is
+    /// what makes a tiled pane resizable by its corner and not only its edges.
+    Corner { across: usize, down: usize },
 }
 
 pub struct Layout { pub mode: Mode, pub preset: Preset, pub zoomed: Option<PaneId>, /* private */ }
@@ -213,6 +216,65 @@ impl Settings {
     pub fn draw(&self, buf: &mut Buffer, area: Rect, cfg: &Config);
 }
 ```
+
+## src/onboarding.rs
+The first-run welcome, shown only when there is no config file. Step one
+picks a keymap preset, step two says which key opens help and settings.
+Choosing writes the config, which is what stops it appearing twice.
+
+```rust
+pub enum Outcome { Continue, Done, Save }
+pub struct Welcome { /* step, selection */ }
+impl Welcome {
+    pub fn new() -> Welcome;
+    pub fn on_key(&mut self, ev: KeyEvent, cfg: &mut Config) -> Outcome;
+    pub fn draw(&self, buf: &mut Buffer, inner: Rect, cfg: &Config);
+    pub fn title(&self) -> &'static str;
+}
+```
+
+## src/color_picker.rs
+Hex colour editing for the settings panel: a swatch grid (the 16 theme
+colours, the 6x6x6 cube, the grey ramp), a hex field, per-channel RGB
+nudging, and a before/after preview. Every keystroke reports `Apply`, so
+the running session recolours while you pick.
+
+```rust
+pub enum Outcome { Continue, Apply, Accept, Cancel }
+pub struct Picker { /* focus, grid cursor, hex buffer, original */ }
+impl Picker {
+    pub fn new(start: Color) -> Picker;
+    pub fn color(&self) -> Color;
+    pub fn on_key(&mut self, ev: KeyEvent) -> Outcome;
+    pub fn on_mouse(&mut self, ev: MouseEvent, area: Rect) -> Outcome;
+    pub fn draw(&self, buf: &mut Buffer, area: Rect, cfg: &Config);
+}
+```
+
+## src/server.rs
+The session daemon: an `App` with no terminal of its own, forked off the
+socket and shared by however many clients attach.
+
+`WireBackend` implements `ratatui::backend::Backend`, so ratatui computes
+the cell diff exactly as it does locally and the server only transports it.
+It keeps a `Buffer` of what is on screen, which is how a client that
+attaches later gets a full repaint without asking the app to redraw.
+
+`Hub` holds the shared state, the event channel and the kill flag. Each
+client gets a bounded queue and its own writer thread: the app thread only
+ever `try_send`s, and a client that stops reading is dropped rather than
+stalling everyone else. The session is as wide and as tall as its
+narrowest client, and keeps its geometry when nobody is attached.
+
+Per-client `Detach` drops that one view. `Exit::Detached` out of
+`main_loop` is the session's own detach action, so every client leaves and
+the panes keep running. Only `Exit::Quit` ends the process.
+
+## src/client.rs
+Connect to the session's socket, or spawn a server and connect to that.
+Puts the terminal in raw mode with the alternate screen, mouse and
+bracketed paste, sends input on one thread, and applies `Draw` frames
+through `CrosstermBackend` so there is no hand-rolled style-to-ANSI code.
 
 ## src/app.rs
 Owned by the lead. Wires everything: event loop, tabs, panes, dispatch.
