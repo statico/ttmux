@@ -33,15 +33,19 @@ pub struct CmdLine {
     input: LineEdit,
     /// The candidates the last Tab could not choose between, for display.
     candidates: Vec<String>,
-    /// Lines run this session, oldest first.
+    /// Lines run this session, oldest first. The app owns the list and
+    /// hands a copy in, because every `:` opens a new `CmdLine`.
     history: Vec<String>,
     /// Where Up/Down is in `history`; `None` means at the live line.
     browsing: Option<usize>,
 }
 
 impl CmdLine {
-    pub fn new() -> CmdLine {
-        CmdLine::default()
+    pub fn new(history: Vec<String>) -> CmdLine {
+        CmdLine {
+            history,
+            ..CmdLine::default()
+        }
     }
 
     /// The line as typed, for the app to hand to `script::parse`.
@@ -225,7 +229,7 @@ mod tests {
     }
 
     fn typed(s: &str) -> CmdLine {
-        let mut c = CmdLine::new();
+        let mut c = CmdLine::new(vec![]);
         for ch in s.chars() {
             c.key(key(KeyCode::Char(ch)));
         }
@@ -314,7 +318,7 @@ mod tests {
 
     #[test]
     fn enter_on_an_empty_line_does_not_run_anything() {
-        let mut c = CmdLine::new();
+        let mut c = CmdLine::new(vec![]);
         assert_eq!(c.key(key(KeyCode::Enter)), Outcome::Stay);
         let mut c = typed("   ");
         assert_eq!(c.key(key(KeyCode::Enter)), Outcome::Stay);
@@ -335,7 +339,7 @@ mod tests {
 
     #[test]
     fn up_walks_back_through_the_lines_run_and_down_comes_back() {
-        let mut c = CmdLine::new();
+        let mut c = CmdLine::new(vec![]);
         for line in ["kill-pane", "new-window"] {
             for ch in line.chars() {
                 c.key(key(KeyCode::Char(ch)));
@@ -355,7 +359,7 @@ mod tests {
 
     #[test]
     fn up_on_an_empty_history_is_left_to_the_line_editor() {
-        let mut c = CmdLine::new();
+        let mut c = CmdLine::new(vec![]);
         assert_eq!(c.key(key(KeyCode::Up)), Outcome::Stay);
         assert_eq!(c.line(), "");
     }
@@ -416,8 +420,8 @@ mod tests {
     #[test]
     fn drawing_into_a_zero_sized_area_does_nothing() {
         let mut buf = Buffer::empty(Area::new(0, 0, 10, 3));
-        CmdLine::new().draw(&mut buf, Rect::new(0, 0, 0, 0), &Config::default());
-        CmdLine::new().draw(&mut buf, Rect::new(0, 0, 10, 0), &Config::default());
+        CmdLine::new(vec![]).draw(&mut buf, Rect::new(0, 0, 0, 0), &Config::default());
+        CmdLine::new(vec![]).draw(&mut buf, Rect::new(0, 0, 10, 0), &Config::default());
     }
 
     #[test]

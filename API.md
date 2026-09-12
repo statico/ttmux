@@ -444,13 +444,21 @@ ttmux show-options appearance.gap
 ttmux set-option KEY VALUE
 ```
 
-Write one dotted key into the config file, which reloads at once.
+Write one dotted key into the config file, which reloads at once. The key
+must already exist, so a typo is an error and not a dead setting. A binding
+is the exception: `keys.<chord>` takes any chord you invent, dots included.
+
+The value is written back through the config file, so ttmux rewrites the
+whole file. Comments you wrote in it are lost, and the keys come back in
+alphabetical order. The settings screen does the same thing. Keep the file
+in version control if the comments matter.
 
 This command takes no flags.
 
 ```
 ttmux set-option appearance.border_style divider
 ttmux set-option appearance.gap 1
+ttmux set-option 'keys.ctrl+t g' 'run toggle-zoom'
 ```
 
 ### list-keys
