@@ -401,7 +401,8 @@ struct Geom {
 fn geometry(area: Rect) -> Geom {
     let inner = crate::app::modal_content(area);
     let sec_w = inner.w.min(16);
-    let fx = inner.x.saturating_add(sec_w).saturating_add(1);
+    // A column of air each side of the rule between the two panes.
+    let fx = inner.x.saturating_add(sec_w).saturating_add(3);
     let fw = inner.right().saturating_sub(fx);
     let rows = inner.h.saturating_sub(1);
     Geom {
@@ -817,25 +818,31 @@ impl Settings {
         crate::app::modal(buf, area, "Settings", self.hint(), cfg);
         let g = geometry(area);
 
+        let accent: Color = cfg.status.accent.into();
+        let chip = base.fg(cfg.status.bg.into()).bg(accent);
         for (i, name) in SECTIONS.iter().enumerate() {
             let y = g.sections.y + i as u16;
             if y >= g.sections.bottom() {
                 break;
             }
-            let style = if i == self.section {
-                if self.focus == Focus::Sections {
-                    base.add_modifier(Modifier::REVERSED)
-                } else {
-                    base.add_modifier(Modifier::BOLD)
-                }
-            } else {
-                base
+            // The current section wears an accent bar; with the focus on
+            // this column it becomes a filled chip, like the selected field.
+            let current = i == self.section;
+            let focused = current && self.focus == Focus::Sections;
+            let style = match (current, focused) {
+                (_, true) => chip.add_modifier(Modifier::BOLD),
+                (true, _) => base.add_modifier(Modifier::BOLD),
+                _ => base,
             };
-            let text = format!("{:<width$}", name, width = g.sections.w as usize);
+            let text = format!(" {:<width$}", name, width = g.sections.w as usize);
             put(buf, g.sections.x, y, &text, g.sections.w, style);
+            if current && !focused {
+                put(buf, g.sections.x, y, "▌", 1, style.fg(accent));
+            }
         }
+        let rule = base.add_modifier(Modifier::DIM);
         for y in g.sections.y..g.sections.bottom() {
-            put(buf, g.sections.right(), y, "│", 1, base);
+            put(buf, g.sections.right() + 1, y, "│", 1, rule);
         }
 
         if let Edit::PickAction { filter, sel, .. } = &self.edit {
@@ -847,17 +854,39 @@ impl Settings {
             put(buf, g.fields.x, g.fields.y, &label, g.fields.w, base);
             p.draw(buf, picker_rect(g.fields), cfg);
         } else if self.section == ABOUT {
-            let lines = [
-                format!("ttmux {}", env!("CARGO_PKG_VERSION")),
-                String::new(),
-                env!("CARGO_PKG_REPOSITORY").to_string(),
+            let r = g.fields;
+            let dim = base.add_modifier(Modifier::DIM);
+            put(
+                buf,
+                r.x + 1,
+                r.y,
+                "ttmux",
+                r.w,
+                base.fg(accent).add_modifier(Modifier::BOLD),
+            );
+            put(
+                buf,
+                r.x + 1,
+                r.y + 1,
+                "a modern terminal multiplexer",
+                r.w,
+                dim,
+            );
+            let rows = [
+                ("version", env!("CARGO_PKG_VERSION"), base),
+                (
+                    "source",
+                    env!("CARGO_PKG_REPOSITORY"),
+                    base.add_modifier(Modifier::UNDERLINED),
+                ),
+                ("license", env!("CARGO_PKG_LICENSE"), base),
             ];
-            for (i, line) in lines.iter().enumerate() {
-                let y = g.fields.y + i as u16;
-                if y >= g.fields.bottom() {
+            for (i, (label, value, style)) in rows.into_iter().enumerate() {
+                let y = r.y + 3 + i as u16;
+                if y >= r.bottom() {
                     break;
                 }
-                put(buf, g.fields.x, y, line, g.fields.w, base);
+                put_row(buf, r, y, label, &[(value.to_string(), style)], base, dim);
             }
         } else {
             self.draw_fields(buf, g.fields, cfg, base);
@@ -878,10 +907,10 @@ impl Settings {
     /// What the modal chrome prints along the bottom.
     fn hint(&self) -> &'static str {
         match self.edit {
-            Edit::Capture | Edit::CaptureNew => "Press a key… Esc to cancel",
-            Edit::Buffer(_) => "Type to edit, Enter to commit, Esc to cancel",
+            Edit::Capture | Edit::CaptureNew => "press a key, Esc to cancel",
+            Edit::Buffer(_) => "type to edit, Enter to commit, Esc to cancel",
             Edit::Colour(_) => "↑↓←→ to pick, Tab for hex/RGB, Enter to accept, Esc to cancel",
-            Edit::PickAction { .. } => "Type to filter, ↑↓ to select, Enter to bind, Esc to cancel",
+            Edit::PickAction { .. } => "type to filter, ↑↓ to select, Enter to bind, Esc to cancel",
             Edit::None => "↑↓ to move, ←→ to change, Enter to edit, S to save, Esc to close",
         }
     }
@@ -906,19 +935,44 @@ impl Settings {
                 },
                 l => (l.to_string(), f.value.clone()),
             };
-            if selected {
-                match &self.edit {
-                    Edit::Buffer(b) => value = b.with_caret(CARET),
-                    Edit::Capture => value = "press a key…".into(),
-                    _ => {}
+            let sel = base.fg(cfg.status.bg.into()).bg(cfg.status.accent.into());
+            let style = if selected { sel } else { base };
+            let editing = selected && matches!(self.edit, Edit::Buffer(_) | Edit::Capture);
+            let mut segs: Vec<(String, Style)> = vec![];
+            match (&self.edit, &f.kind) {
+                (Edit::Buffer(b), _) if editing => value = b.with_caret(CARET),
+                (Edit::Capture, _) if editing => value = "press a key…".into(),
+                // The colour itself, beside its name: a hex code is not a
+                // colour anyone can see.
+                (_, Kind::Colour) => {
+                    if let Ok(Rgb(c)) = value.parse::<Rgb>() {
+                        if c != Color::Reset {
+                            segs.push(("██ ".into(), style.fg(c)));
+                        }
+                    }
                 }
+                (_, Kind::Bool) => {
+                    let on = value == "true";
+                    let dot = if on { "● " } else { "○ " };
+                    let dot_style = if on && !selected {
+                        style.fg(cfg.status.accent.into())
+                    } else {
+                        style
+                    };
+                    segs.push((dot.into(), dot_style));
+                    value = if on { "on" } else { "off" }.into();
+                }
+                // Arrows on the selected choice say ←→ turns it.
+                (_, Kind::Choice(_)) if selected => value = format!("‹ {value} ›"),
+                _ => {}
             }
-            let style = if selected {
-                base.add_modifier(Modifier::REVERSED)
+            segs.push((value, style));
+            let dots = if selected {
+                style
             } else {
-                base
+                base.add_modifier(Modifier::DIM)
             };
-            put(buf, r.x, y, &row_text(&label, &value, r.w), r.w, style);
+            put_row(buf, r, y, &label, &segs, style, dots);
         }
     }
 
@@ -957,14 +1011,33 @@ fn picker_rect(fields: Rect) -> Rect {
     )
 }
 
-/// `label ..... value`, padded to `w`.
-fn row_text(label: &str, value: &str, w: u16) -> String {
-    let w = w as usize;
-    let (l, v) = (label.chars().count(), value.chars().count());
-    if l + v + 2 >= w {
-        return format!("{label} {value}").chars().take(w).collect();
+/// One row of `r`: `label · · · value`, the value flush right and the whole
+/// width painted with `style`. A value too long to fit follows the label.
+fn put_row(
+    buf: &mut Buffer,
+    r: Rect,
+    y: u16,
+    label: &str,
+    value: &[(String, Style)],
+    style: Style,
+    dots: Style,
+) {
+    put(buf, r.x, y, &" ".repeat(r.w as usize), r.w, style);
+    let lw = label.chars().count() as u16;
+    let vw: u16 = value.iter().map(|(s, _)| s.chars().count() as u16).sum();
+    put(buf, r.x + 1, y, label, r.w.saturating_sub(1), style);
+    let after = r.x + 1 + lw + 1;
+    let vx = r.right().saturating_sub(1 + vw).max(after);
+    // Dots on even columns only, so rows line their leaders up.
+    let end = if vw == 0 { after } else { vx.saturating_sub(1) };
+    for x in (after + 1..end).filter(|x| x % 2 == 0) {
+        put(buf, x, y, "·", 1, dots);
     }
-    format!("{label} {} {value}", ".".repeat(w - l - v - 2))
+    let mut x = vx;
+    for (text, s) in value {
+        put(buf, x, y, text, r.right().saturating_sub(x), *s);
+        x = x.saturating_add(text.chars().count() as u16);
+    }
 }
 
 fn filtered_actions(filter: &str) -> Vec<String> {
@@ -1651,6 +1724,26 @@ mod tests {
         }
         assert!(text.contains("scrollback"));
         assert!(text.contains("Esc to close"));
+    }
+
+    #[test]
+    fn colours_get_a_swatch_and_switches_a_dot() {
+        let cfg = Config::default();
+        let mut s = Settings::new();
+        s.section = 1;
+        let mut buf = Buffer::empty(TRect::new(0, 0, 90, 22));
+        s.draw(&mut buf, Rect::new(0, 0, 90, 22), &cfg);
+        let text = text_of(&buf, 90, 22);
+        let hex = cfg.appearance.border_focused.to_string();
+        assert!(text.contains(&format!("██ {hex}")), "{text}");
+        assert!(text.contains("● on") && text.contains("○ off"), "{text}");
+        let swatch = buf
+            .content()
+            .iter()
+            .filter(|c| c.symbol() == "█")
+            .map(|c| c.fg)
+            .collect::<Vec<_>>();
+        assert!(swatch.contains(&cfg.appearance.border_focused.into()));
     }
 
     #[test]
