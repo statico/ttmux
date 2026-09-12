@@ -303,7 +303,22 @@ impl App {
     pub fn draw<B: Backend>(&mut self, term: &mut Terminal<B>, host: &mut dyn Host) -> Result<()>;
 }
 pub fn run() -> Result<()>;  // LocalHost + CrosstermBackend, the in-process mode
+
+/// The chrome every modal wears: shadow, raised ground, heavy accent
+/// border, title chip, dim hint on the bottom row. Returns the content rect.
+pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config) -> Rect;
+/// The content rect inside that chrome, hint row already taken out. Mouse
+/// handlers use it too, so hitboxes cannot drift from what was drawn.
+pub fn modal_content(rect: Rect) -> Rect;
+/// The modal ground, a few steps off `status.bg`. Public because anything
+/// that resets a cell inside a modal has to repaint the same ground.
+pub fn modal_bg(cfg: &Config) -> Color;
 ```
+
+Every overlay goes through `modal`, so help, settings, the palette, the
+rename prompt, the welcome and the colour picker read as one family and
+not as panes. Floating panes keep the plain one-cell shadow: the heavier
+one is what marks a modal.
 
 A `poll` that errors is a detach, not a crash: a dead socket means the view
 ended.
