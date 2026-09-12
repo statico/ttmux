@@ -879,8 +879,14 @@ impl App {
                 toml::to_string_pretty(&self.cfg)?
             });
         };
+        // A binding is one name however many dots it has, the same way
+        // `set_option` writes it.
+        let path: Vec<&str> = match key.strip_prefix("keys.") {
+            Some(chord) => vec!["keys", chord],
+            None => key.split('.').collect(),
+        };
         let mut cur = &all;
-        for part in key.split('.') {
+        for part in path {
             cur = cur
                 .get(part)
                 .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
@@ -959,6 +965,9 @@ impl App {
         // `detach_pane` can close the tab it emptied, which shifts every
         // index after it, so the destination is found again by its contents.
         let to = self.tab_of(id)?;
+        // Follow the pane, the way tmux's join-pane selects the destination.
+        // `close_tab_at` may also have moved `self.tab` off the source.
+        self.tab = to;
         self.tabs[to].focus = id;
         // A zoom there would hide the pane that just arrived, and typing
         // would go to a pane nothing is drawing.
@@ -2770,16 +2779,20 @@ mod tests {
     #[test]
     fn joining_the_last_pane_of_a_window_does_not_land_on_a_gone_tab() {
         // The source window empties and is removed, so every index above it
-        // shifts. Before the fix this indexed past the end of `tabs`.
+        // shifts. Three windows, because with two the arithmetic lands on
+        // the right answer by accident.
         let mut a = app();
         a.dispatch(Action::NewTab).unwrap();
-        assert_eq!(a.tabs.len(), 2);
+        a.dispatch(Action::NewTab).unwrap();
+        a.select_tab(1);
+        assert_eq!(a.tabs.len(), 3);
         let id = a.focus();
-        a.move_pane_to_tab(id, 0, false).unwrap();
-        assert_eq!(a.tabs.len(), 1);
-        assert_eq!(a.tab, 0);
-        assert_eq!(a.tabs[0].focus, id);
-        assert!(a.tabs[0].layout.ids().contains(&id));
+
+        a.move_pane_to_tab(id, 2, false).unwrap();
+        assert_eq!(a.tabs.len(), 2, "the emptied window is gone");
+        assert_eq!(a.tab, 1, "the view follows the pane, not the hole");
+        assert_eq!(a.tabs[1].focus, id);
+        assert!(a.tabs[1].layout.ids().contains(&id));
     }
 
     #[test]
@@ -2811,6 +2824,11 @@ mod tests {
         let cfg: Config = toml::from_str(&text).unwrap();
         assert_eq!(cfg.keys.get("ctrl+b ."), Some(&"rename-tab".to_string()));
         assert!(a.set_option("general.nonsense", "1").is_err());
+        // Written and read back by the same spelling.
+        assert_eq!(
+            a.show_options(Some("keys.ctrl+b ."), false).unwrap(),
+            "rename-tab"
+        );
     }
 
     #[test]

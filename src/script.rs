@@ -484,9 +484,17 @@ fn alias(verb: &str) -> Option<(&'static str, &'static [&'static str])> {
         "killp" => ("kill-pane", &[]),
         "lsp" => ("list-panes", &[]),
         "lsw" => ("list-windows", &[]),
+        "ls" => ("list-sessions", &[]),
         "display" => ("display-message", &[]),
         _ => return None,
     })
+}
+
+/// The real command a verb names, alias or not. `None` for a word that is
+/// no command at all.
+pub fn spec_name(verb: &str) -> Option<&'static str> {
+    let real = alias(verb).map_or(verb, |(real, _)| real);
+    spec(real).map(|s| s.name)
 }
 
 /// Whether a command offers `--json`. The CLI asks too, so `-h` and
