@@ -105,6 +105,13 @@ const JSON: Flag = Flag {
     about: "print JSON instead of a table",
 };
 
+const FORMAT: Flag = Flag {
+    short: Some("-F"),
+    long: "--format",
+    arg: Some("FORMAT"),
+    about: "print one line per row, filling #{field} from the JSON, as in tmux",
+};
+
 /// Every command. This order is the order the help prints.
 pub const COMMANDS: &[Spec] = &[
     Spec {
@@ -308,8 +315,13 @@ pub const COMMANDS: &[Spec] = &[
                 about: "every window, not only the current one",
             },
             JSON,
+            FORMAT,
         ],
-        examples: &["ttmux list-panes", "ttmux list-panes -a --json"],
+        examples: &[
+            "ttmux list-panes",
+            "ttmux list-panes -a --json",
+            "ttmux list-panes -F '#{pane_id} #{pane_title}'",
+        ],
     },
     Spec {
         name: "new-window",
@@ -411,8 +423,11 @@ pub const COMMANDS: &[Spec] = &[
         group: "windows",
         about: "one line per window",
         args: "",
-        flags: &[JSON],
-        examples: &["ttmux list-windows --json"],
+        flags: &[JSON, FORMAT],
+        examples: &[
+            "ttmux list-windows --json",
+            "ttmux list-windows -F '#{window_index}:#{window_name}'",
+        ],
     },
     Spec {
         name: "list-sessions",
@@ -646,6 +661,54 @@ pub fn commands_json() -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
+/// Fill a tmux `-F` format from one JSON row. `#{title}` reads the field of
+/// that name; `#{pane_title}` and `#{window_name}` are tmux's spellings of
+/// the same fields, so a tmux format string works as written. A flag prints
+/// as 1 or 0 and an unknown field as nothing, as in tmux.
+pub fn format_row(format: &str, row: &serde_json::Value) -> String {
+    let field = |key: &str| {
+        let bare = key
+            .strip_prefix("pane_")
+            .or_else(|| key.strip_prefix("window_"))
+            .unwrap_or(key);
+        let bare = bare.strip_suffix("_flag").unwrap_or(bare);
+        // A pane row calls its window `window`; a window row calls it `index`.
+        let alias = match key {
+            "window_index" => "window",
+            "window_panes" => "panes",
+            "window_name" => "name",
+            _ => bare,
+        };
+        match row
+            .get(key)
+            .or_else(|| row.get(bare))
+            .or_else(|| row.get(alias))
+        {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Bool(b)) => u8::from(*b).to_string(),
+            Some(serde_json::Value::Null) | None => String::new(),
+            Some(v) => v.to_string(),
+        }
+    };
+    let mut out = String::new();
+    let mut rest = format;
+    while let Some(start) = rest.find("#{") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find('}') {
+            Some(end) => {
+                out.push_str(&field(&rest[start + 2..start + 2 + end]));
+                rest = &rest[start + 2 + end + 1..];
+            }
+            None => {
+                rest = &rest[start..];
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 // ----------------------------------------------------------------- parsing
 
 /// A window as a script names it: `-t 2` or `-t logs`.
@@ -705,6 +768,7 @@ pub enum Cmd {
     ListPanes {
         all: bool,
         json: bool,
+        format: Option<String>,
     },
     NewWindow {
         name: Option<String>,
@@ -726,6 +790,7 @@ pub enum Cmd {
     KillWindow(Option<Win>),
     ListWindows {
         json: bool,
+        format: Option<String>,
     },
     ListSessions {
         json: bool,
@@ -785,6 +850,13 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
     // Only the commands that offer `--json` may eat it. Anywhere else it is
     // a stray word, and `end` has to still be able to see it and complain.
     let json = takes_json(verb) && a.flag(&["--json"]);
+    if json
+        && a.words
+            .iter()
+            .any(|w| w == "-F" || w.starts_with("--format"))
+    {
+        bail!("{verb} takes --json or -F, not both");
+    }
     let cmd = match verb {
         "send-keys" => {
             let target = a.pane_target()?;
@@ -911,8 +983,9 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "list-panes" => {
             let all = a.flag(&["-a", "--all"]);
+            let format = a.value(&["-F", "--format"])?;
             a.end(verb)?;
-            Cmd::ListPanes { all, json }
+            Cmd::ListPanes { all, json, format }
         }
         "new-window" => {
             let name = a.value(&["-n", "--name"])?;
@@ -979,8 +1052,9 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             Cmd::KillWindow(target)
         }
         "list-windows" => {
+            let format = a.value(&["-F", "--format"])?;
             a.end(verb)?;
-            Cmd::ListWindows { json }
+            Cmd::ListWindows { json, format }
         }
         "list-sessions" => {
             a.end(verb)?;
@@ -1401,7 +1475,13 @@ mod tests {
     fn the_tmux_aliases_mean_their_long_names() {
         assert_eq!(parsed("next-window"), Cmd::Run(Action::NextTab));
         assert_eq!(parsed("last-window"), Cmd::Run(Action::LastTab));
-        assert_eq!(parsed("lsw"), Cmd::ListWindows { json: false });
+        assert_eq!(
+            parsed("lsw"),
+            Cmd::ListWindows {
+                json: false,
+                format: None
+            }
+        );
         assert_eq!(parsed("neww -n logs"), parsed("new-window --name logs"));
     }
 
@@ -1490,6 +1570,29 @@ mod tests {
         };
         assert_eq!(keys.len(), "--json".len());
         assert!(parse("kill-pane", &split("--json")).is_err());
+    }
+
+    #[test]
+    fn a_format_string_reads_the_json_fields_by_either_spelling() {
+        let pane = serde_json::json!({
+            "id": "%2", "window": 1, "title": "zsh", "active": true
+        });
+        assert_eq!(
+            format_row("#{pane_id} #{title} w#{window_index} #{pane_active}", &pane),
+            "%2 zsh w1 1"
+        );
+        let win = serde_json::json!({
+            "index": 3, "name": "logs", "panes": 2, "zoomed": false
+        });
+        assert_eq!(
+            format_row(
+                "#{window_index}:#{window_name} #{window_panes} #{window_zoomed_flag}",
+                &win
+            ),
+            "3:logs 2 0"
+        );
+        assert_eq!(format_row("#{nope}|#{unclosed", &win), "|#{unclosed");
+        assert!(fails("list-panes --json -F x"));
     }
 
     #[test]

@@ -270,7 +270,7 @@ ttmux kill-pane -t %3
 ### list-panes
 
 ```
-ttmux list-panes [-a] [--json]
+ttmux list-panes [-a] [--json] [-F FORMAT]
 ```
 
 One line per pane.
@@ -279,10 +279,12 @@ One line per pane.
 |---|---|
 | `-a`, `--all` | every window, not only the current one |
 | `--json` | print JSON instead of a table |
+| `-F`, `--format FORMAT` | print one line per pane, filling in `#{field}`. See [Formats](#formats) |
 
 ```
 ttmux list-panes
 ttmux list-panes -a --json
+ttmux list-panes -F '#{pane_id} #{pane_title}'
 ```
 
 ## Windows
@@ -408,7 +410,7 @@ ttmux kill-window -t 2
 ### list-windows
 
 ```
-ttmux list-windows [--json]
+ttmux list-windows [--json] [-F FORMAT]
 ```
 
 One line per window.
@@ -416,9 +418,11 @@ One line per window.
 | Flag | Meaning |
 |---|---|
 | `--json` | print JSON instead of a table |
+| `-F`, `--format FORMAT` | print one line per window, filling in `#{field}`. See [Formats](#formats) |
 
 ```
 ttmux list-windows --json
+ttmux list-windows -F '#{window_index}:#{window_name}'
 ```
 
 ## Session
@@ -541,6 +545,30 @@ This command takes no flags.
 ttmux run toggle-zoom
 ttmux run 'select-tab 2'
 ```
+
+## Formats
+
+`-F` on `list-panes` and `list-windows` prints one line per row. Each
+`#{field}` is replaced by that field of the row's JSON. A flag prints as `1`
+or `0`, and an unknown field prints as nothing, as in tmux.
+
+tmux's names work too, so a tmux format string runs as written:
+
+| Row | JSON field | tmux name |
+|---|---|---|
+| pane | `id` | `pane_id` |
+| pane | `title` | `pane_title` |
+| pane | `width`, `height` | `pane_width`, `pane_height` |
+| pane | `active` | `pane_active` |
+| pane | `window` | `window_index` |
+| window | `index` | `window_index` |
+| window | `name` | `window_name` |
+| window | `panes` | `window_panes` |
+| window | `active` | `window_active` |
+| window | `zoomed` | `window_zoomed_flag` |
+
+`-F` and `--json` do not combine. Use `--json` when a field could hold a
+tab or a newline.
 
 ## Recipes
 

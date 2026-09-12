@@ -10,7 +10,8 @@
   A command with no `-t` acts on the pane the script runs in, as tmux reads
   `$TMUX_PANE`. `split-window`, `new-window` and `break-pane` print the id
   of what they made, and `split-window` and `new-window` take a command to
-  run. `-t` names a window by number or by name. `capture-pane -p` and
+  run. `-t` names a window by number or by name. `list-panes` and
+  `list-windows` take tmux's `-F '#{pane_id}'` format strings. `capture-pane -p` and
   `-S -` work as they do in tmux.
   [API.md](API.md) is the full reference.
 - Panes move between tabs: `break-pane` (<kbd>ctrl+t</kbd> <kbd>!</kbd>),
