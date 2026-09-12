@@ -10,15 +10,15 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::action::{Action, ALL_ACTIONS};
-use crate::config::{Binding, BorderStyle, Chord, Config, Rgb, StatusPosition, TitlePosition};
+use crate::config::{
+    BarEffect, Binding, BorderStyle, Chord, Config, KeysPreset, Rgb, TitlePosition,
+};
 use crate::layout::Rect;
 
 /// What the app should do after handing us an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Nothing happened that the app needs to know about.
     Continue,
-    /// Close the overlay.
     Close,
     /// The config changed; re-apply it to the running session.
     Apply,
@@ -32,7 +32,9 @@ pub const SECTIONS: &[&str] = &["General", "Appearance", "Status bar", "Agents",
 const KEYS: usize = 4;
 
 const BORDER_STYLES: &[&str] = &["curved", "square", "heavy", "double", "dashed", "none"];
-const POSITIONS: &[&str] = &["top", "bottom", "hidden"];
+const TITLE_POSITIONS: &[&str] = &["top", "bottom", "hidden"];
+const EFFECTS: &[&str] = &["flat", "starfield", "gradient"];
+const KEYS_PRESETS: &[&str] = &["vim", "tmux", "screen"];
 
 /// How a field is edited.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,11 +112,19 @@ fn border_style_name(s: BorderStyle) -> &'static str {
     }
 }
 
-fn status_position_name(p: StatusPosition) -> &'static str {
+fn effect_name(e: BarEffect) -> &'static str {
+    match e {
+        BarEffect::Flat => "flat",
+        BarEffect::Starfield => "starfield",
+        BarEffect::Gradient => "gradient",
+    }
+}
+
+fn keys_preset_name(p: KeysPreset) -> &'static str {
     match p {
-        StatusPosition::Top => "top",
-        StatusPosition::Bottom => "bottom",
-        StatusPosition::Hidden => "hidden",
+        KeysPreset::Vim => "vim",
+        KeysPreset::Tmux => "tmux",
+        KeysPreset::Screen => "screen",
     }
 }
 
@@ -139,6 +149,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 bool_f("free-mode", g.free_mode),
                 bool_f("focus-follows-mouse", g.focus_follows_mouse),
                 int_f("prefix-timeout-ms", g.prefix_timeout_ms, 0, 10_000),
+                choice_f("keys-preset", KEYS_PRESETS, keys_preset_name(g.keys_preset)),
             ]
         }
         1 => {
@@ -154,7 +165,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 colour_f("border-alert", a.border_alert),
                 choice_f(
                     "title-position",
-                    POSITIONS,
+                    TITLE_POSITIONS,
                     title_position_name(a.title_position),
                 ),
                 bool_f("dim-unfocused", a.dim_unfocused),
@@ -164,16 +175,22 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
         }
         2 => {
             let s = &cfg.status;
+            // Both rows are independent: either, neither or both can be on.
             vec![
-                choice_f("position", POSITIONS, status_position_name(s.position)),
-                list_f("left", &s.left),
-                list_f("center", &s.center),
-                list_f("right", &s.right),
+                bool_f("header.enabled", s.header.enabled),
+                list_f("header.left", &s.header.left),
+                list_f("header.center", &s.header.center),
+                list_f("header.right", &s.header.right),
+                bool_f("footer.enabled", s.footer.enabled),
+                list_f("footer.left", &s.footer.left),
+                list_f("footer.center", &s.footer.center),
+                list_f("footer.right", &s.footer.right),
                 colour_f("bg", s.bg),
                 colour_f("fg", s.fg),
                 colour_f("accent", s.accent),
                 text_f("separator", &s.separator),
                 text_f("time-format", &s.time_format),
+                choice_f("effect", EFFECTS, effect_name(s.effect)),
             ]
         }
         3 => {
@@ -186,13 +203,16 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 list_f("done-patterns", &a.done_patterns),
             ]
         }
+        // The resolved map, not `cfg.keys`: the latter holds only overrides and
+        // is empty by default.
         KEYS => cfg
-            .keys
+            .keymap()
+            .0
             .iter()
-            .map(|(k, v)| Field {
+            .map(|(b, a)| Field {
                 label: "",
                 kind: Kind::Text,
-                value: format!("{k} → {v}"),
+                value: format!("{b} → {a}"),
             })
             .collect(),
         _ => vec![],
@@ -219,6 +239,29 @@ fn parse_colour(v: &str) -> Result<Rgb, String> {
     v.parse::<Rgb>()
 }
 
+/// Is this binding the user's, rather than the preset's? Parsed rather than
+/// string-compared, so a hand-written `Ctrl+T Z` still matches.
+fn overridden(cfg: &Config, b: &str) -> bool {
+    let Ok(want) = b.parse::<Binding>() else {
+        return false;
+    };
+    cfg.keys
+        .keys()
+        .any(|k| k.parse::<Binding>().is_ok_and(|p| p == want))
+}
+
+/// Row of the keys section that `b` occupies in the resolved map, if any.
+fn key_row(cfg: &Config, b: &str) -> Option<usize> {
+    let want = b.parse::<Binding>().ok()?;
+    cfg.keymap().0.keys().position(|k| *k == want)
+}
+
+/// Unbind `b`. Writes `"none"` rather than removing the override, because
+/// removing it would restore the preset's binding instead of clearing it.
+fn unbind(cfg: &mut Config, b: &str) {
+    cfg.keys.insert(b.to_string(), "none".to_string());
+}
+
 /// Write `value` back into `cfg`. The inverse of [`fields`]; an `Err` is shown
 /// to the user inline and nothing is written.
 fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<(), String> {
@@ -230,6 +273,14 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (0, 4) => cfg.general.free_mode = parse_bool(value),
         (0, 5) => cfg.general.focus_follows_mouse = parse_bool(value),
         (0, 6) => cfg.general.prefix_timeout_ms = parse_num(value)?.max(0) as u64,
+        (0, 7) => {
+            cfg.general.keys_preset = match value {
+                "vim" => KeysPreset::Vim,
+                "tmux" => KeysPreset::Tmux,
+                "screen" => KeysPreset::Screen,
+                other => return Err(format!("unknown keys preset: {other}")),
+            }
+        }
 
         (1, 0) => {
             cfg.appearance.border_style = match value {
@@ -257,22 +308,27 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (1, 6) => cfg.appearance.gap = parse_num(value)?.clamp(0, u16::MAX as i64) as u16,
         (1, 7) => cfg.appearance.float_shadow = parse_bool(value),
 
-        (2, 0) => {
-            cfg.status.position = match value {
-                "top" => StatusPosition::Top,
-                "bottom" => StatusPosition::Bottom,
-                "hidden" => StatusPosition::Hidden,
-                other => return Err(format!("unknown position: {other}")),
+        (2, 0) => cfg.status.header.enabled = parse_bool(value),
+        (2, 1) => cfg.status.header.left = parse_list(value),
+        (2, 2) => cfg.status.header.center = parse_list(value),
+        (2, 3) => cfg.status.header.right = parse_list(value),
+        (2, 4) => cfg.status.footer.enabled = parse_bool(value),
+        (2, 5) => cfg.status.footer.left = parse_list(value),
+        (2, 6) => cfg.status.footer.center = parse_list(value),
+        (2, 7) => cfg.status.footer.right = parse_list(value),
+        (2, 8) => cfg.status.bg = parse_colour(value)?,
+        (2, 9) => cfg.status.fg = parse_colour(value)?,
+        (2, 10) => cfg.status.accent = parse_colour(value)?,
+        (2, 11) => cfg.status.separator = value.to_string(),
+        (2, 12) => cfg.status.time_format = value.to_string(),
+        (2, 13) => {
+            cfg.status.effect = match value {
+                "flat" => BarEffect::Flat,
+                "starfield" => BarEffect::Starfield,
+                "gradient" => BarEffect::Gradient,
+                other => return Err(format!("unknown effect: {other}")),
             }
         }
-        (2, 1) => cfg.status.left = parse_list(value),
-        (2, 2) => cfg.status.center = parse_list(value),
-        (2, 3) => cfg.status.right = parse_list(value),
-        (2, 4) => cfg.status.bg = parse_colour(value)?,
-        (2, 5) => cfg.status.fg = parse_colour(value)?,
-        (2, 6) => cfg.status.accent = parse_colour(value)?,
-        (2, 7) => cfg.status.separator = value.to_string(),
-        (2, 8) => cfg.status.time_format = value.to_string(),
 
         (3, 0) => cfg.agents.enabled = parse_bool(value),
         (3, 1) => cfg.agents.bell_on_attention = parse_bool(value),
@@ -281,22 +337,28 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (3, 4) => cfg.agents.done_patterns = parse_list(value),
 
         (KEYS, i) => {
-            let old = cfg
-                .keys
+            let (map, _) = cfg.keymap();
+            let old = map
                 .keys()
                 .nth(i)
-                .cloned()
+                .map(|b| b.to_string())
                 .ok_or_else(|| "no such binding".to_string())?;
             let (b, a) = value
                 .split_once('→')
                 .ok_or_else(|| "expected `binding → action`".to_string())?;
             let (b, a) = (b.trim(), a.trim());
-            b.parse::<Binding>()?;
-            a.parse::<Action>()?;
-            if b != old && cfg.keys.contains_key(b) {
+            let binding = b.parse::<Binding>()?;
+            let action = a.parse::<Action>()?;
+            if b != old && map.contains_key(&binding) {
                 return Err(format!("{b} is already bound"));
             }
-            cfg.keys.remove(&old);
+            // Re-stating what the preset already says needs no override.
+            if b == old && map.get(&binding) == Some(&action) {
+                return Ok(());
+            }
+            if b != old {
+                unbind(cfg, &old);
+            }
             cfg.keys.insert(b.to_string(), a.to_string());
         }
         _ => return Err("no such field".into()),
@@ -491,8 +553,8 @@ impl Settings {
                 }
             }
             KeyCode::Char('d') if self.section == KEYS => {
-                if let Some(k) = cfg.keys.keys().nth(self.row).cloned() {
-                    cfg.keys.remove(&k);
+                if let Some(b) = cfg.keymap().0.keys().nth(self.row).map(|b| b.to_string()) {
+                    unbind(cfg, &b);
                     self.clamp_row(cfg);
                     return Outcome::Apply;
                 }
@@ -585,7 +647,7 @@ impl Settings {
         let out = self.apply(cfg, &format!("{chord} → {action}"));
         if out == Outcome::Apply {
             // The map is sorted by binding, so the row may have moved.
-            if let Some(i) = cfg.keys.keys().position(|k| *k == chord) {
+            if let Some(i) = key_row(cfg, &chord) {
                 self.row = i;
             }
         }
@@ -598,7 +660,7 @@ impl Settings {
             return Outcome::Continue;
         }
         let chord = Chord::from_event(ev).to_string();
-        if cfg.keys.contains_key(&chord) {
+        if key_row(cfg, &chord).is_some() {
             self.edit = Edit::None;
             self.error = Some(format!("{chord} is already bound"));
             return Outcome::Continue;
@@ -632,7 +694,7 @@ impl Settings {
                 self.edit = Edit::None;
                 if let Some(a) = matches.get(sel) {
                     cfg.keys.insert(chord.clone(), a.to_string());
-                    if let Some(i) = cfg.keys.keys().position(|k| *k == chord) {
+                    if let Some(i) = key_row(cfg, &chord) {
                         self.section = KEYS;
                         self.row = i;
                     }
@@ -708,7 +770,6 @@ impl Settings {
         border(buf, area, base);
         let g = geometry(area);
 
-        // Section list.
         for (i, name) in SECTIONS.iter().enumerate() {
             let y = g.sections.y + i as u16;
             if y >= g.sections.bottom() {
@@ -726,7 +787,6 @@ impl Settings {
             let text = format!("{:<width$}", name, width = g.sections.w as usize);
             put(buf, g.sections.x, y, &text, g.sections.w, style);
         }
-        // Divider between the columns.
         for y in g.sections.y..g.sections.bottom() {
             put(buf, g.sections.right(), y, "│", 1, base);
         }
@@ -771,8 +831,14 @@ impl Settings {
             let y = r.y + (i - scroll) as u16;
             let selected = i == self.row && self.focus == Focus::Fields;
             let (label, mut value) = match f.label {
+                // Key rows: `*` marks a binding the user changed, so preset
+                // defaults are still tellable at a glance.
                 "" => match f.value.split_once('→') {
-                    Some((b, a)) => (b.trim().to_string(), a.trim().to_string()),
+                    Some((b, a)) => {
+                        let b = b.trim();
+                        let mark = if overridden(cfg, b) { '*' } else { ' ' };
+                        (format!("{mark}{b}"), a.trim().to_string())
+                    }
                     None => (f.value.clone(), String::new()),
                 },
                 l => (l.to_string(), f.value.clone()),
@@ -842,7 +908,7 @@ fn filtered_actions(filter: &str) -> Vec<String> {
         .collect()
 }
 
-/// Heavy border, matching the help overlay: the doubled stroke marks a panel
+/// Heavy border, matching the help overlay: the heavy stroke marks a panel
 /// as an overlay rather than a pane.
 fn border(buf: &mut Buffer, r: Rect, style: Style) {
     let f = crate::render::frame_chars(crate::config::BorderStyle::Heavy);
@@ -923,6 +989,22 @@ mod tests {
         for ch in text.chars() {
             s.on_key(c(ch), cfg);
         }
+    }
+
+    /// Row index of `b` in the keys section.
+    fn krow(cfg: &Config, b: &str) -> usize {
+        key_row(cfg, b).unwrap_or_else(|| panic!("no binding {b}"))
+    }
+
+    fn text_of(buf: &Buffer, w: u16, h: u16) -> String {
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn click(col: u16, row: u16) -> MouseEvent {
@@ -1023,28 +1105,117 @@ mod tests {
     #[test]
     fn list_field_splits_on_commas() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
-        goto(&mut s, &cfg, 2, "left");
+        goto(&mut s, &cfg, 2, "footer.left");
         s.on_key(k(KeyCode::Enter), &mut cfg);
         for _ in 0..40 {
             s.on_key(k(KeyCode::Backspace), &mut cfg);
         }
         type_str(&mut s, &mut cfg, "session, time,");
         assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
-        assert_eq!(cfg.status.left, vec!["session".to_string(), "time".into()]);
+        assert_eq!(
+            cfg.status.footer.left,
+            vec!["session".to_string(), "time".into()]
+        );
     }
 
     #[test]
-    fn key_capture_rebinds_and_drops_the_old_key() {
+    fn header_and_footer_toggle_independently() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        assert!(!cfg.status.header.enabled);
+        assert!(cfg.status.footer.enabled);
+
+        goto(&mut s, &cfg, 2, "header.enabled");
+        assert_eq!(s.on_key(k(KeyCode::Char(' ')), &mut cfg), Outcome::Apply);
+        assert!(cfg.status.header.enabled);
+        assert!(cfg.status.footer.enabled, "both rows can be on at once");
+
+        goto(&mut s, &cfg, 2, "footer.enabled");
+        assert_eq!(s.on_key(k(KeyCode::Char(' ')), &mut cfg), Outcome::Apply);
+        assert!(!cfg.status.footer.enabled);
+        assert!(cfg.status.header.enabled);
+    }
+
+    #[test]
+    fn editing_a_header_list_leaves_the_footer_alone() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        let footer = cfg.status.footer.clone();
+        goto(&mut s, &cfg, 2, "header.center");
+        s.on_key(k(KeyCode::Enter), &mut cfg);
+        for _ in 0..40 {
+            s.on_key(k(KeyCode::Backspace), &mut cfg);
+        }
+        type_str(&mut s, &mut cfg, "time");
+        assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
+        assert_eq!(cfg.status.header.center, vec!["time".to_string()]);
+        assert_eq!(cfg.status.footer, footer);
+    }
+
+    #[test]
+    fn effect_cycles_through_all_three() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 2, "effect");
+        for want in [BarEffect::Starfield, BarEffect::Gradient, BarEffect::Flat] {
+            s.on_key(k(KeyCode::Right), &mut cfg);
+            assert_eq!(cfg.status.effect, want);
+        }
+        s.on_key(k(KeyCode::Left), &mut cfg);
+        assert_eq!(cfg.status.effect, BarEffect::Gradient);
+    }
+
+    #[test]
+    fn keys_preset_cycles_and_relists_the_keymap() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 0, "keys-preset");
+        for (want, leader) in [
+            (KeysPreset::Tmux, "ctrl+b "),
+            (KeysPreset::Screen, "ctrl+a "),
+            (KeysPreset::Vim, "ctrl+t "),
+        ] {
+            assert_eq!(s.on_key(k(KeyCode::Right), &mut cfg), Outcome::Apply);
+            assert_eq!(cfg.general.keys_preset, want);
+            let rows = fields(&cfg, KEYS);
+            assert!(
+                rows.iter().any(|f| f.value.starts_with(leader)),
+                "{want:?} keymap has no {leader} bindings"
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_and_every_border_style_are_settable() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 1, "border-style");
+        for name in BORDER_STYLES {
+            assert_eq!(s.apply(&mut cfg, name), Outcome::Apply);
+            assert_eq!(border_style_name(cfg.appearance.border_style), *name);
+        }
+        // The stock-tmux look must be reachable without editing TOML.
+        assert_eq!(cfg.appearance.border_style, BorderStyle::None);
+
+        goto(&mut s, &cfg, 0, "mouse");
+        s.on_key(k(KeyCode::Char(' ')), &mut cfg);
+        assert!(!cfg.general.mouse);
+        s.on_key(k(KeyCode::Char(' ')), &mut cfg);
+        assert!(cfg.general.mouse);
+    }
+
+    #[test]
+    fn key_capture_rebinds_and_unbinds_the_old_key() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         s.section = KEYS;
         s.focus = Focus::Fields;
-        s.row = cfg.keys.keys().position(|k| k == "alt+left").unwrap();
-        let action = cfg.keys["alt+left"].clone();
+        s.row = krow(&cfg, "alt+left");
+        let action = fields(&cfg, KEYS)[s.row]
+            .value
+            .split_once('→')
+            .map(|(_, a)| a.trim().to_string())
+            .unwrap();
 
         s.on_key(k(KeyCode::Enter), &mut cfg);
         let out = s.on_key(KeyEvent::new(KeyCode::F(9), KeyModifiers::NONE), &mut cfg);
         assert_eq!(out, Outcome::Apply);
-        assert!(!cfg.keys.contains_key("alt+left"));
+        assert_eq!(key_row(&cfg, "alt+left"), None);
+        assert_eq!(cfg.keys["alt+left"], "none");
         assert_eq!(cfg.keys["f9"], action);
     }
 
@@ -1053,7 +1224,7 @@ mod tests {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         let before = cfg.keys.clone();
         s.section = KEYS;
-        s.row = cfg.keys.keys().position(|k| k == "alt+left").unwrap();
+        s.row = krow(&cfg, "alt+left");
         s.on_key(k(KeyCode::Enter), &mut cfg);
         let out = s.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT), &mut cfg);
         assert_eq!(out, Outcome::Continue);
@@ -1062,14 +1233,34 @@ mod tests {
     }
 
     #[test]
-    fn d_deletes_a_binding() {
+    fn d_unbinds_instead_of_dropping_the_override() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         s.section = KEYS;
-        s.row = cfg.keys.keys().position(|k| k == "alt+left").unwrap();
-        let n = cfg.keys.len();
+        s.row = krow(&cfg, "alt+left");
+        let n = fields(&cfg, KEYS).len();
         assert_eq!(s.on_key(c('d'), &mut cfg), Outcome::Apply);
-        assert!(!cfg.keys.contains_key("alt+left"));
-        assert_eq!(cfg.keys.len(), n - 1);
+        // Removing the override would restore the preset binding, so the
+        // unbind has to be recorded as an explicit "none".
+        assert_eq!(cfg.keys["alt+left"], "none");
+        assert_eq!(key_row(&cfg, "alt+left"), None);
+        assert_eq!(fields(&cfg, KEYS).len(), n - 1);
+    }
+
+    #[test]
+    fn overrides_are_marked_in_the_listing() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        let (w, h) = (80u16, 40u16);
+        s.section = KEYS;
+        s.focus = Focus::Fields;
+        s.row = krow(&cfg, "alt+left");
+        let mut buf = Buffer::empty(TRect::new(0, 0, w, h));
+        s.draw(&mut buf, Rect::new(0, 0, w, h), &cfg);
+        assert!(!text_of(&buf, w, h).contains("*alt+left"));
+
+        cfg.keys.insert("alt+left".into(), "quit".into());
+        s.row = krow(&cfg, "alt+left");
+        s.draw(&mut buf, Rect::new(0, 0, w, h), &cfg);
+        assert!(text_of(&buf, w, h).contains("*alt+left"));
     }
 
     #[test]
@@ -1135,7 +1326,7 @@ mod tests {
 
         s.on_mouse(click(g.fields.x + 3, g.fields.y + 3), area, &mut cfg);
         assert_eq!(s.row, 3);
-        assert_eq!(fields(&cfg, 2)[s.row].label, "right");
+        assert_eq!(fields(&cfg, 2)[s.row].label, "header.right");
     }
 
     #[test]
@@ -1191,14 +1382,7 @@ mod tests {
         let s = Settings::new();
         let mut buf = Buffer::empty(TRect::new(0, 0, 80, 24));
         s.draw(&mut buf, Rect::new(0, 0, 80, 24), &cfg);
-        let text: String = (0..24)
-            .map(|y| {
-                (0..80)
-                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = text_of(&buf, 80, 24);
         for name in SECTIONS {
             assert!(text.contains(name), "missing {name}\n{text}");
         }

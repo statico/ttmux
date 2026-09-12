@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use crate::config;
 
-/// How long a `Busy` pane is kept `Busy` after its output stops matching a
-/// busy pattern, as long as the tail keeps changing (or just changed).
+/// How long a `Busy` pane is held `Busy` after the last change to its tail.
+/// Agents go quiet for a beat between spinner frames and tool calls, and
+/// without this the state flickers to `Idle` and back.
 const GRACE: Duration = Duration::from_millis(1500);
 
 /// Only the last few non-empty lines of a pane's tail are considered "recent"
@@ -19,9 +20,8 @@ const RECENT_LINES: usize = 5;
 const ANCHOR_CHARS: usize = 40;
 
 /// Coarse activity state of a coding agent running in a pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
-    #[default]
     Idle,
     Busy,
     Attention,
@@ -48,7 +48,6 @@ impl AgentState {
 /// Per-pane classifier. Feed it on every pump via [`Watcher::update`].
 pub struct Watcher {
     state: AgentState,
-    /// Set on the transition into `Attention`; consumed by `take_alert`.
     alert_pending: bool,
     last_tail: String,
     last_change: Instant,
@@ -114,10 +113,6 @@ impl Watcher {
         new_state
     }
 
-    pub fn state(&self) -> AgentState {
-        self.state
-    }
-
     /// True on the transition into `Attention` (the app rings the bell once).
     pub fn take_alert(&mut self) -> bool {
         std::mem::take(&mut self.alert_pending)
@@ -140,9 +135,9 @@ impl Default for Watcher {
 /// The last few non-empty lines of `tail`, oldest first (so `.last()` is the
 /// most recently written line).
 fn recent_lines(tail: &str) -> Vec<&str> {
-    let all: Vec<&str> = tail.lines().filter(|l| !l.trim().is_empty()).collect();
-    let start = all.len().saturating_sub(RECENT_LINES);
-    all[start..].to_vec()
+    let mut all: Vec<&str> = tail.lines().filter(|l| !l.trim().is_empty()).collect();
+    all.drain(..all.len().saturating_sub(RECENT_LINES));
+    all
 }
 
 /// Patterns like `?` or `(y/n)` are ambiguous anywhere in old scrollback or
@@ -164,26 +159,14 @@ fn contains_ci(haystack: &str, needle: &str) -> bool {
 /// Does `title` or the recent tail lines match any of `patterns`?
 fn matches_patterns(patterns: &[String], title: &str, lines: &[&str]) -> bool {
     let last_line = lines.last().copied().unwrap_or("");
-    for pat in patterns {
-        if pat.is_empty() {
-            continue;
-        }
+    patterns.iter().filter(|p| !p.is_empty()).any(|pat| {
         if is_end_anchored(pat) {
-            let end_title = last_n_chars(title, ANCHOR_CHARS);
-            let end_line = last_n_chars(last_line, ANCHOR_CHARS);
-            if contains_ci(&end_title, pat) || contains_ci(&end_line, pat) {
-                return true;
-            }
+            contains_ci(&last_n_chars(title, ANCHOR_CHARS), pat)
+                || contains_ci(&last_n_chars(last_line, ANCHOR_CHARS), pat)
         } else {
-            if contains_ci(title, pat) {
-                return true;
-            }
-            if lines.iter().any(|l| contains_ci(l, pat)) {
-                return true;
-            }
+            contains_ci(title, pat) || lines.iter().any(|l| contains_ci(l, pat))
         }
-    }
-    false
+    })
 }
 
 #[cfg(test)]

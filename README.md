@@ -37,6 +37,8 @@ Prefix is <kbd>ctrl+t</kbd>, and the pane keys follow vim's window commands. Eve
 | <kbd>ctrl+t</kbd> <kbd>z</kbd> | zoom the focused pane |
 | <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | new / next / previous tab |
 | <kbd>ctrl+alt+n</kbd> | jump to the next pane wanting attention |
+| <kbd>ctrl+t</kbd> <kbd>ctrl+t</kbd> / <kbd>t</kbd> | last tab / send the prefix to the pane |
+| <kbd>ctrl+t</kbd> <kbd>=</kbd> | even out the tiling |
 | <kbd>ctrl+t</kbd> <kbd>,</kbd> | settings |
 | <kbd>ctrl+t</kbd> <kbd>?</kbd> | help |
 | <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | close the pane / quit ttmux |
@@ -56,17 +58,29 @@ UI is for fiddling.
 
 ```toml
 [general]
-mouse = true
+mouse = true                 # set false to turn mouse support off entirely
 scrollback = 10000
 free-mode = false
+keys-preset = "vim"          # vim | tmux | screen
+passthrough-images = true    # kitty / iTerm2 / sixel inline images
 
 [appearance]
 border-style = "curved"      # curved | square | heavy | double | dashed | none
 border-focused = "#7aa2f7"
 gap = 0
 
+# Header and footer are independent; enable either, both or neither.
 [status]
-position = "bottom"
+effect = "flat"              # flat | starfield | gradient
+
+[status.header]
+enabled = false
+left = ["host"]
+center = ["tabs"]
+right = ["session"]
+
+[status.footer]
+enabled = true
 left = ["session", "mode"]
 center = ["tabs"]
 right = ["agents", "time"]
@@ -75,9 +89,11 @@ right = ["agents", "time"]
 enabled = true
 bell-on-attention = true
 
+# `keys` are overrides on top of the preset. "none" unbinds.
 [keys]
 "ctrl+t v" = "split right"
 "alt+left" = "focus left"
+"ctrl+t &" = "none"
 ```
 
 ## Coding-agent alerts

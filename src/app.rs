@@ -9,7 +9,7 @@ use anyhow::Result;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
-use crossterm::{execute, terminal};
+use crossterm::{cursor::MoveTo, execute, queue, terminal};
 use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Position;
@@ -18,7 +18,8 @@ use ratatui::Terminal;
 
 use crate::action::{Action, Dir, ALL_ACTIONS};
 use crate::agent::{AgentState, Watcher};
-use crate::config::{BorderStyle, Config, StatusPosition};
+use crate::config::{Bar, BorderStyle, Config};
+use crate::graphics::Image;
 use crate::input::{encode_key, encode_mouse, Keys, Resolution};
 use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
 use crate::pty::Pane;
@@ -37,6 +38,9 @@ struct Slot {
     pane: Pane,
     watcher: Watcher,
     state: AgentState,
+    /// Graphics the pane has emitted. A program draws an image once, so ttmux
+    /// has to keep the sequence and re-emit it every frame.
+    images: Vec<Image>,
 }
 
 struct Tab {
@@ -61,14 +65,20 @@ pub struct App {
     keys: Keys,
     tabs: Vec<Tab>,
     tab: usize,
+    /// Where `last-tab` goes back to, tmux's `last-window`.
+    last_tab: Option<usize>,
     slots: HashMap<PaneId, Slot>,
     next_id: PaneId,
     overlay: Overlay,
     message: Option<(String, Instant)>,
-    /// Hitboxes published by the last status-bar draw, for mouse clicks.
-    tab_hits: Vec<(usize, std::ops::Range<u16>)>,
+    /// Hitboxes published by the last status draw, for mouse clicks. Both
+    /// rows can list tabs, so the row is part of the box.
+    tab_hits: Vec<(usize, u16, std::ops::Range<u16>)>,
     area: Rect,
     session: String,
+    /// Whether the last frame emitted any graphics, so a frame with none
+    /// still issues one delete pass to wipe what the last one placed.
+    drew_graphics: bool,
     quit: bool,
 }
 
@@ -140,6 +150,7 @@ impl App {
             cfg_path,
             tabs: vec![],
             tab: 0,
+            last_tab: None,
             slots: HashMap::new(),
             next_id: 1,
             overlay: Overlay::None,
@@ -147,6 +158,7 @@ impl App {
             tab_hits: vec![],
             area,
             session: std::env::var("TTMUX_SESSION").unwrap_or_else(|_| "main".into()),
+            drew_graphics: false,
             quit: false,
         };
         app.new_tab()?;
@@ -155,27 +167,39 @@ impl App {
 
     // ---------------------------------------------------------- geometry
 
-    /// The rect panes live in: everything except the status bar.
+    /// The rect panes live in: everything the status rows do not take.
     fn body(&self) -> Rect {
         let a = self.area;
-        match self.cfg.status.position {
-            StatusPosition::Hidden => a,
-            _ if a.h < 2 => a,
-            StatusPosition::Top => Rect::new(a.x, a.y + 1, a.w, a.h - 1),
-            StatusPosition::Bottom => Rect::new(a.x, a.y, a.w, a.h - 1),
-        }
+        let top = self.header_rect().is_some() as u16;
+        let bottom = self.footer_rect().is_some() as u16;
+        Rect::new(a.x, a.y + top, a.w, a.h - top - bottom)
     }
 
-    fn status_rect(&self) -> Option<Rect> {
+    /// The two status rows, either, both or neither.
+    ///
+    /// A row is only given away if a pane still has a line to live on, so a
+    /// two-row terminal keeps its pane instead of becoming all status bar.
+    fn header_rect(&self) -> Option<Rect> {
         let a = self.area;
-        if a.h < 2 {
-            return None;
-        }
-        match self.cfg.status.position {
-            StatusPosition::Hidden => None,
-            StatusPosition::Top => Some(Rect::new(a.x, a.y, a.w, 1)),
-            StatusPosition::Bottom => Some(Rect::new(a.x, a.y + a.h - 1, a.w, 1)),
-        }
+        (self.cfg.status.header.enabled && a.h >= 2).then(|| Rect::new(a.x, a.y, a.w, 1))
+    }
+
+    fn footer_rect(&self) -> Option<Rect> {
+        let a = self.area;
+        let room = if self.cfg.status.header.enabled { 3 } else { 2 };
+        (self.cfg.status.footer.enabled && a.h >= room)
+            .then(|| Rect::new(a.x, a.y + a.h - 1, a.w, 1))
+    }
+
+    /// Each enabled row with the widget list it draws, top first.
+    fn status_rows(&self) -> Vec<(Rect, &Bar)> {
+        [
+            self.header_rect().map(|r| (r, &self.cfg.status.header)),
+            self.footer_rect().map(|r| (r, &self.cfg.status.footer)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// A pane's tile split into the rect the border is drawn on and the rect
@@ -243,6 +267,7 @@ impl App {
                 pane,
                 watcher: Watcher::new(),
                 state: AgentState::Idle,
+                images: vec![],
             },
         );
         Ok(id)
@@ -350,6 +375,9 @@ impl App {
             }
         }
         self.tabs.remove(i);
+        // Every index past `i` has shifted, so the remembered one now points
+        // at a different tab. Forget it rather than jump somewhere arbitrary.
+        self.last_tab = None;
         if self.tabs.is_empty() {
             self.quit = true;
             return;
@@ -361,7 +389,8 @@ impl App {
     }
 
     fn select_tab(&mut self, i: usize) {
-        if i < self.tabs.len() {
+        if i < self.tabs.len() && i != self.tab {
+            self.last_tab = Some(self.tab);
             self.tab = i;
             self.relayout();
         }
@@ -436,6 +465,11 @@ impl App {
                 };
                 self.note(format!("{label} mode"));
             }
+            SetPreset(p) => {
+                self.tab_mut().layout.set_preset(p);
+                self.sync_sizes();
+                self.note(p.as_str());
+            }
             NextPreset => {
                 let t = self.tab_mut();
                 let p = match t.layout.preset {
@@ -475,6 +509,11 @@ impl App {
                 self.select_tab(n);
             }
             SelectTab(i) => self.select_tab(i.saturating_sub(1)),
+            LastTab => {
+                if let Some(i) = self.last_tab {
+                    self.select_tab(i);
+                }
+            }
             RenameTab => {
                 self.overlay = Overlay::Prompt {
                     label: "Rename tab".into(),
@@ -523,6 +562,11 @@ impl App {
                 }
                 Err(e) => self.note(format!("config: {e}")),
             },
+            SendPrefix => {
+                if let Some(c) = self.cfg.prefixes().first() {
+                    self.type_into_pane(KeyEvent::new(c.code, c.mods));
+                }
+            }
             Quit => self.quit = true,
             Nop => {}
         }
@@ -602,19 +646,24 @@ impl App {
             Resolution::Action(a) => self.dispatch(a),
             Resolution::Pending => Ok(()),
             Resolution::Passthrough => {
-                let id = self.focus();
-                if let Some(s) = self.slots.get_mut(&id) {
-                    // Typing anywhere jumps back to the live view, like a real
-                    // terminal.
-                    s.pane.scroll_to_bottom();
-                    let app_cursor = s.pane.screen().application_cursor();
-                    let bytes = encode_key(ev, app_cursor);
-                    if !bytes.is_empty() {
-                        s.pane.send(&bytes);
-                    }
-                }
+                self.type_into_pane(ev);
                 Ok(())
             }
+        }
+    }
+
+    /// Write a key to the focused pane as a terminal would.
+    fn type_into_pane(&mut self, ev: KeyEvent) {
+        let id = self.focus();
+        let Some(s) = self.slots.get_mut(&id) else {
+            return;
+        };
+        // Typing anywhere jumps back to the live view, like a real terminal.
+        s.pane.scroll_to_bottom();
+        let app_cursor = s.pane.screen().application_cursor();
+        let bytes = encode_key(ev, app_cursor);
+        if !bytes.is_empty() {
+            s.pane.send(&bytes);
         }
     }
 
@@ -711,21 +760,19 @@ impl App {
             return self.after_settings(out);
         }
 
-        // Status bar: click a tab.
-        if let Some(sr) = self.status_rect() {
-            if sr.contains(x, y) {
-                if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
-                    if let Some((i, _)) = self
-                        .tab_hits
-                        .iter()
-                        .find(|(_, r)| r.contains(&x))
-                        .map(|(i, r)| (*i, r.clone()))
-                    {
-                        self.select_tab(i);
-                    }
+        // Status rows: click a tab.
+        if self.status_rows().iter().any(|(r, _)| r.contains(x, y)) {
+            if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
+                if let Some(i) = self
+                    .tab_hits
+                    .iter()
+                    .find(|(_, row, r)| *row == y && r.contains(&x))
+                    .map(|(i, _, _)| *i)
+                {
+                    self.select_tab(i);
                 }
-                return Ok(());
             }
+            return Ok(());
         }
 
         match ev.kind {
@@ -910,6 +957,7 @@ impl App {
         }
         let mut cursor: Option<(u16, u16)> = None;
         let mut hits = vec![];
+        let mut places: Vec<(PaneId, Rect)> = vec![];
 
         term.draw(|f| {
             let buf = f.buffer_mut();
@@ -942,6 +990,7 @@ impl App {
                     slot.pane.screen(),
                     self.cfg.appearance.dim_unfocused && !focused,
                 );
+                places.push((id, inner));
                 if focused {
                     let sc = slot.pane.screen();
                     if !sc.hide_cursor() && slot.pane.scroll == 0 {
@@ -958,7 +1007,8 @@ impl App {
                 render::draw_snap_preview(buf, half, self.cfg.status.accent.into());
             }
 
-            if let Some(sr) = self.status_rect() {
+            let rows = self.status_rows();
+            if !rows.is_empty() {
                 let tabs: Vec<(String, bool)> = self
                     .tabs
                     .iter()
@@ -985,7 +1035,13 @@ impl App {
                     message: self.message.as_ref().map(|(m, _)| m.as_str()),
                     pending_prefix: self.keys.pending(),
                 };
-                hits = status::draw(buf, sr, &self.cfg.status, &ctx);
+                for (r, bar) in rows {
+                    hits.extend(
+                        status::draw(buf, r, &self.cfg.status, bar, &ctx)
+                            .into_iter()
+                            .map(|(i, cols)| (i, r.y, cols)),
+                    );
+                }
             }
 
             match &self.overlay {
@@ -1008,11 +1064,66 @@ impl App {
                 }
             }
 
+            // An overlay owns the screen, but graphics sit in a layer above
+            // every cell, so an image would float on top of it.
+            if !matches!(self.overlay, Overlay::None) {
+                places.clear();
+            }
+
             if let Some((x, y)) = cursor {
                 f.set_cursor_position(Position::new(x, y));
             }
         })?;
+        self.replay_images(&places)?;
         self.tab_hits = hits;
+        Ok(())
+    }
+
+    /// Re-emit captured graphics after the frame.
+    ///
+    /// Terminals draw images into their own layer at the real cursor, not
+    /// into ratatui's buffer, so this has to run once `term.draw` has
+    /// finished painting or the next diff simply covers them.
+    fn replay_images(&mut self, places: &[(PaneId, Rect)]) -> Result<()> {
+        for slot in self.slots.values_mut() {
+            let new = slot.pane.take_images();
+            if !self.cfg.general.passthrough_images {
+                continue;
+            }
+            slot.images.extend(new);
+            // Scrolling back makes the recorded cell meaningless: the image
+            // belongs to a line that is no longer where it was.
+            if slot.pane.scroll != 0 {
+                slot.images.clear();
+            }
+            let (rows, cols) = (slot.pane.rows, slot.pane.cols);
+            slot.images.retain(|i| i.row < rows && i.col < cols);
+        }
+        let pending = self.slots.values().any(|s| !s.images.is_empty());
+        if !pending && !self.drew_graphics {
+            return Ok(());
+        }
+        let mut out = io::stdout();
+        // Kitty keeps a placement until told to drop it; iTerm2 and sixel
+        // images are cell content, which the repaint above already erased.
+        out.write_all(b"\x1b_Ga=d\x1b\\")?;
+        let mut drew = false;
+        for (id, inner) in places {
+            let Some(slot) = self.slots.get(id) else {
+                continue;
+            };
+            for img in &slot.images {
+                let (x, y) = (inner.x + img.col, inner.y + img.row);
+                if !inner.contains(x, y) {
+                    continue;
+                }
+                queue!(out, MoveTo(x, y))?;
+                out.write_all(&img.bytes)?;
+                drew = true;
+            }
+        }
+        out.flush()?;
+        self.drew_graphics = drew;
         Ok(())
     }
 

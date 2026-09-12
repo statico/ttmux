@@ -1,18 +1,20 @@
-//! The one-row status bar.
+//! The status rows.
 //!
-//! The bar is composed from widget names listed in the config
-//! ([`StatusBar::left`] / `center` / `right`), so users can build their own.
-//! [`draw`] returns the on-screen column range of each tab it rendered, so the
-//! app can turn a click into a tab index.
+//! Each row is composed from the widget names listed in its [`Bar`]
+//! (`left`/`center`/`right`), so users can build their own; colours and the
+//! background effect are shared by both rows on [`StatusBar`]. [`draw`] paints
+//! one row and returns the on-screen column range of each tab it rendered, so
+//! the app can turn a click into a tab index.
 
 use std::ops::Range;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ratatui::buffer::{Buffer, CellWidth};
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::agent::AgentState;
-use crate::config::StatusBar;
+use crate::config::{Bar, BarEffect, StatusBar};
 use crate::layout::Rect;
 
 /// Everything the bar can show. Owned by the app, borrowed for one frame.
@@ -77,18 +79,18 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| sw(&s.text)).sum()
 }
 
-/// Render the bar into `rect`; returns `(tab index, columns)` for each tab drawn.
-pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(usize, Range<u16>)> {
+/// Render one row into `rect`; returns `(tab index, columns)` for each tab drawn.
+pub fn draw(
+    buf: &mut Buffer,
+    rect: Rect,
+    cfg: &StatusBar,
+    bar: &Bar,
+    ctx: &Ctx,
+) -> Vec<(usize, Range<u16>)> {
     let base = Style::default().fg(cfg.fg.0).bg(cfg.bg.0);
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                // Reset first: `set_style` merges modifiers, so a bar drawn
-                // over a pane would keep its underline or inverse.
-                cell.reset();
-                cell.set_symbol(" ");
-                cell.set_style(base);
-            }
+            put_cell(buf, x, y, " ", base);
         }
     }
     if rect.w == 0 || rect.h == 0 {
@@ -97,9 +99,10 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
 
     let w = rect.w as usize;
     let sep = || Span::new(cfg.separator.clone(), base);
-    let mut left = join(chunks(&cfg.left, cfg, ctx, base), &sep);
-    let mut center_chunks = chunks(&cfg.center, cfg, ctx, base);
-    let right = join(chunks(&cfg.right, cfg, ctx, base), &sep);
+    let group = |names: &[String]| join(chunks(names, cfg, ctx, base), &sep);
+    let mut left = group(&bar.left);
+    let mut center_chunks = chunks(&bar.center, cfg, ctx, base);
+    let right = group(&bar.right);
 
     // Too wide? Drop centre widgets first, then truncate the left group.
     let rw = spans_width(&right);
@@ -127,19 +130,36 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
     let cw = spans_width(&center).min(gap);
 
     let mut hits = Vec::new();
+    let mut taken = vec![false; w];
     let end = rect.right();
-    put(buf, &mut hits, rect.x, rect.y, end, &left);
-    put(
-        buf,
-        &mut hits,
-        rect.x + (lw + (gap - cw) / 2) as u16,
-        rect.y,
+    let mut row = Row {
+        buf: &mut *buf,
+        hits: &mut hits,
+        taken: &mut taken,
+        x0: rect.x,
+        y: rect.y,
         end,
-        &center,
-    );
-    put(buf, &mut hits, end - rw.min(w) as u16, rect.y, end, &right);
+    };
+    row.put(rect.x, &left);
+    row.put(rect.x + (lw + (gap - cw) / 2) as u16, &center);
+    row.put(end - rw.min(w) as u16, &right);
+
+    // The effect goes in the cells no widget claimed, so widget text, its
+    // colours and the hitboxes are identical under every effect.
+    paint_effect(buf, rect, cfg, &taken, now_secs());
+
     hits.sort_by_key(|(_, r)| r.start);
     hits
+}
+
+/// Reset first: `set_style` merges modifiers, so a bar drawn over a pane would
+/// otherwise keep its underline or inverse.
+fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.reset();
+        cell.set_symbol(symbol);
+        cell.set_style(style);
+    }
 }
 
 fn chunks(names: &[String], cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Vec<Span>> {
@@ -238,30 +258,112 @@ fn truncate(spans: Vec<Span>, max: usize) -> Vec<Span> {
     out
 }
 
-fn put(
-    buf: &mut Buffer,
-    hits: &mut Vec<(usize, Range<u16>)>,
+/// One row being painted: where the text goes, plus what it claimed.
+struct Row<'a> {
+    buf: &'a mut Buffer,
+    hits: &'a mut Vec<(usize, Range<u16>)>,
+    /// Columns a widget painted, indexed from `x0`. The effect skips these.
+    taken: &'a mut [bool],
     x0: u16,
     y: u16,
     end: u16,
-    spans: &[Span],
-) {
-    let mut x = x0;
-    for s in spans {
-        if x >= end {
-            break;
-        }
-        let avail = (end - x) as usize;
-        // set_stringn reports where it stopped painting; trust that over any
-        // width we compute, so a hitbox can never cover an unpainted cell.
-        let (nx, _) = buf.set_stringn(x, y, &s.text, avail, s.style);
-        if let Some(i) = s.tab {
-            if nx > x {
-                hits.push((i, x..nx));
+}
+
+impl Row<'_> {
+    fn put(&mut self, at: u16, spans: &[Span]) {
+        let mut x = at;
+        for s in spans {
+            if x >= self.end {
+                break;
             }
+            let avail = (self.end - x) as usize;
+            // set_stringn reports where it stopped painting; trust that over
+            // any width we compute, so a hitbox can never cover an unpainted
+            // cell.
+            let (nx, _) = self.buf.set_stringn(x, self.y, &s.text, avail, s.style);
+            for c in x..nx {
+                self.taken[(c - self.x0) as usize] = true;
+            }
+            if let Some(i) = s.tab {
+                if nx > x {
+                    self.hits.push((i, x..nx));
+                }
+            }
+            x = nx;
         }
-        x = nx;
     }
+}
+
+// ---------------------------------------------------------------- effects
+
+/// Paint `cfg.effect` into the background of the cells `taken` leaves free.
+/// `t` is a whole-second bucket: the starfield drifts once a second instead of
+/// flickering every frame.
+fn paint_effect(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], t: u64) {
+    let (from, to) = match cfg.effect {
+        BarEffect::Flat => return,
+        BarEffect::Starfield => {
+            for y in rect.y..rect.bottom() {
+                for x in rect.x..rect.right() {
+                    if taken[(x - rect.x) as usize] {
+                        continue;
+                    }
+                    let h = hash3(x as u64, y as u64, t);
+                    // Sparse: ~1 cell in 64 is a bright star, 3 more are dim.
+                    let (sym, fg) = match h % 64 {
+                        0 => ("✦", cfg.fg.0),
+                        1..=3 => ("·", Color::DarkGray),
+                        _ => continue,
+                    };
+                    put_cell(buf, x, y, sym, Style::default().fg(fg).bg(cfg.bg.0));
+                }
+            }
+            return;
+        }
+        // Indexed and Reset carry no components to blend, so stay flat rather
+        // than guess what the terminal's palette resolves them to.
+        BarEffect::Gradient => match (rgb_of(cfg.bg.0), rgb_of(cfg.accent.0)) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return,
+        },
+    };
+    let span = (rect.w - 1).max(1) as i32;
+    for x in rect.x..rect.right() {
+        if taken[(x - rect.x) as usize] {
+            continue;
+        }
+        let f = (x - rect.x) as i32;
+        let bg = Color::Rgb(
+            lerp(from.0, to.0, f, span),
+            lerp(from.1, to.1, f, span),
+            lerp(from.2, to.2, f, span),
+        );
+        for y in rect.y..rect.bottom() {
+            put_cell(buf, x, y, " ", Style::default().fg(cfg.fg.0).bg(bg));
+        }
+    }
+}
+
+fn rgb_of(c: Color) -> Option<(u8, u8, u8)> {
+    match c {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        _ => None,
+    }
+}
+
+fn lerp(a: u8, b: u8, num: i32, den: i32) -> u8 {
+    (a as i32 + (b as i32 - a as i32) * num / den) as u8
+}
+
+/// Deterministic in (x, y, t) — no RNG state to carry between frames.
+fn hash3(x: u64, y: u64, t: u64) -> u64 {
+    let mut h = x.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ y.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ t.wrapping_mul(0x1656_67B1_9E37_79F9);
+    h ^= h >> 33;
+    h = h.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    h ^= h >> 33;
+    h
 }
 
 // ---------------------------------------------------------------- widgets
@@ -349,11 +451,15 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
 
 // ------------------------------------------------------------------ time
 
-fn now(fmt: &str) -> String {
-    let secs = SystemTime::now()
+fn now_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now(fmt: &str) -> String {
+    let secs = now_secs() as i64;
     format_time(fmt, secs, local_offset(secs))
 }
 
@@ -437,8 +543,15 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 // ---------------------------------------------------------------- system
 
-/// Short hostname (everything before the first dot).
-fn hostname() -> String {
+/// Short hostname (everything before the first dot), like `uname -n | cut -d. -f1`.
+///
+/// Cached: it cannot change while we run, and the bar redraws at frame rate.
+fn hostname() -> &'static str {
+    static HOST: OnceLock<String> = OnceLock::new();
+    HOST.get_or_init(read_hostname)
+}
+
+fn read_hostname() -> String {
     let mut buf = [0i8; 256];
     let full = unsafe {
         if libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) == 0 {
@@ -498,16 +611,21 @@ mod tests {
     use super::*;
     use ratatui::layout::Rect as RRect;
 
-    fn cfg_with(left: &[&str], center: &[&str], right: &[&str]) -> StatusBar {
-        StatusBar {
+    fn bar_with(left: &[&str], center: &[&str], right: &[&str]) -> Bar {
+        Bar {
+            enabled: true,
             left: left.iter().map(|s| s.to_string()).collect(),
             center: center.iter().map(|s| s.to_string()).collect(),
             right: right.iter().map(|s| s.to_string()).collect(),
-            ..StatusBar::default()
         }
     }
 
-    fn ctx<'a>(tabs: &'a [(String, bool)], panes: &'a [(String, AgentState)]) -> Ctx<'a> {
+    /// The shared half of the config, with no effect.
+    fn cfg() -> StatusBar {
+        StatusBar::default()
+    }
+
+    fn make_ctx<'a>(tabs: &'a [(String, bool)], panes: &'a [(String, AgentState)]) -> Ctx<'a> {
         Ctx {
             session: "main",
             mode: "tiling",
@@ -600,23 +718,35 @@ mod tests {
 
     #[test]
     fn default_config_fills_the_row() {
-        let cfg = StatusBar::default();
+        let bar = cfg().footer.clone();
         let t = tabs(&["one", "two"], 0);
         let p = vec![("sh".into(), AgentState::Busy)];
         let mut buf = buffer(40);
-        draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&t, &p));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &p),
+        );
         assert_eq!(row(&buf, 40).chars().count(), 40);
     }
 
     #[test]
     fn groups_hug_their_edges() {
-        let cfg = cfg_with(&["session"], &[], &["panes"]);
+        let bar = bar_with(&["session"], &[], &["panes"]);
         let p = vec![
             ("a".into(), AgentState::Idle),
             ("b".into(), AgentState::Idle),
         ];
         let mut buf = buffer(40);
-        draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&[], &p));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &p),
+        );
         let line = row(&buf, 40);
         assert!(line.starts_with(" main "), "{line:?}");
         assert!(line.ends_with("2 panes"), "{line:?}");
@@ -624,10 +754,16 @@ mod tests {
 
     #[test]
     fn tab_hitboxes() {
-        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let bar = bar_with(&["tabs"], &[], &[]);
         let t = tabs(&["one", "two", "three"], 1);
         let mut buf = buffer(40);
-        let hits = draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&t, &[]));
+        let hits = draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &[]),
+        );
         assert_eq!(hits.len(), 3);
         assert_eq!(
             hits.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
@@ -660,10 +796,16 @@ mod tests {
     /// Every returned range must cover exactly the cells that tab was painted on.
     #[test]
     fn hitboxes_cover_the_painted_label() {
-        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let bar = bar_with(&["tabs"], &[], &[]);
         let t = tabs(&["a\tb", "ｶﾞ", "x"], 0);
         let mut buf = buffer(40);
-        let hits = draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&t, &[]));
+        let hits = draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &[]),
+        );
         let painted: Vec<String> = hits
             .iter()
             .map(|(_, r)| {
@@ -679,11 +821,17 @@ mod tests {
 
     #[test]
     fn active_tab_scrolls_into_view() {
-        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let bar = bar_with(&["tabs"], &[], &[]);
         let names: Vec<String> = (0..20).map(|i| format!("tab{i}")).collect();
         let t = tabs(&names.iter().map(|s| s.as_str()).collect::<Vec<_>>(), 15);
         let mut buf = buffer(80);
-        let hits = draw(&mut buf, Rect::new(0, 0, 80, 1), &cfg, &ctx(&t, &[]));
+        let hits = draw(
+            &mut buf,
+            Rect::new(0, 0, 80, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &[]),
+        );
         let (_, r) = hits
             .iter()
             .find(|(i, _)| *i == 15)
@@ -696,10 +844,16 @@ mod tests {
 
     #[test]
     fn narrow_bar_drops_the_centre() {
-        let cfg = StatusBar::default();
+        let bar = cfg().footer.clone();
         let t = tabs(&["alpha", "beta"], 0);
         let mut buf = buffer(10);
-        draw(&mut buf, Rect::new(0, 0, 10, 1), &cfg, &ctx(&t, &[]));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 10, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &[]),
+        );
         let line = row(&buf, 10);
         assert!(!line.contains("alpha"), "{line:?}");
         assert_eq!(line.chars().count(), 10);
@@ -707,22 +861,34 @@ mod tests {
 
     #[test]
     fn one_column_bar_does_not_panic() {
-        let cfg = StatusBar::default();
+        let bar = cfg().footer.clone();
         let t = tabs(&["alpha"], 0);
         let p = vec![("sh".into(), AgentState::Attention)];
         let mut buf = buffer(1);
-        draw(&mut buf, Rect::new(0, 0, 1, 1), &cfg, &ctx(&t, &p));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 1, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &p),
+        );
     }
 
     #[test]
     fn agents_widget() {
-        let cfg = cfg_with(&["agents"], &[], &[]);
+        let bar = bar_with(&["agents"], &[], &[]);
         let idle = vec![
             ("a".into(), AgentState::Idle),
             ("b".into(), AgentState::Idle),
         ];
         let mut buf = buffer(20);
-        draw(&mut buf, Rect::new(0, 0, 20, 1), &cfg, &ctx(&[], &idle));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &idle),
+        );
         assert_eq!(row(&buf, 20).trim(), "");
 
         let busy = vec![
@@ -731,23 +897,35 @@ mod tests {
             ("c".into(), AgentState::Done),
         ];
         let mut buf = buffer(20);
-        draw(&mut buf, Rect::new(0, 0, 20, 1), &cfg, &ctx(&[], &busy));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &busy),
+        );
         assert_eq!(row(&buf, 20).trim(), "◐✓");
     }
 
     #[test]
     fn conditional_widgets_are_silent() {
-        let cfg = cfg_with(&["alerts", "zoom", "prefix"], &[], &[]);
+        let bar = bar_with(&["alerts", "zoom", "prefix"], &[], &[]);
         let mut buf = buffer(20);
-        draw(&mut buf, Rect::new(0, 0, 20, 1), &cfg, &ctx(&[], &[]));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &[]),
+        );
         assert_eq!(row(&buf, 20).trim(), "");
 
-        let mut c = ctx(&[], &[]);
+        let mut c = make_ctx(&[], &[]);
         c.alerts = 3;
         c.zoomed = true;
         c.pending_prefix = true;
         let mut buf = buffer(30);
-        draw(&mut buf, Rect::new(0, 0, 30, 1), &cfg, &c);
+        draw(&mut buf, Rect::new(0, 0, 30, 1), &cfg(), &bar, &c);
         let line = row(&buf, 30);
         assert!(
             line.contains("● 3") && line.contains('⛶') && line.contains("PREFIX"),
@@ -757,18 +935,30 @@ mod tests {
 
     #[test]
     fn unknown_widget_is_visible() {
-        let cfg = cfg_with(&["bogus"], &[], &[]);
+        let bar = bar_with(&["bogus"], &[], &[]);
         let mut buf = buffer(20);
-        let hits = draw(&mut buf, Rect::new(0, 0, 20, 1), &cfg, &ctx(&[], &[]));
+        let hits = draw(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &[]),
+        );
         assert_eq!(row(&buf, 20).trim(), "?bogus");
         assert!(hits.is_empty());
     }
 
     #[test]
     fn spacer_pushes_widgets_apart() {
-        let cfg = cfg_with(&["session", "spacer", "panes"], &[], &[]);
+        let bar = bar_with(&["session", "spacer", "panes"], &[], &[]);
         let mut buf = buffer(40);
-        draw(&mut buf, Rect::new(0, 0, 40, 1), &cfg, &ctx(&[], &[]));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&[], &[]),
+        );
         let line = row(&buf, 40);
         assert!(line.starts_with(" main "), "{line:?}");
         assert!(line.ends_with("0 panes"), "{line:?}");
@@ -776,13 +966,183 @@ mod tests {
 
     #[test]
     fn draw_respects_a_rect_offset() {
-        let cfg = cfg_with(&["tabs"], &[], &[]);
+        let bar = bar_with(&["tabs"], &[], &[]);
         let t = tabs(&["one"], 0);
         let mut buf = Buffer::empty(RRect::new(0, 0, 20, 2));
-        let hits = draw(&mut buf, Rect::new(5, 1, 10, 1), &cfg, &ctx(&t, &[]));
+        let hits = draw(
+            &mut buf,
+            Rect::new(5, 1, 10, 1),
+            &cfg(),
+            &bar,
+            &make_ctx(&t, &[]),
+        );
         assert_eq!(hits, vec![(0, 5..10)]);
         // Nothing was written outside the rect.
         assert_eq!(buf.cell((4, 1)).unwrap().symbol(), " ");
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), " ");
+    }
+
+    // ---- rows
+
+    #[test]
+    fn header_and_footer_render_their_own_widgets() {
+        let c = cfg();
+        let header = bar_with(&["panes"], &[], &[]);
+        let footer = bar_with(&["session"], &[], &[]);
+        let mut buf = Buffer::empty(RRect::new(0, 0, 20, 2));
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &c,
+            &header,
+            &make_ctx(&[], &[]),
+        );
+        let mut foot = buffer(20);
+        draw(
+            &mut foot,
+            Rect::new(0, 0, 20, 1),
+            &c,
+            &footer,
+            &make_ctx(&[], &[]),
+        );
+        let top: String = (0..20)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert_eq!(top.trim(), "0 panes");
+        assert_eq!(row(&foot, 20).trim(), "main");
+    }
+
+    // ---- effects
+
+    fn with_effect(e: BarEffect) -> StatusBar {
+        StatusBar { effect: e, ..cfg() }
+    }
+
+    fn draw_bar(c: &StatusBar, w: u16) -> (Buffer, Vec<(usize, Range<u16>)>) {
+        let bar = bar_with(&["session"], &["tabs"], &["panes"]);
+        let t = tabs(&["one", "two"], 1);
+        let p = vec![("sh".into(), AgentState::Idle)];
+        let mut buf = buffer(w);
+        let hits = draw(&mut buf, Rect::new(0, 0, w, 1), c, &bar, &make_ctx(&t, &p));
+        (buf, hits)
+    }
+
+    #[test]
+    fn flat_row_is_unchanged() {
+        let (buf, _) = draw_bar(&cfg(), 40);
+        assert_eq!(row(&buf, 40), " main          one  two          1 panes");
+    }
+
+    /// An effect may only touch cells no widget claimed.
+    #[test]
+    fn effects_leave_widgets_and_hitboxes_alone() {
+        let (flat, flat_hits) = draw_bar(&cfg(), 40);
+        for e in [BarEffect::Starfield, BarEffect::Gradient] {
+            let (buf, hits) = draw_bar(&with_effect(e), 40);
+            assert_eq!(hits, flat_hits, "{e:?}");
+            let cells = hits.iter().flat_map(|(_, r)| r.clone());
+            let glyphs = (0..40).filter(|x| flat.cell((*x, 0)).unwrap().symbol() != " ");
+            for x in cells.chain(glyphs) {
+                assert_eq!(buf.cell((x, 0)), flat.cell((x, 0)), "{e:?} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn starfield_holds_still_within_a_second_and_drifts_after() {
+        let c = with_effect(BarEffect::Starfield);
+        let bar = bar_with(&[], &[], &[]);
+        let paint = |t: u64| {
+            let mut buf = buffer(80);
+            draw(
+                &mut buf,
+                Rect::new(0, 0, 80, 1),
+                &c,
+                &bar,
+                &make_ctx(&[], &[]),
+            );
+            paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], t);
+            buf
+        };
+        assert_eq!(paint(1_700_000_000), paint(1_700_000_000));
+        assert_ne!(paint(1_700_000_000), paint(1_700_000_001));
+
+        // And the real clock path: two frames inside one second agree.
+        for _ in 0..3 {
+            let t0 = now_secs();
+            let (a, _) = draw_bar(&c, 80);
+            let (b, _) = draw_bar(&c, 80);
+            if now_secs() == t0 {
+                assert_eq!(a, b);
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn starfield_actually_paints_something() {
+        let c = with_effect(BarEffect::Starfield);
+        let mut buf = buffer(80);
+        paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], 7);
+        assert!(row(&buf, 80).trim() != "");
+    }
+
+    #[test]
+    fn gradient_blends_bg_towards_accent() {
+        let c = with_effect(BarEffect::Gradient);
+        let bar = bar_with(&[], &[], &[]);
+        let mut buf = buffer(40);
+        draw(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &c,
+            &bar,
+            &make_ctx(&[], &[]),
+        );
+        assert_eq!(buf.cell((0, 0)).unwrap().bg, c.bg.0);
+        assert_eq!(buf.cell((39, 0)).unwrap().bg, c.accent.0);
+        assert_ne!(buf.cell((20, 0)).unwrap().bg, c.bg.0);
+    }
+
+    #[test]
+    fn gradient_without_rgb_stays_flat() {
+        let bar = bar_with(&["session"], &[], &[]);
+        for bg in [Color::Indexed(4), Color::Reset] {
+            let c = StatusBar {
+                effect: BarEffect::Gradient,
+                bg: crate::config::Rgb(bg),
+                ..cfg()
+            };
+            let mut buf = buffer(20);
+            draw(
+                &mut buf,
+                Rect::new(0, 0, 20, 1),
+                &c,
+                &bar,
+                &make_ctx(&[], &[]),
+            );
+            for x in 0..20 {
+                assert_eq!(buf.cell((x, 0)).unwrap().bg, bg, "{bg:?} at {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_widths_do_not_panic() {
+        for e in [BarEffect::Flat, BarEffect::Starfield, BarEffect::Gradient] {
+            let c = with_effect(e);
+            let bar = bar_with(&["session"], &["tabs"], &["time"]);
+            let t = tabs(&["alpha"], 0);
+            for w in [0, 1] {
+                let mut buf = buffer(w.max(1));
+                draw(
+                    &mut buf,
+                    Rect::new(0, 0, w, 1),
+                    &c,
+                    &bar,
+                    &make_ctx(&t, &[]),
+                );
+            }
+        }
     }
 }

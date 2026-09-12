@@ -23,7 +23,12 @@ Foundations:
 - `src/action.rs` — `Action`, `Dir`, `ALL_ACTIONS`. Parse/Display round-trip,
   so config strings and the command palette share one vocabulary.
 - `src/config.rs` — `Config` (`general`/`appearance`/`status`/`agents`/`keys`),
-  `Chord`, `Binding`, `Rgb`, `BorderStyle`, `StatusPosition`, `TitlePosition`.
+  `Chord`, `Binding`, `Rgb`, `BorderStyle`, `TitlePosition`, `Bar`, `BarEffect`,
+  `KeysPreset`, `preset_keys`. `keys` holds *overrides* on top of the preset;
+  `""`/`"none"` unbinds.
+- `src/graphics.rs` — lifts kitty (APC), iTerm2 (OSC 1337) and sixel (DCS)
+  sequences out of a pane's byte stream before vt100 sees them, so the app can
+  replay them to the host terminal.
 
 ## src/layout.rs
 Pure geometry. No I/O, no terminal. Fully unit-tested.
@@ -128,6 +133,8 @@ impl Pane {
     pub fn title(&self) -> String;         // override, else OSC title, else process name
     pub fn cwd(&self) -> Option<PathBuf>;  // for opening new panes in the same dir
     pub fn is_dead(&self) -> bool;
+    /// Graphics sequences captured since the last call, oldest first.
+    pub fn take_images(&self) -> Vec<graphics::Image>;
     pub fn exit_status(&self) -> Option<u32>;
     pub fn scroll_by(&mut self, delta: isize);
     pub fn scroll_to_bottom(&mut self);
@@ -147,7 +154,6 @@ impl Watcher {
     pub fn new() -> Watcher;
     /// Call on every pump. `bell` is a one-shot OS bell from the pane.
     pub fn update(&mut self, cfg: &config::Agents, title: &str, tail: &str, bell: bool) -> AgentState;
-    pub fn state(&self) -> AgentState;
     /// True on the transition into `Attention` (the app rings the bell once).
     pub fn take_alert(&mut self) -> bool;
 }
@@ -191,7 +197,9 @@ pub struct Ctx<'a> {
     pub alerts: usize, pub message: Option<&'a str>, pub pending_prefix: bool,
 }
 pub const WIDGETS: &[&str];
-pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(usize, std::ops::Range<u16>)>;  // tab hitboxes
+/// Draw one row. `cfg` carries the shared colours and effect, `bar` the
+/// widget lists for this row; the app calls it once per enabled row.
+pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, bar: &Bar, ctx: &Ctx) -> Vec<(usize, std::ops::Range<u16>)>;  // tab hitboxes
 ```
 
 ## src/settings_ui.rs

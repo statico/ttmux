@@ -278,12 +278,25 @@ pub enum BorderStyle {
     None,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Background painting for a status row. `Flat` is a solid `bg`; the others
+/// are painted by `status::draw`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum StatusPosition {
-    Top,
-    Bottom,
-    Hidden,
+pub enum BarEffect {
+    #[default]
+    Flat,
+    Starfield,
+    Gradient,
+}
+
+/// Which stock keymap the bindings start from.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KeysPreset {
+    #[default]
+    Vim,
+    Tmux,
+    Screen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,8 +321,13 @@ pub struct General {
     pub free_mode: bool,
     /// Focus follows the mouse pointer without a click.
     pub focus_follows_mouse: bool,
+    /// Let panes draw inline images (kitty, iTerm2, sixel) through to the
+    /// host terminal.
+    pub passthrough_images: bool,
     /// Milliseconds to wait for a second chord after the prefix.
     pub prefix_timeout_ms: u64,
+    /// Stock keymap that `keys` overrides sit on top of.
+    pub keys_preset: KeysPreset,
 }
 
 impl Default for General {
@@ -321,7 +339,9 @@ impl Default for General {
             scrollback: 10_000,
             free_mode: false,
             focus_follows_mouse: false,
+            passthrough_images: true,
             prefix_timeout_ms: 1500,
+            keys_preset: KeysPreset::default(),
         }
     }
 }
@@ -357,14 +377,71 @@ impl Default for Appearance {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One status row's contents. Widget names, left to right. See `status::WIDGETS`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
-pub struct StatusBar {
-    pub position: StatusPosition,
-    /// Widget names, left to right. See `status::WIDGETS`.
+pub struct Bar {
+    pub enabled: bool,
     pub left: Vec<String>,
     pub center: Vec<String>,
     pub right: Vec<String>,
+}
+
+/// Same shape, every field optional: a partial `[status.header]` table must
+/// fall back to *that row's* defaults, not to an empty bar.
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+struct BarPatch {
+    enabled: Option<bool>,
+    left: Option<Vec<String>>,
+    center: Option<Vec<String>>,
+    right: Option<Vec<String>>,
+}
+
+fn patch<'de, D: Deserializer<'de>>(d: D, mut base: Bar) -> Result<Bar, D::Error> {
+    let p = BarPatch::deserialize(d)?;
+    base.enabled = p.enabled.unwrap_or(base.enabled);
+    base.left = p.left.unwrap_or(base.left);
+    base.center = p.center.unwrap_or(base.center);
+    base.right = p.right.unwrap_or(base.right);
+    Ok(base)
+}
+
+fn default_header() -> Bar {
+    Bar {
+        enabled: false,
+        left: vec!["host".into()],
+        center: vec!["tabs".into()],
+        right: vec!["session".into()],
+    }
+}
+
+fn default_footer() -> Bar {
+    Bar {
+        enabled: true,
+        left: vec!["session".into(), "mode".into()],
+        center: vec!["tabs".into()],
+        right: vec!["agents".into(), "time".into()],
+    }
+}
+
+fn de_header<'de, D: Deserializer<'de>>(d: D) -> Result<Bar, D::Error> {
+    patch(d, default_header())
+}
+
+fn de_footer<'de, D: Deserializer<'de>>(d: D) -> Result<Bar, D::Error> {
+    patch(d, default_footer())
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct StatusBar {
+    /// Drawn on the top row.
+    #[serde(default = "default_header", deserialize_with = "de_header")]
+    pub header: Bar,
+    /// Drawn on the bottom row.
+    #[serde(default = "default_footer", deserialize_with = "de_footer")]
+    pub footer: Bar,
     pub bg: Rgb,
     pub fg: Rgb,
     pub accent: Rgb,
@@ -372,20 +449,20 @@ pub struct StatusBar {
     pub separator: String,
     /// `strftime`-ish format for the `time` widget (%H %M %S %d %m %Y %a %b).
     pub time_format: String,
+    pub effect: BarEffect,
 }
 
 impl Default for StatusBar {
     fn default() -> Self {
         Self {
-            position: StatusPosition::Bottom,
-            left: vec!["session".into(), "mode".into()],
-            center: vec!["tabs".into()],
-            right: vec!["agents".into(), "time".into()],
+            header: default_header(),
+            footer: default_footer(),
             bg: rgb("#1a1b26"),
             fg: rgb("#a9b1d6"),
             accent: rgb("#7aa2f7"),
             separator: " │ ".into(),
             time_format: "%H:%M".into(),
+            effect: BarEffect::Flat,
         }
     }
 }
@@ -435,33 +512,21 @@ impl Default for Agents {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct Config {
     pub general: General,
     pub appearance: Appearance,
     pub status: StatusBar,
     pub agents: Agents,
-    /// Binding string -> action string. Both sides parse leniently.
+    /// Overrides on top of `general.keys-preset`: binding string -> action
+    /// string. An action of `""` or `"none"` unbinds the preset's binding.
     pub keys: BTreeMap<String, String>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: General::default(),
-            appearance: Appearance::default(),
-            status: StatusBar::default(),
-            agents: Agents::default(),
-            keys: default_keys(),
-        }
-    }
-}
-
-/// The default keymap. Prefix is `ctrl+a`, but direct chords work too.
-pub fn default_keys() -> BTreeMap<String, String> {
-    let pairs = [
-        // Direct, no prefix needed.
+/// Chords that need no prefix. Shared by every preset.
+fn direct_keys() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("ctrl+alt+right", "split right"),
         ("ctrl+alt+down", "split down"),
         ("ctrl+alt+w", "close-pane"),
@@ -481,42 +546,96 @@ pub fn default_keys() -> BTreeMap<String, String> {
         ("ctrl+alt+n", "next-alert"),
         ("shift+pageup", "scroll-up 10"),
         ("shift+pagedown", "scroll-down 10"),
-        // Prefixed. Leader is ctrl+t; the pane keys follow vim's window
-        // commands, and the tmux spellings are kept as aliases so the old
-        // muscle memory still lands.
-        ("ctrl+t s", "split down"),
-        ("ctrl+t v", "split right"),
-        ("ctrl+t \"", "split down"),
-        ("ctrl+t %", "split right"),
-        ("ctrl+t h", "focus left"),
-        ("ctrl+t j", "focus down"),
-        ("ctrl+t k", "focus up"),
-        ("ctrl+t l", "focus right"),
-        ("ctrl+t shift+h", "resize left 2"),
-        ("ctrl+t shift+j", "resize down 1"),
-        ("ctrl+t shift+k", "resize up 1"),
-        ("ctrl+t shift+l", "resize right 2"),
-        ("ctrl+t w", "focus-next"),
-        ("ctrl+t o", "toggle-zoom"),
-        ("ctrl+t z", "toggle-zoom"),
-        ("ctrl+t x", "close-pane"),
-        ("ctrl+t q", "close-pane"),
-        ("ctrl+t space", "next-preset"),
-        ("ctrl+t f", "toggle-float"),
-        ("ctrl+t t", "new-tab"),
-        ("ctrl+t c", "new-tab"),
-        ("ctrl+t n", "next-tab"),
-        ("ctrl+t p", "prev-tab"),
-        ("ctrl+t &", "close-tab"),
-        ("ctrl+t shift+a", "rename-tab"),
-        ("ctrl+t [", "scroll-up 10"),
-        ("ctrl+t ?", "help"),
-        ("ctrl+t ,", "settings"),
-        ("ctrl+t r", "reload-config"),
-        ("ctrl+t shift+q", "quit"),
-    ];
-    pairs
-        .iter()
+    ]
+}
+
+/// A stock keymap. Every preset keeps the direct chords and adds its own
+/// prefixed bindings.
+pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
+    let prefixed: &[(&str, &str)] = match p {
+        // Leader is ctrl+t; the pane keys follow vim's window commands (and
+        // the user's own ~/.tmux.conf), with the tmux spellings kept as
+        // aliases so the old muscle memory still lands.
+        KeysPreset::Vim => &[
+            ("ctrl+t s", "split down"),
+            ("ctrl+t v", "split right"),
+            ("ctrl+t %", "split right"),
+            ("ctrl+t h", "focus left"),
+            ("ctrl+t j", "focus down"),
+            ("ctrl+t k", "focus up"),
+            ("ctrl+t l", "focus right"),
+            ("ctrl+t ctrl+h", "focus left"),
+            ("ctrl+t ctrl+j", "focus down"),
+            ("ctrl+t ctrl+k", "focus up"),
+            ("ctrl+t ctrl+l", "focus right"),
+            ("ctrl+t shift+h", "resize left 2"),
+            ("ctrl+t shift+j", "resize down 1"),
+            ("ctrl+t shift+k", "resize up 1"),
+            ("ctrl+t shift+l", "resize right 2"),
+            ("ctrl+t w", "focus-next"),
+            ("ctrl+t o", "toggle-zoom"),
+            ("ctrl+t z", "toggle-zoom"),
+            ("ctrl+t x", "close-pane"),
+            ("ctrl+t q", "close-pane"),
+            ("ctrl+t space", "next-preset"),
+            ("ctrl+t f", "toggle-float"),
+            ("ctrl+t t", "send-prefix"),
+            ("ctrl+t c", "new-tab"),
+            ("ctrl+t n", "next-tab"),
+            ("ctrl+t p", "prev-tab"),
+            ("ctrl+t &", "close-tab"),
+            ("ctrl+t ctrl+t", "last-tab"),
+            // `select-layout tiled` in their config; we have no grid preset,
+            // and even-horizontal is the nearest "make it all equal".
+            ("ctrl+t =", "set-preset even-horizontal"),
+            ("ctrl+t shift+a", "rename-tab"),
+            ("ctrl+t [", "scroll-up 10"),
+            // choose-tree / choose-window in their tmux config; the palette is
+            // the nearest thing we have to a chooser.
+            ("ctrl+t ;", "command-palette"),
+            ("ctrl+t \"", "command-palette"),
+            // `Escape` is copy-mode for them; we only have scrollback.
+            ("ctrl+t esc", "scroll-up 10"),
+            ("ctrl+t ?", "help"),
+            ("ctrl+t ,", "settings"),
+            ("ctrl+t r", "reload-config"),
+            ("ctrl+t shift+q", "quit"),
+        ],
+        KeysPreset::Tmux => &[
+            ("ctrl+b \"", "split down"),
+            ("ctrl+b %", "split right"),
+            ("ctrl+b o", "focus-next"),
+            ("ctrl+b left", "focus left"),
+            ("ctrl+b right", "focus right"),
+            ("ctrl+b up", "focus up"),
+            ("ctrl+b down", "focus down"),
+            ("ctrl+b z", "toggle-zoom"),
+            ("ctrl+b x", "close-pane"),
+            ("ctrl+b c", "new-tab"),
+            ("ctrl+b n", "next-tab"),
+            ("ctrl+b p", "prev-tab"),
+            ("ctrl+b &", "close-tab"),
+            ("ctrl+b ,", "rename-tab"),
+            ("ctrl+b ?", "help"),
+            ("ctrl+b space", "next-preset"),
+            ("ctrl+b [", "scroll-up 10"),
+        ],
+        KeysPreset::Screen => &[
+            ("ctrl+a |", "split right"),
+            ("ctrl+a shift+s", "split down"),
+            ("ctrl+a tab", "focus-next"),
+            ("ctrl+a c", "new-tab"),
+            ("ctrl+a n", "next-tab"),
+            ("ctrl+a p", "prev-tab"),
+            ("ctrl+a shift+a", "rename-tab"),
+            ("ctrl+a shift+k", "close-pane"),
+            ("ctrl+a ?", "help"),
+            ("ctrl+a esc", "scroll-up 10"),
+        ],
+    };
+    direct_keys()
+        .into_iter()
+        .chain(prefixed.iter().copied())
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect()
 }
@@ -556,16 +675,31 @@ impl Config {
         Ok(())
     }
 
-    /// Resolved keymap. Unparseable entries are reported, not fatal.
+    /// The preset resolved, then `keys` applied on top. An override whose
+    /// action is `""` or `"none"` unbinds instead of binding. Unparseable
+    /// entries are reported, not fatal.
     pub fn keymap(&self) -> (BTreeMap<Binding, crate::action::Action>, Vec<String>) {
         let mut map = BTreeMap::new();
         let mut errors = vec![];
-        for (k, v) in &self.keys {
-            match (k.parse::<Binding>(), v.parse::<crate::action::Action>()) {
-                (Ok(b), Ok(a)) => {
+        let preset = preset_keys(self.general.keys_preset);
+        for (k, v) in preset.iter().chain(self.keys.iter()) {
+            let b = match k.parse::<Binding>() {
+                Ok(b) => b,
+                Err(e) => {
+                    errors.push(format!("{k} = {v:?}: {e}"));
+                    continue;
+                }
+            };
+            // Unbind. Keyed by the parsed binding, so spelling need not match.
+            if v.trim().is_empty() || v.trim() == "none" {
+                map.remove(&b);
+                continue;
+            }
+            match v.parse::<crate::action::Action>() {
+                Ok(a) => {
                     map.insert(b, a);
                 }
-                (Err(e), _) | (_, Err(e)) => errors.push(format!("{k} = {v:?}: {e}")),
+                Err(e) => errors.push(format!("{k} = {v:?}: {e}")),
             }
         }
         (map, errors)
@@ -632,14 +766,40 @@ mod tests {
     }
 
     #[test]
-    fn default_keymap_is_fully_valid() {
-        let (map, errors) = Config::default().keymap();
+    fn every_preset_is_valid_with_one_leader() {
+        for (p, leader) in [
+            (KeysPreset::Vim, "ctrl+t"),
+            (KeysPreset::Tmux, "ctrl+b"),
+            (KeysPreset::Screen, "ctrl+a"),
+        ] {
+            let mut c = Config::default();
+            c.general.keys_preset = p;
+            let (map, errors) = c.keymap();
+            assert!(errors.is_empty(), "{p:?}: {errors:?}");
+            assert_eq!(map.len(), preset_keys(p).len(), "{p:?}");
+            assert_eq!(c.prefixes(), vec![leader.parse().unwrap()], "{p:?}");
+        }
+    }
+
+    #[test]
+    fn overrides_replace_and_unbind() {
+        let mut c = Config::default();
+        c.keys.insert("ctrl+t z".into(), "quit".into());
+        c.keys.insert("ctrl+t x".into(), "".into());
+        c.keys.insert("ctrl+t q".into(), "none".into());
+        let (map, errors) = c.keymap();
         assert!(errors.is_empty(), "{errors:?}");
-        assert_eq!(map.len(), Config::default().keys.len());
-        assert_eq!(
-            Config::default().prefixes(),
-            vec!["ctrl+t".parse().unwrap()]
-        );
+        let b = |s: &str| s.parse::<Binding>().unwrap();
+        assert_eq!(map[&b("ctrl+t z")], crate::action::Action::Quit);
+        assert!(!map.contains_key(&b("ctrl+t x")));
+        assert!(!map.contains_key(&b("ctrl+t q")));
+    }
+
+    #[test]
+    fn default_keys_are_empty_but_the_keymap_is_not() {
+        let c = Config::default();
+        assert!(c.keys.is_empty());
+        assert!(!c.keymap().0.is_empty());
     }
 
     #[test]
@@ -648,6 +808,16 @@ mod tests {
         assert!(!c.general.mouse);
         assert_eq!(c.general.scrollback, 10_000);
         assert_eq!(c.appearance.border_style, BorderStyle::Curved);
+    }
+
+    #[test]
+    fn partial_status_fills_in_defaults() {
+        let c: Config = toml::from_str("[status.header]\nenabled = true\n").unwrap();
+        assert!(c.status.header.enabled);
+        assert_eq!(c.status.header.center, vec!["tabs".to_string()]);
+        assert_eq!(c.status.footer, StatusBar::default().footer);
+        assert_eq!(c.status.effect, BarEffect::Flat);
+        assert_eq!(c.status.time_format, "%H:%M");
     }
 
     #[test]

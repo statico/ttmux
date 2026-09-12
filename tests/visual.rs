@@ -6,7 +6,7 @@ use ratatui::layout::Rect as RRect;
 
 use ttmux::action::Dir;
 use ttmux::agent::AgentState;
-use ttmux::config::{BorderStyle, Config, StatusPosition};
+use ttmux::config::{BorderStyle, Config};
 use ttmux::layout::{Layout, Rect};
 use ttmux::{render, status};
 
@@ -41,7 +41,7 @@ fn scene(cfg: &Config, layout: &Layout, focus: u32, w: u16, h: u16) -> Buffer {
             &cfg.appearance,
         );
     }
-    if cfg.status.position != StatusPosition::Hidden {
+    if cfg.status.footer.enabled {
         let ctx = status::Ctx {
             session: "main",
             mode: "tiling",
@@ -52,7 +52,13 @@ fn scene(cfg: &Config, layout: &Layout, focus: u32, w: u16, h: u16) -> Buffer {
             message: None,
             pending_prefix: false,
         };
-        status::draw(&mut buf, Rect::new(0, h - 1, w, 1), &cfg.status, &ctx);
+        status::draw(
+            &mut buf,
+            Rect::new(0, h - 1, w, 1),
+            &cfg.status,
+            &cfg.status.footer,
+            &ctx,
+        );
     }
     buf
 }
@@ -147,14 +153,14 @@ fn tiny_terminals_do_not_panic() {
 #[test]
 fn every_status_widget_renders_without_panicking() {
     let mut cfg = Config::default();
-    cfg.status.left = status::WIDGETS.iter().map(|s| s.to_string()).collect();
-    cfg.status.center = vec![];
-    cfg.status.right = vec![];
+    cfg.status.footer.left = status::WIDGETS.iter().map(|s| s.to_string()).collect();
+    cfg.status.footer.center = vec![];
+    cfg.status.footer.right = vec![];
     let buf = scene(&cfg, &two_panes(), 1, 120, 10);
     let bar = &text(&buf)[9];
     assert!(!bar.is_empty());
     // An unknown widget is surfaced rather than silently dropped.
-    cfg.status.left = vec!["bogus".into()];
+    cfg.status.footer.left = vec!["bogus".into()];
     let buf = scene(&cfg, &two_panes(), 1, 40, 10);
     assert!(text(&buf)[9].contains("?bogus"));
 }

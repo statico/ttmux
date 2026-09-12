@@ -49,6 +49,11 @@ impl Keys {
         *self = Keys::new(cfg);
     }
 
+    /// Note the unmatched-second-chord case: the prefix followed by something
+    /// nothing is bound to comes back as `Passthrough` with `pending()` false.
+    /// The caller then
+    /// sends the literal key to the pane via [`encode_key`] on the event it
+    /// just passed in — which is exactly the tmux "send the prefix" behaviour.
     pub fn resolve(&mut self, ev: KeyEvent) -> Resolution {
         self.resolve_at(ev, Instant::now())
     }
@@ -59,11 +64,6 @@ impl Keys {
     }
 
     /// `resolve` with an injectable clock, so the timeout is testable.
-    ///
-    /// Note the double-prefix case: `ctrl+t ctrl+t` is not a binding, so it
-    /// comes back as `Passthrough` with `pending()` false. The app then sends
-    /// the literal key to the pane by calling [`encode_key`] on the event it
-    /// just passed in — which is exactly the tmux "send the prefix" behaviour.
     fn resolve_at(&mut self, ev: KeyEvent, now: Instant) -> Resolution {
         let chord = Chord::from_event(ev);
 
@@ -121,8 +121,9 @@ fn tilde_key(n: u8, m: KeyModifiers) -> Vec<u8> {
 
 /// Control byte for `ctrl+<char>`, if the pair has one.
 fn ctrl_byte(c: char) -> Option<u8> {
-    Some(match c.to_ascii_lowercase() {
-        'a'..='z' => c.to_ascii_lowercase() as u8 - b'a' + 1,
+    let c = c.to_ascii_lowercase();
+    Some(match c {
+        'a'..='z' => c as u8 - b'a' + 1,
         ' ' | '@' => 0x00,
         '[' => 0x1b,
         '\\' => 0x1c,
@@ -298,13 +299,26 @@ mod tests {
     }
 
     #[test]
-    fn double_prefix_passes_through_for_literal_forwarding() {
+    fn an_unbound_second_chord_passes_through() {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
         k.resolve_at(ctrl('t'), t);
-        assert_eq!(k.resolve_at(ctrl('t'), t), Resolution::Passthrough);
+        assert_eq!(k.resolve_at(ctrl('g'), t), Resolution::Passthrough);
         assert!(!k.pending());
         assert_eq!(encode_key(ctrl('a'), false), b"\x01");
+    }
+
+    #[test]
+    fn the_prefix_twice_is_a_binding_of_its_own() {
+        // Their tmux binds `C-t C-t` to last-window and `C-t t` to
+        // send-prefix, so the double prefix is not a literal escape here.
+        let mut k = Keys::new(&Config::default());
+        let t = Instant::now();
+        k.resolve_at(ctrl('t'), t);
+        assert_eq!(
+            k.resolve_at(ctrl('t'), t),
+            Resolution::Action(Action::LastTab)
+        );
     }
 
     #[test]
