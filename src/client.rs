@@ -33,11 +33,11 @@ const CONNECT_WAIT: Duration = Duration::from_millis(20);
 /// without calling anything that takes a lock.
 static ORIG_TERMIOS: OnceLock<libc::termios> = OnceLock::new();
 
-/// Bracketed paste and focus reports off, default cursor shape, mouse reporting off, alternate screen off, cursor on
+/// Kitty keyboard flags popped, bracketed paste and focus reports off, default cursor shape, mouse reporting off, alternate screen off, cursor on
 /// -- the same modes `restore` turns off, spelled out so the signal handler
 /// can emit them with a bare `write(2)`.
 const RESET: &[u8] =
-    b"\x1b[?2004l\x1b[?1004l\x1b[0 q\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
+    b"\x1b[<u\x1b[?2004l\x1b[?1004l\x1b[0 q\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h";
 
 /// A client that exits leaving raw mode on and the alternate screen up hands
 /// the user a dead shell, so the teardown hangs off `Drop` and runs on every
@@ -67,6 +67,14 @@ fn setup(cfg: &Config) -> Result<()> {
     let mut out = io::stdout();
     let entered = (|| -> io::Result<()> {
         execute!(out, terminal::EnterAlternateScreen)?;
+        // Kitty keyboard disambiguation, so shift+enter and friends arrive
+        // distinct and a pane that asks can be told. Ignored where unknown.
+        execute!(
+            out,
+            event::PushKeyboardEnhancementFlags(
+                event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )?;
         if cfg.general.mouse {
             execute!(out, event::EnableMouseCapture)?;
         }
@@ -82,6 +90,7 @@ fn restore() {
     let mut out = io::stdout();
     let _ = execute!(
         out,
+        event::PopKeyboardEnhancementFlags,
         event::DisableBracketedPaste,
         event::DisableFocusChange,
         event::DisableMouseCapture,

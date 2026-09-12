@@ -5,7 +5,7 @@ CARGO ?= cargo
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 .DEFAULT_GOAL := help
-.PHONY: help build release run install test fmt lint check clean tag
+.PHONY: help build release run install test bench fmt lint check clean tag
 
 help: ## Show this help
 	@printf '\033[1mttmux\033[0m — make targets\n\n'
@@ -28,6 +28,9 @@ install: ## Install ttmux into ~/.cargo/bin
 
 test: ## Run the whole test suite
 	$(CARGO) test --all-targets
+
+bench: ## Print throughput from an optimised build
+	$(CARGO) test --release --test perf -- --nocapture --test-threads 1
 
 fmt: ## Format the tree
 	$(CARGO) fmt

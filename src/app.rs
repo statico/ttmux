@@ -267,6 +267,14 @@ fn setup(cfg: &Config) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
 fn enter(cfg: &Config) -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     let mut out = io::stdout();
     execute!(out, terminal::EnterAlternateScreen)?;
+    // Kitty keyboard disambiguation, so shift+enter and friends arrive
+    // distinct and a pane that asks can be told. Ignored where unknown.
+    execute!(
+        out,
+        event::PushKeyboardEnhancementFlags(
+            event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        )
+    )?;
     if cfg.general.mouse {
         execute!(out, event::EnableMouseCapture)?;
     }
@@ -278,6 +286,7 @@ fn restore() -> Result<()> {
     let mut out = io::stdout();
     let _ = execute!(
         out,
+        event::PopKeyboardEnhancementFlags,
         event::DisableBracketedPaste,
         event::DisableFocusChange,
         event::DisableMouseCapture,
@@ -655,7 +664,7 @@ impl App {
                     // and the jump back to the live view both still apply.
                     s.pane.scroll_to_bottom();
                     let app_cursor = s.pane.screen().application_cursor();
-                    let bytes = encode_key(ev, app_cursor);
+                    let bytes = encode_key(ev, app_cursor, s.pane.keyboard());
                     if !bytes.is_empty() {
                         s.pane.send(&bytes);
                     }
@@ -1512,7 +1521,7 @@ impl App {
         let scrolled = s.pane.scroll != 0;
         s.pane.scroll_to_bottom();
         let app_cursor = s.pane.screen().application_cursor();
-        let bytes = encode_key(ev, app_cursor);
+        let bytes = encode_key(ev, app_cursor, s.pane.keyboard());
         if !bytes.is_empty() {
             s.pane.send(&bytes);
         }

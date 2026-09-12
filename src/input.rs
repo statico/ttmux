@@ -142,10 +142,67 @@ fn ctrl_byte(c: char) -> Option<u8> {
     })
 }
 
+/// The key encodings a pane asked for beyond the legacy bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Keyboard {
+    /// Kitty keyboard protocol flags in effect.
+    pub kitty: u8,
+    /// xterm modifyOtherKeys level, 0 when off.
+    pub modify_other_keys: u8,
+}
+
+/// `CSI code ; mods u` (kitty) or `CSI 27 ; mods ; code ~` (modifyOtherKeys)
+/// for the keys legacy bytes cannot tell apart, such as shift+enter, when the
+/// pane asked for either. Other keys keep their legacy encoding.
+fn extended_key(ev: KeyEvent, kb: Keyboard) -> Option<Vec<u8>> {
+    let mut m = ev.modifiers;
+    let (code, text) = match ev.code {
+        // A shifted letter reports its base key; the shift is in the mods.
+        KeyCode::Char(c) => (c.to_lowercase().next()? as u32, true),
+        KeyCode::Enter => (13, false),
+        KeyCode::Tab => (9, false),
+        KeyCode::BackTab => {
+            m |= KeyModifiers::SHIFT;
+            (9, false)
+        }
+        KeyCode::Backspace => (127, false),
+        KeyCode::Esc => (27, false),
+        _ => return None,
+    };
+    let p = mod_param(m);
+    let chord = m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    let kitty = kb.kitty & 8 != 0
+        || (kb.kitty & 1 != 0 && (code == 27 || if text { chord } else { p > 1 }));
+    if kitty {
+        return Some(
+            match p {
+                1 => format!("\x1b[{code}u"),
+                p => format!("\x1b[{code};{p}u"),
+            }
+            .into_bytes(),
+        );
+    }
+    let other = match kb.modify_other_keys {
+        0 => false,
+        // Level 1 only where legacy bytes lose information.
+        1 => {
+            (!text && p > 1 && ev.code != KeyCode::BackTab)
+                || (text
+                    && m.contains(KeyModifiers::CONTROL)
+                    && (p != 5 || !(97..=122).contains(&code)))
+        }
+        _ => p > 1 && (chord || !text) && ev.code != KeyCode::BackTab,
+    };
+    other.then(|| format!("\x1b[27;{p};{code}~").into_bytes())
+}
+
 /// Encode a key event the way a terminal would, for writing to the pty.
-pub fn encode_key(ev: KeyEvent, app_cursor_keys: bool) -> Vec<u8> {
+pub fn encode_key(ev: KeyEvent, app_cursor_keys: bool, kb: Keyboard) -> Vec<u8> {
     if matches!(ev.kind, KeyEventKind::Release) {
         return vec![];
+    }
+    if let Some(bytes) = extended_key(ev, kb) {
+        return bytes;
     }
     let m = ev.modifiers;
     let alt = m.contains(KeyModifiers::ALT);
@@ -371,7 +428,7 @@ mod tests {
         k.resolve_at(ctrl('t'), t);
         assert_eq!(k.resolve_at(ctrl('g'), t), Resolution::Passthrough);
         assert!(!k.pending());
-        assert_eq!(encode_key(ctrl('a'), false), b"\x01");
+        assert_eq!(encode_key(ctrl('a'), false, Keyboard::default()), b"\x01");
     }
 
     #[test]
@@ -417,42 +474,98 @@ mod tests {
 
     #[test]
     fn plain_and_alt_chars() {
-        assert_eq!(encode_key(ch('a'), false), b"a");
-        assert_eq!(encode_key(ch('é'), false), "é".as_bytes());
+        assert_eq!(encode_key(ch('a'), false, Keyboard::default()), b"a");
         assert_eq!(
-            encode_key(key(KeyCode::Char('x'), KeyModifiers::ALT), false),
+            encode_key(ch('é'), false, Keyboard::default()),
+            "é".as_bytes()
+        );
+        assert_eq!(
+            encode_key(
+                key(KeyCode::Char('x'), KeyModifiers::ALT),
+                false,
+                Keyboard::default()
+            ),
             b"\x1bx"
         );
     }
 
     #[test]
     fn control_characters() {
-        assert_eq!(encode_key(ctrl('c'), false), vec![0x03]);
-        assert_eq!(encode_key(ctrl('a'), false), vec![0x01]);
-        assert_eq!(encode_key(ctrl('z'), false), vec![0x1a]);
-        assert_eq!(encode_key(ctrl(' '), false), vec![0x00]);
-        assert_eq!(encode_key(ctrl('@'), false), vec![0x00]);
-        assert_eq!(encode_key(ctrl('['), false), vec![0x1b]);
-        assert_eq!(encode_key(ctrl('\\'), false), vec![0x1c]);
-        assert_eq!(encode_key(ctrl(']'), false), vec![0x1d]);
-        assert_eq!(encode_key(ctrl('^'), false), vec![0x1e]);
-        assert_eq!(encode_key(ctrl('_'), false), vec![0x1f]);
-        assert_eq!(encode_key(ctrl('/'), false), vec![0x1f]);
+        assert_eq!(
+            encode_key(ctrl('c'), false, Keyboard::default()),
+            vec![0x03]
+        );
+        assert_eq!(
+            encode_key(ctrl('a'), false, Keyboard::default()),
+            vec![0x01]
+        );
+        assert_eq!(
+            encode_key(ctrl('z'), false, Keyboard::default()),
+            vec![0x1a]
+        );
+        assert_eq!(
+            encode_key(ctrl(' '), false, Keyboard::default()),
+            vec![0x00]
+        );
+        assert_eq!(
+            encode_key(ctrl('@'), false, Keyboard::default()),
+            vec![0x00]
+        );
+        assert_eq!(
+            encode_key(ctrl('['), false, Keyboard::default()),
+            vec![0x1b]
+        );
+        assert_eq!(
+            encode_key(ctrl('\\'), false, Keyboard::default()),
+            vec![0x1c]
+        );
+        assert_eq!(
+            encode_key(ctrl(']'), false, Keyboard::default()),
+            vec![0x1d]
+        );
+        assert_eq!(
+            encode_key(ctrl('^'), false, Keyboard::default()),
+            vec![0x1e]
+        );
+        assert_eq!(
+            encode_key(ctrl('_'), false, Keyboard::default()),
+            vec![0x1f]
+        );
+        assert_eq!(
+            encode_key(ctrl('/'), false, Keyboard::default()),
+            vec![0x1f]
+        );
     }
 
     #[test]
     fn simple_special_keys() {
         let n = KeyModifiers::NONE;
-        assert_eq!(encode_key(key(KeyCode::Enter, n), false), b"\r");
-        assert_eq!(encode_key(key(KeyCode::Tab, n), false), b"\t");
-        assert_eq!(encode_key(key(KeyCode::BackTab, n), false), b"\x1b[Z");
-        assert_eq!(encode_key(key(KeyCode::Esc, n), false), b"\x1b");
+        assert_eq!(
+            encode_key(key(KeyCode::Enter, n), false, Keyboard::default()),
+            b"\r"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Tab, n), false, Keyboard::default()),
+            b"\t"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::BackTab, n), false, Keyboard::default()),
+            b"\x1b[Z"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Esc, n), false, Keyboard::default()),
+            b"\x1b"
+        );
     }
 
     #[test]
     fn backspace_is_del() {
         assert_eq!(
-            encode_key(key(KeyCode::Backspace, KeyModifiers::NONE), false),
+            encode_key(
+                key(KeyCode::Backspace, KeyModifiers::NONE),
+                false,
+                Keyboard::default()
+            ),
             vec![0x7f]
         );
     }
@@ -460,47 +573,111 @@ mod tests {
     #[test]
     fn arrows_in_normal_mode() {
         let n = KeyModifiers::NONE;
-        assert_eq!(encode_key(key(KeyCode::Up, n), false), b"\x1b[A");
-        assert_eq!(encode_key(key(KeyCode::Down, n), false), b"\x1b[B");
-        assert_eq!(encode_key(key(KeyCode::Right, n), false), b"\x1b[C");
-        assert_eq!(encode_key(key(KeyCode::Left, n), false), b"\x1b[D");
+        assert_eq!(
+            encode_key(key(KeyCode::Up, n), false, Keyboard::default()),
+            b"\x1b[A"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Down, n), false, Keyboard::default()),
+            b"\x1b[B"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Right, n), false, Keyboard::default()),
+            b"\x1b[C"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Left, n), false, Keyboard::default()),
+            b"\x1b[D"
+        );
     }
 
     #[test]
     fn arrows_in_application_cursor_mode() {
         let n = KeyModifiers::NONE;
-        assert_eq!(encode_key(key(KeyCode::Up, n), true), b"\x1bOA");
-        assert_eq!(encode_key(key(KeyCode::Left, n), true), b"\x1bOD");
-        assert_eq!(encode_key(key(KeyCode::Home, n), true), b"\x1bOH");
-        assert_eq!(encode_key(key(KeyCode::End, n), true), b"\x1bOF");
+        assert_eq!(
+            encode_key(key(KeyCode::Up, n), true, Keyboard::default()),
+            b"\x1bOA"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Left, n), true, Keyboard::default()),
+            b"\x1bOD"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Home, n), true, Keyboard::default()),
+            b"\x1bOH"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::End, n), true, Keyboard::default()),
+            b"\x1bOF"
+        );
     }
 
     #[test]
     fn home_end_and_tilde_keys() {
         let n = KeyModifiers::NONE;
-        assert_eq!(encode_key(key(KeyCode::Home, n), false), b"\x1b[H");
-        assert_eq!(encode_key(key(KeyCode::End, n), false), b"\x1b[F");
-        assert_eq!(encode_key(key(KeyCode::Insert, n), false), b"\x1b[2~");
-        assert_eq!(encode_key(key(KeyCode::Delete, n), false), b"\x1b[3~");
-        assert_eq!(encode_key(key(KeyCode::PageUp, n), false), b"\x1b[5~");
-        assert_eq!(encode_key(key(KeyCode::PageDown, n), false), b"\x1b[6~");
+        assert_eq!(
+            encode_key(key(KeyCode::Home, n), false, Keyboard::default()),
+            b"\x1b[H"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::End, n), false, Keyboard::default()),
+            b"\x1b[F"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Insert, n), false, Keyboard::default()),
+            b"\x1b[2~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::Delete, n), false, Keyboard::default()),
+            b"\x1b[3~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::PageUp, n), false, Keyboard::default()),
+            b"\x1b[5~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::PageDown, n), false, Keyboard::default()),
+            b"\x1b[6~"
+        );
     }
 
     #[test]
     fn function_keys() {
         let n = KeyModifiers::NONE;
-        assert_eq!(encode_key(key(KeyCode::F(1), n), false), b"\x1bOP");
-        assert_eq!(encode_key(key(KeyCode::F(4), n), false), b"\x1bOS");
-        assert_eq!(encode_key(key(KeyCode::F(5), n), false), b"\x1b[15~");
-        assert_eq!(encode_key(key(KeyCode::F(6), n), false), b"\x1b[17~");
-        assert_eq!(encode_key(key(KeyCode::F(11), n), false), b"\x1b[23~");
-        assert_eq!(encode_key(key(KeyCode::F(12), n), false), b"\x1b[24~");
+        assert_eq!(
+            encode_key(key(KeyCode::F(1), n), false, Keyboard::default()),
+            b"\x1bOP"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::F(4), n), false, Keyboard::default()),
+            b"\x1bOS"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::F(5), n), false, Keyboard::default()),
+            b"\x1b[15~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::F(6), n), false, Keyboard::default()),
+            b"\x1b[17~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::F(11), n), false, Keyboard::default()),
+            b"\x1b[23~"
+        );
+        assert_eq!(
+            encode_key(key(KeyCode::F(12), n), false, Keyboard::default()),
+            b"\x1b[24~"
+        );
     }
 
     #[test]
     fn ctrl_right_uses_the_modifier_parameter() {
         assert_eq!(
-            encode_key(key(KeyCode::Right, KeyModifiers::CONTROL), false),
+            encode_key(
+                key(KeyCode::Right, KeyModifiers::CONTROL),
+                false,
+                Keyboard::default()
+            ),
             b"\x1b[1;5C"
         );
     }
@@ -508,7 +685,11 @@ mod tests {
     #[test]
     fn alt_up_uses_the_modifier_parameter() {
         assert_eq!(
-            encode_key(key(KeyCode::Up, KeyModifiers::ALT), false),
+            encode_key(
+                key(KeyCode::Up, KeyModifiers::ALT),
+                false,
+                Keyboard::default()
+            ),
             b"\x1b[1;3A"
         );
     }
@@ -516,7 +697,11 @@ mod tests {
     #[test]
     fn modified_arrows_ignore_application_cursor_mode() {
         assert_eq!(
-            encode_key(key(KeyCode::Left, KeyModifiers::SHIFT), true),
+            encode_key(
+                key(KeyCode::Left, KeyModifiers::SHIFT),
+                true,
+                Keyboard::default()
+            ),
             b"\x1b[1;2D"
         );
     }
@@ -524,17 +709,26 @@ mod tests {
     #[test]
     fn shift_f5_and_modified_tilde_keys() {
         assert_eq!(
-            encode_key(key(KeyCode::F(5), KeyModifiers::SHIFT), false),
+            encode_key(
+                key(KeyCode::F(5), KeyModifiers::SHIFT),
+                false,
+                Keyboard::default()
+            ),
             b"\x1b[15;2~"
         );
         assert_eq!(
-            encode_key(key(KeyCode::Delete, KeyModifiers::CONTROL), false),
+            encode_key(
+                key(KeyCode::Delete, KeyModifiers::CONTROL),
+                false,
+                Keyboard::default()
+            ),
             b"\x1b[3;5~"
         );
         assert_eq!(
             encode_key(
                 key(KeyCode::F(1), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-                false
+                false,
+                Keyboard::default()
             ),
             b"\x1b[1;6P"
         );
@@ -544,10 +738,50 @@ mod tests {
     fn key_release_encodes_to_nothing() {
         let mut ev = ch('a');
         ev.kind = KeyEventKind::Release;
-        assert!(encode_key(ev, false).is_empty());
+        assert!(encode_key(ev, false, Keyboard::default()).is_empty());
         let mut ev = ch('a');
         ev.kind = KeyEventKind::Repeat;
-        assert_eq!(encode_key(ev, false), b"a");
+        assert_eq!(encode_key(ev, false, Keyboard::default()), b"a");
+    }
+
+    #[test]
+    fn keys_legacy_bytes_lose_are_encoded_the_way_the_pane_asked() {
+        let k = |code, m| key(code, m);
+        let (n, s, c, a) = (
+            KeyModifiers::NONE,
+            KeyModifiers::SHIFT,
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+        );
+        let enc = |ev, kitty, mok| {
+            let kb = Keyboard {
+                kitty,
+                modify_other_keys: mok,
+            };
+            String::from_utf8(encode_key(ev, false, kb)).unwrap()
+        };
+        // Nobody asked: shift+enter is just enter.
+        assert_eq!(enc(k(KeyCode::Enter, s), 0, 0), "\r");
+        // Kitty disambiguate: modified specials, chords and Esc become CSI u;
+        // plain and shifted text stays text.
+        assert_eq!(enc(k(KeyCode::Enter, s), 1, 0), "\x1b[13;2u");
+        assert_eq!(enc(k(KeyCode::Enter, n), 1, 0), "\r");
+        assert_eq!(enc(k(KeyCode::Esc, n), 1, 0), "\x1b[27u");
+        assert_eq!(enc(k(KeyCode::Char('A'), c | s), 1, 0), "\x1b[97;6u");
+        assert_eq!(enc(k(KeyCode::Char('A'), s), 1, 0), "A");
+        assert_eq!(enc(k(KeyCode::BackTab, s), 1, 0), "\x1b[9;2u");
+        assert_eq!(enc(k(KeyCode::Up, c), 1, 0), "\x1b[1;5A");
+        // Report all keys: even plain text.
+        assert_eq!(enc(k(KeyCode::Char('a'), n), 9, 0), "\x1b[97u");
+        // modifyOtherKeys 2: every chord; 1: only what legacy loses.
+        assert_eq!(enc(k(KeyCode::Enter, s), 0, 2), "\x1b[27;2;13~");
+        assert_eq!(enc(k(KeyCode::Char('a'), c), 0, 2), "\x1b[27;5;97~");
+        assert_eq!(enc(k(KeyCode::Char('a'), a), 0, 2), "\x1b[27;3;97~");
+        assert_eq!(enc(k(KeyCode::Char('A'), s), 0, 2), "A");
+        assert_eq!(enc(k(KeyCode::Char('a'), c), 0, 1), "\x01");
+        assert_eq!(enc(k(KeyCode::Char('a'), c | s), 0, 1), "\x1b[27;6;97~");
+        assert_eq!(enc(k(KeyCode::Enter, s), 0, 1), "\x1b[27;2;13~");
+        assert_eq!(enc(k(KeyCode::BackTab, s), 0, 2), "\x1b[Z");
     }
 
     // ----------------------------------------------------------------- mouse
