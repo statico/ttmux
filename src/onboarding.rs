@@ -106,7 +106,7 @@ impl Welcome {
     /// never spells the same keys out a second time.
     pub fn hint(&self) -> &'static str {
         match self.step {
-            Step::Pick => "↑↓ or 1-3 choose   enter confirm",
+            Step::Pick => "↑↓ or 1-3 choose  enter confirm",
             Step::Ready => "any key to start",
         }
     }

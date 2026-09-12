@@ -204,7 +204,9 @@ impl Picker {
     }
 
     pub fn draw(&self, buf: &mut Buffer, r: Rect, cfg: &Config) {
-        let plain = Style::default().fg(cfg.status.fg.into());
+        let plain = Style::default()
+            .fg(cfg.status.fg.into())
+            .bg(crate::app::modal_bg(cfg));
         let dim = plain.add_modifier(Modifier::DIM);
         let line = |buf: &mut Buffer, dy: u16, text: &str, style: Style| {
             let y = r.y.saturating_add(dy);
