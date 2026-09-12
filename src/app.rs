@@ -1061,6 +1061,17 @@ impl App {
     where
         B::Error: std::error::Error + Send + Sync + 'static,
     {
+        // The backend can change size between the resize event and this
+        // frame: with a server, a client's resize reaches the backend at
+        // once, while `self.area` only moves when the app drains the event.
+        // ratatui sizes the buffer from the backend, so drawing against a
+        // stale `self.area` puts the status row outside it.
+        let size = term.size()?;
+        if (size.width, size.height) != (self.area.w, self.area.h) {
+            self.area = Rect::new(0, 0, size.width, size.height);
+            self.relayout();
+        }
+
         // Snapshot what the closure needs; `draw` borrows `self` mutably.
         let body = self.body();
         if self.tabs.is_empty() {
@@ -1078,6 +1089,13 @@ impl App {
         // private mode is ignored anyway.
         host.passthrough(b"\x1b[?2026h")?;
         term.draw(|f| {
+            // A second client can resize between the check above and here.
+            // Painting geometry that was computed for another size is what
+            // indexes past the buffer, so skip the frame; the resize event
+            // behind it marks the app dirty and the next one lands right.
+            if f.area() != ratatui::layout::Rect::from(self.area) {
+                return;
+            }
             let buf = f.buffer_mut();
             buf.set_style(body.into(), Style::default());
             let focus = self.tabs[self.tab].focus;
@@ -1845,7 +1863,9 @@ mod tests {
     #[test]
     fn a_scripted_host_drives_the_loop_with_no_terminal() {
         let mut a = app();
-        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        // The backend is the authority on size, so a resize event only means
+        // anything if the terminal behind it really did change.
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
         // The default keymap: ctrl+t is the prefix, shift+Q quits.
         let mut host = FakeHost::with(vec![
             Event::Resize(60, 20),
@@ -1867,6 +1887,21 @@ mod tests {
             .iter()
             .any(|c| c.symbol() != " ");
         assert!(painted);
+    }
+
+    #[test]
+    fn a_backend_that_shrank_behind_the_app_does_not_draw_past_the_buffer() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+        a.draw(&mut term, &mut host).unwrap();
+        // A server's backend follows its narrowest client the moment that
+        // client resizes, while the app only learns on the event it has not
+        // drained yet. Drawing the old geometry into the new buffer is what
+        // put the status row outside it.
+        term.backend_mut().resize(40, 8);
+        a.draw(&mut term, &mut host).unwrap();
+        assert_eq!((a.area.w, a.area.h), (40, 8));
     }
 
     #[test]
