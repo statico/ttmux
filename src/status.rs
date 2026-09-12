@@ -16,6 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::agent::AgentState;
 use crate::config::{Bar, BarEffect, StatusBar};
 use crate::layout::Rect;
+use crate::render::put_cell;
 
 /// Everything the bar can show. Owned by the app, borrowed for one frame.
 pub struct Ctx<'a> {
@@ -30,7 +31,11 @@ pub struct Ctx<'a> {
     pub pending_prefix: bool,
 }
 
-/// Every supported widget name, for the settings UI and for validation.
+/// Every name [`widget`] knows. Any other name in a [`Bar`] renders as
+/// `?name` rather than vanishing, so a typo in the config is visible.
+///
+/// Nothing validates a `Bar` against this list yet; it is the canonical set
+/// for documentation and for the render-everything test.
 pub const WIDGETS: &[&str] = &[
     "session", "mode", "tabs", "panes", "agents", "alerts", "time", "date", "host", "load",
     "battery", "zoom", "prefix", "message", "spacer",
@@ -61,10 +66,11 @@ impl Span {
 
 /// Columns `Buffer::set_stringn` will actually advance for `s`.
 ///
-/// Must agree with ratatui exactly or the tab hitboxes we hand back point at
-/// cells we never painted. ratatui drops control-containing graphemes and adds
-/// a column per halfwidth dakuten (`CellWidth`), so plain `UnicodeWidthStr`
-/// is one column too wide per control char and too narrow per dakuten.
+/// This must agree with ratatui's `CellWidth` exactly. Every hitbox handed
+/// back is measured with it, so a disagreement of one column makes a click
+/// land on a tab that was never painted there. Plain `UnicodeWidthStr` will
+/// not do: ratatui drops control-containing graphemes (one column too wide)
+/// and charges a column for a halfwidth dakuten (one column too narrow).
 fn sw(s: &str) -> usize {
     // A grapheme containing a control char is made only of control chars, so
     // dropping the chars is the same as dropping the graphemes ratatui filters.
@@ -87,14 +93,14 @@ pub fn draw(
     bar: &Bar,
     ctx: &Ctx,
 ) -> Vec<(usize, Range<u16>)> {
+    if rect.w == 0 || rect.h == 0 {
+        return Vec::new();
+    }
     let base = Style::default().fg(cfg.fg.0).bg(cfg.bg.0);
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
             put_cell(buf, x, y, " ", base);
         }
-    }
-    if rect.w == 0 || rect.h == 0 {
-        return Vec::new();
     }
 
     let w = rect.w as usize;
@@ -119,7 +125,6 @@ pub fn draw(
         left = truncate(left, lw_budget);
     }
 
-    // Spacers soak up whatever is left over.
     let lw = spans_width(&left);
     let cw = spans_width(&center);
     let free = w.saturating_sub(lw + cw + rw);
@@ -152,16 +157,6 @@ pub fn draw(
     hits
 }
 
-/// Reset first: `set_style` merges modifiers, so a bar drawn over a pane would
-/// otherwise keep its underline or inverse.
-fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
-    if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.reset();
-        cell.set_symbol(symbol);
-        cell.set_style(style);
-    }
-}
-
 fn chunks(names: &[String], cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Vec<Span>> {
     names
         .iter()
@@ -181,6 +176,9 @@ fn join(chunks: Vec<Vec<Span>>, sep: &dyn Fn() -> Span) -> Vec<Span> {
     out
 }
 
+/// Share `free` columns out between the `spacer` spans in one group. Only the
+/// left group is ever given any: the centre is centred and the right hugs the
+/// edge, so a spacer there has nothing to push against and stays zero-width.
 fn expand_spacers(spans: &mut [Span], free: usize) {
     let n = spans.iter().filter(|s| s.expand).count();
     if n == 0 || free == 0 {
@@ -211,7 +209,7 @@ fn scroll_tabs(spans: &mut Vec<Span>, active: usize, max: usize) {
         return;
     };
     // Tabs are one contiguous run (separators only go between widgets), so the
-    // first tab span is the left edge of what we may scroll away.
+    // first tab span is the left edge of what may be scrolled away.
     let start = spans.iter().position(|s| s.tab.is_some()).unwrap_or(a);
     let mut drop = 0;
     while start + drop < a && need > 0 {
@@ -277,9 +275,9 @@ impl Row<'_> {
                 break;
             }
             let avail = (self.end - x) as usize;
-            // set_stringn reports where it stopped painting; trust that over
-            // any width we compute, so a hitbox can never cover an unpainted
-            // cell.
+            // set_stringn reports where it stopped painting. The hitbox comes
+            // from that, never from a computed width, so it can never cover a
+            // cell ratatui declined to paint.
             let (nx, _) = self.buf.set_stringn(x, self.y, &s.text, avail, s.style);
             for c in x..nx {
                 self.taken[(c - self.x0) as usize] = true;
@@ -327,7 +325,7 @@ fn paint_effect(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], t
             _ => return,
         },
     };
-    let span = (rect.w - 1).max(1) as i32;
+    let span = rect.w.saturating_sub(1).max(1) as i32;
     for x in rect.x..rect.right() {
         if taken[(x - rect.x) as usize] {
             continue;
@@ -545,7 +543,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Short hostname (everything before the first dot), like `uname -n | cut -d. -f1`.
 ///
-/// Cached: it cannot change while we run, and the bar redraws at frame rate.
+/// Cached: it cannot change during a session, and the bar redraws every frame.
 fn hostname() -> &'static str {
     static HOST: OnceLock<String> = OnceLock::new();
     HOST.get_or_init(read_hostname)
@@ -620,7 +618,8 @@ mod tests {
         }
     }
 
-    /// The shared half of the config, with no effect.
+    /// Stock colours, separator and `BarEffect::Flat` — several tests below
+    /// diff an effect against what this draws.
     fn cfg() -> StatusBar {
         StatusBar::default()
     }
@@ -657,7 +656,7 @@ mod tests {
     // ---- format_time
 
     #[test]
-    fn epoch_zero() {
+    fn format_time_renders_the_epoch() {
         assert_eq!(
             format_time("%Y-%m-%d %H:%M:%S", 0, 0),
             "1970-01-01 00:00:00"
@@ -665,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn known_epoch() {
+    fn format_time_matches_a_known_timestamp() {
         assert_eq!(
             format_time("%Y-%m-%d %H:%M:%S", 1_700_000_000, 0),
             "2023-11-14 22:13:20"
@@ -673,13 +672,13 @@ mod tests {
     }
 
     #[test]
-    fn leap_day() {
+    fn format_time_counts_the_leap_day() {
         // 2024-02-29T12:00:00Z
         assert_eq!(format_time("%Y-%m-%d", 1_709_208_000, 0), "2024-02-29");
     }
 
     #[test]
-    fn weekday_month_meridiem() {
+    fn weekday_month_and_meridiem_follow_the_date() {
         // 2023-11-14 22:13:20 UTC is a Tuesday.
         assert_eq!(
             format_time("%a %b %p %I", 1_700_000_000, 0),
@@ -689,14 +688,14 @@ mod tests {
     }
 
     #[test]
-    fn percent_and_unknown() {
+    fn percent_escapes_and_unknown_directives_pass_through() {
         assert_eq!(format_time("100%%", 0, 0), "100%");
         assert_eq!(format_time("%q", 0, 0), "%q");
         assert_eq!(format_time("%y", 1_700_000_000, 0), "23");
     }
 
     #[test]
-    fn positive_offset() {
+    fn a_positive_utc_offset_moves_the_clock_forward() {
         // +02:00
         assert_eq!(format_time("%H:%M", 0, 7200), "02:00");
         assert_eq!(
@@ -706,7 +705,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_offset() {
+    fn a_negative_utc_offset_can_cross_back_a_day() {
         // -05:00 crosses back over midnight.
         assert_eq!(
             format_time("%Y-%m-%d %H:%M", 0, -18_000),
@@ -753,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_hitboxes() {
+    fn tab_hitboxes_do_not_overlap_and_map_a_click_to_its_tab() {
         let bar = bar_with(&["tabs"], &[], &[]);
         let t = tabs(&["one", "two", "three"], 1);
         let mut buf = buffer(40);
@@ -793,9 +792,8 @@ mod tests {
         }
     }
 
-    /// Every returned range must cover exactly the cells that tab was painted on.
     #[test]
-    fn hitboxes_cover_the_painted_label() {
+    fn hitboxes_cover_exactly_the_painted_label() {
         let bar = bar_with(&["tabs"], &[], &[]);
         let t = tabs(&["a\tb", "ｶﾞ", "x"], 0);
         let mut buf = buffer(40);
@@ -875,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_widget() {
+    fn the_agents_widget_shows_only_non_idle_panes() {
         let bar = bar_with(&["agents"], &[], &[]);
         let idle = vec![
             ("a".into(), AgentState::Idle),
@@ -931,6 +929,26 @@ mod tests {
             line.contains("● 3") && line.contains('⛶') && line.contains("PREFIX"),
             "{line:?}"
         );
+    }
+
+    /// A name in `WIDGETS` with no arm in `widget()` would be advertised as
+    /// supported and then render as `?name`.
+    #[test]
+    fn every_advertised_widget_has_an_implementation() {
+        let t = tabs(&["one"], 0);
+        let p = vec![("sh".into(), AgentState::Busy)];
+        let mut c = make_ctx(&t, &p);
+        c.alerts = 1;
+        c.zoomed = true;
+        c.pending_prefix = true;
+        c.message = Some("hi");
+        for name in WIDGETS {
+            let spans = widget(name, &cfg(), &c, Style::default());
+            assert!(
+                !spans.iter().any(|s| s.text.starts_with('?')),
+                "{name} has no arm in widget()"
+            );
+        }
     }
 
     #[test]
@@ -1028,22 +1046,23 @@ mod tests {
     }
 
     #[test]
-    fn flat_row_is_unchanged() {
+    fn the_flat_effect_leaves_the_row_exactly_as_drawn() {
         let (buf, _) = draw_bar(&cfg(), 40);
         assert_eq!(row(&buf, 40), " main          one  two          1 panes");
     }
 
-    /// An effect may only touch cells no widget claimed.
     #[test]
     fn effects_leave_widgets_and_hitboxes_alone() {
-        let (flat, flat_hits) = draw_bar(&cfg(), 40);
-        for e in [BarEffect::Starfield, BarEffect::Gradient] {
-            let (buf, hits) = draw_bar(&with_effect(e), 40);
-            assert_eq!(hits, flat_hits, "{e:?}");
-            let cells = hits.iter().flat_map(|(_, r)| r.clone());
-            let glyphs = (0..40).filter(|x| flat.cell((*x, 0)).unwrap().symbol() != " ");
-            for x in cells.chain(glyphs) {
-                assert_eq!(buf.cell((x, 0)), flat.cell((x, 0)), "{e:?} at {x}");
+        for w in [1, 2, 7, 40] {
+            let (flat, flat_hits) = draw_bar(&cfg(), w);
+            for e in [BarEffect::Starfield, BarEffect::Gradient] {
+                let (buf, hits) = draw_bar(&with_effect(e), w);
+                assert_eq!(hits, flat_hits, "{e:?} at width {w}");
+                let cells = hits.iter().flat_map(|(_, r)| r.clone());
+                let glyphs = (0..w).filter(|x| flat.cell((*x, 0)).unwrap().symbol() != " ");
+                for x in cells.chain(glyphs) {
+                    assert_eq!(buf.cell((x, 0)), flat.cell((x, 0)), "{e:?} at {x}/{w}");
+                }
             }
         }
     }
