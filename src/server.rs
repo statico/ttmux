@@ -522,7 +522,8 @@ fn serve(listener: UnixListener, path: &Path) -> Result<()> {
 
 fn run(listener: UnixListener) -> Result<()> {
     let cfg_path = crate::config::config_path();
-    let cfg = Config::load(&cfg_path).unwrap_or_default();
+    let (loaded, cfg_seen) = Config::load_stamped(&cfg_path);
+    let cfg = loaded.unwrap_or_default();
     let (w, h) = DEFAULT_SIZE;
     let (tx, rx) = mpsc::channel();
     let hub = Arc::new(Hub {
@@ -538,7 +539,7 @@ fn run(listener: UnixListener) -> Result<()> {
         kill: AtomicBool::new(false),
     });
 
-    let mut app = App::new(cfg, cfg_path, Rect::new(0, 0, w, h))?;
+    let mut app = App::new(cfg, cfg_path, Rect::new(0, 0, w, h), cfg_seen)?;
     let mut term = Terminal::new(WireBackend {
         hub: hub.clone(),
         cursor: Position::new(0, 0),
