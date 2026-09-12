@@ -12,6 +12,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::action::{Action, ALL_ACTIONS};
+use crate::color_picker::{self, Picker};
 use crate::config::{
     BarEffect, Binding, BorderStyle, Chord, Config, KeysPreset, Rgb, TitlePosition,
 };
@@ -401,6 +402,8 @@ enum Edit {
     None,
     /// Text/colour/number/list buffer for the selected row.
     Buffer(String),
+    /// A colour row: the swatch/hex/channel picker owns the editing.
+    Colour(Box<Picker>),
     /// Waiting for a key to rebind the selected row.
     Capture,
     /// Waiting for a key for a brand new binding.
@@ -473,6 +476,7 @@ impl Settings {
     pub fn on_key(&mut self, ev: KeyEvent, cfg: &mut Config) -> Outcome {
         match self.edit.clone() {
             Edit::Buffer(buf) => self.key_buffer(ev, cfg, buf),
+            Edit::Colour(p) => self.key_colour(ev, cfg, p),
             Edit::Capture => self.key_capture(ev, cfg),
             Edit::CaptureNew => self.key_capture_new(ev, cfg),
             Edit::PickAction { chord, filter, sel } => self.key_pick(ev, cfg, chord, filter, sel),
@@ -542,6 +546,9 @@ impl Settings {
                         return self.apply(cfg, &v);
                     }
                     Some(Kind::Choice(opts)) => return self.cycle(cfg, opts, 1),
+                    Some(Kind::Colour) => {
+                        self.edit = Edit::Colour(Box::new(Picker::new(&fs[self.row].value)))
+                    }
                     Some(_) if self.section == KEYS => self.edit = Edit::Capture,
                     Some(_) => self.edit = Edit::Buffer(fs[self.row].value.clone()),
                     None => {}
@@ -622,6 +629,22 @@ impl Settings {
             _ => {}
         }
         Outcome::Continue
+    }
+
+    /// The picker edits the live config on every keystroke, so the panel
+    /// itself recolours as you browse; cancelling writes the old text back.
+    fn key_colour(&mut self, ev: KeyEvent, cfg: &mut Config, mut p: Box<Picker>) -> Outcome {
+        let out = p.on_key(ev);
+        let value = match out {
+            color_picker::Outcome::Cancel => p.previous().to_string(),
+            _ => p.value(),
+        };
+        if out == color_picker::Outcome::Continue {
+            self.edit = Edit::Colour(p);
+        } else {
+            self.edit = Edit::None;
+        }
+        self.apply(cfg, &value)
     }
 
     fn key_capture(&mut self, ev: KeyEvent, cfg: &mut Config) -> Outcome {
@@ -724,6 +747,13 @@ impl Settings {
                 self.scroll = (self.scroll + 1).min(total.saturating_sub(rows));
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                if let Edit::Colour(p) = &mut self.edit {
+                    let mut p = p.clone();
+                    p.on_mouse(ev, picker_rect(g.fields));
+                    let value = p.value();
+                    self.edit = Edit::Colour(p);
+                    return self.apply(cfg, &value);
+                }
                 if self.editing() {
                     return Outcome::Continue;
                 }
@@ -788,6 +818,12 @@ impl Settings {
 
         if let Edit::PickAction { filter, sel, .. } = &self.edit {
             self.draw_picker(buf, g.fields, filter, *sel, base);
+        } else if let Edit::Colour(p) = &self.edit {
+            let label = fields(cfg, self.section)
+                .get(self.row)
+                .map_or(String::new(), |f| f.label.to_string());
+            put(buf, g.fields.x, g.fields.y, &label, g.fields.w, base);
+            p.draw(buf, picker_rect(g.fields), cfg);
         } else {
             self.draw_fields(buf, g.fields, cfg, base);
         }
@@ -805,6 +841,7 @@ impl Settings {
         let hint = match self.edit {
             Edit::Capture | Edit::CaptureNew => "press a key…  esc cancel",
             Edit::Buffer(_) => "type to edit  enter commit  esc cancel",
+            Edit::Colour(_) => "↑↓←→ pick  tab hex/rgb  enter accept  esc cancel",
             _ => "↑↓ move  ←→ change  enter edit  s save  esc close",
         };
         let inner = area.shrink(1);
@@ -871,6 +908,17 @@ impl Settings {
     }
 }
 
+/// The picker's rect inside the field column: one row down, under the
+/// label of the row being edited. Shared by `draw` and `on_mouse`.
+fn picker_rect(fields: Rect) -> Rect {
+    Rect::new(
+        fields.x,
+        fields.y.saturating_add(1),
+        fields.w,
+        fields.h.saturating_sub(1),
+    )
+}
+
 /// `label ..... value`, padded to `w`.
 fn row_text(label: &str, value: &str, w: u16) -> String {
     let w = w as usize;
@@ -922,7 +970,7 @@ fn border(buf: &mut Buffer, r: Rect, style: Style) {
 /// Clipped single-line write. Never panics on a small buffer.
 ///
 /// ponytail: one column per char; wide (CJK) glyphs would need unicode-width.
-fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) {
+pub(crate) fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) {
     let a = buf.area;
     if y < a.y || y >= a.bottom() || max == 0 {
         return;
@@ -1052,10 +1100,11 @@ mod tests {
     }
 
     #[test]
-    fn colour_edit_commits_valid_and_rejects_junk() {
+    fn the_picker_ignores_hex_that_does_not_parse() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         goto(&mut s, &cfg, 1, "border");
         s.on_key(k(KeyCode::Enter), &mut cfg);
+        s.on_key(k(KeyCode::Tab), &mut cfg);
         for _ in 0..8 {
             s.on_key(k(KeyCode::Backspace), &mut cfg);
         }
@@ -1063,14 +1112,113 @@ mod tests {
         assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
         assert_eq!(cfg.appearance.border.to_string(), "#ff0000");
 
+        // Junk is simply not applied: the last colour that parsed stands,
+        // so there is no invalid state to commit.
         s.on_key(k(KeyCode::Enter), &mut cfg);
+        s.on_key(k(KeyCode::Tab), &mut cfg);
+        type_str(&mut s, &mut cfg, "zz");
+        assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
+        assert_eq!(cfg.appearance.border.to_string(), "#ff0000");
+    }
+
+    /// Every colour row in the config, as (section, label).
+    fn colour_rows(cfg: &Config) -> Vec<(usize, &'static str)> {
+        (0..SECTIONS.len())
+            .flat_map(|sec| {
+                fields(cfg, sec)
+                    .into_iter()
+                    .filter(|f| f.kind == Kind::Colour)
+                    .map(move |f| (sec, f.label))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn enter_on_any_colour_row_opens_the_picker() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        let rows = colour_rows(&cfg);
+        // border, border-focused, border-alert, bg, fg, accent.
+        assert_eq!(rows.len(), 6, "{rows:?}");
+        for (sec, label) in rows {
+            goto(&mut s, &cfg, sec, label);
+            s.on_key(k(KeyCode::Enter), &mut cfg);
+            assert!(
+                matches!(s.edit, Edit::Colour(_)),
+                "{label} did not open the picker"
+            );
+            s.on_key(k(KeyCode::Esc), &mut cfg);
+        }
+    }
+
+    #[test]
+    fn the_picker_commits_on_enter_and_restores_on_escape() {
+        for (sec, label) in colour_rows(&Config::default()) {
+            let (mut s, mut cfg) = (Settings::new(), Config::default());
+            goto(&mut s, &cfg, sec, label);
+            let before = fields(&cfg, sec)[s.row].value.clone();
+
+            // Escape: the live edits are undone, down to the original text.
+            s.on_key(k(KeyCode::Enter), &mut cfg);
+            s.on_key(k(KeyCode::Down), &mut cfg);
+            s.on_key(k(KeyCode::Right), &mut cfg);
+            assert_ne!(fields(&cfg, sec)[s.row].value, before, "{label} unchanged");
+            assert_eq!(s.on_key(k(KeyCode::Esc), &mut cfg), Outcome::Apply);
+            assert_eq!(
+                fields(&cfg, sec)[s.row].value,
+                before,
+                "{label} not restored"
+            );
+            assert!(!s.editing());
+
+            // Enter: the browsed colour stays.
+            s.on_key(k(KeyCode::Enter), &mut cfg);
+            s.on_key(k(KeyCode::Down), &mut cfg);
+            s.on_key(k(KeyCode::Right), &mut cfg);
+            let picked = fields(&cfg, sec)[s.row].value.clone();
+            assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
+            assert_eq!(fields(&cfg, sec)[s.row].value, picked);
+            assert!(!s.editing());
+        }
+    }
+
+    #[test]
+    fn hex_typed_into_the_picker_reaches_the_config() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 1, "border-focused");
+        s.on_key(k(KeyCode::Enter), &mut cfg);
+        s.on_key(k(KeyCode::Tab), &mut cfg);
         for _ in 0..8 {
             s.on_key(k(KeyCode::Backspace), &mut cfg);
         }
-        type_str(&mut s, &mut cfg, "nonsense");
-        assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Continue);
-        assert_eq!(cfg.appearance.border.to_string(), "#ff0000");
-        assert!(s.error.is_some());
+        type_str(&mut s, &mut cfg, "#ff8800");
+        assert_eq!(s.on_key(k(KeyCode::Enter), &mut cfg), Outcome::Apply);
+        assert_eq!(cfg.appearance.border_focused.to_string(), "#ff8800");
+    }
+
+    #[test]
+    fn clicking_a_swatch_in_the_panel_sets_the_colour() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        let area = Rect::new(0, 0, 80, 30);
+        let g = geometry(area);
+        goto(&mut s, &cfg, 2, "accent");
+        s.on_key(k(KeyCode::Enter), &mut cfg);
+        let pr = picker_rect(g.fields);
+        let out = s.on_mouse(click(pr.x + 7, pr.y + 8), area, &mut cfg);
+        assert_eq!(out, Outcome::Apply);
+        assert!(cfg.status.accent.to_string().starts_with('#'));
+        // The click picks; enter is still what closes the picker.
+        assert!(matches!(s.edit, Edit::Colour(_)));
+    }
+
+    #[test]
+    fn the_picker_draws_inside_a_tiny_panel() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 1, "border");
+        s.on_key(k(KeyCode::Enter), &mut cfg);
+        for (w, h) in [(0u16, 0u16), (1, 1), (2, 2), (20, 6), (80, 30)] {
+            let mut buf = Buffer::empty(TRect::new(0, 0, w.max(1), h.max(1)));
+            s.draw(&mut buf, Rect::new(0, 0, w, h), &cfg);
+        }
     }
 
     #[test]
