@@ -842,21 +842,25 @@ fn filtered_actions(filter: &str) -> Vec<String> {
         .collect()
 }
 
-/// Plain box-drawing border (the renderer's fancier one may not exist yet).
+/// Heavy border, matching the help overlay: the doubled stroke marks a panel
+/// as an overlay rather than a pane.
 fn border(buf: &mut Buffer, r: Rect, style: Style) {
+    let f = crate::render::frame_chars(crate::config::BorderStyle::Heavy);
     let (x1, y1) = (r.right().saturating_sub(1), r.bottom().saturating_sub(1));
+    let h = f.h.to_string();
+    let v = f.v.to_string();
     for x in r.x..r.right() {
-        put(buf, x, r.y, "─", 1, style);
-        put(buf, x, y1, "─", 1, style);
+        put(buf, x, r.y, &h, 1, style);
+        put(buf, x, y1, &h, 1, style);
     }
     for y in r.y..r.bottom() {
-        put(buf, r.x, y, "│", 1, style);
-        put(buf, x1, y, "│", 1, style);
+        put(buf, r.x, y, &v, 1, style);
+        put(buf, x1, y, &v, 1, style);
     }
-    put(buf, r.x, r.y, "┌", 1, style);
-    put(buf, x1, r.y, "┐", 1, style);
-    put(buf, r.x, y1, "└", 1, style);
-    put(buf, x1, y1, "┘", 1, style);
+    put(buf, r.x, r.y, &f.tl.to_string(), 1, style);
+    put(buf, x1, r.y, &f.tr.to_string(), 1, style);
+    put(buf, r.x, y1, &f.bl.to_string(), 1, style);
+    put(buf, x1, y1, &f.br.to_string(), 1, style);
     put(
         buf,
         r.x + 1,
