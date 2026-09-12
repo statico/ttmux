@@ -226,6 +226,11 @@ fn paint_loop(sock: &mut UnixStream) -> Result<()> {
 /// Run one scripting command against `session` and hand back the exit status
 /// and what to print.
 pub fn command(session: &str, argv: &[String]) -> Result<(u8, String)> {
+    // The pane this shell runs in, so a script acts on itself by default, the
+    // way tmux reads $TMUX_PANE. Outside ttmux there is none.
+    let pane = std::env::var("TTMUX_PANE")
+        .ok()
+        .and_then(|p| p.parse().ok());
     let path = proto::socket_path(session)?;
     // No session is its own exit code: a script can tell "nothing running"
     // from "the command failed" without reading the message.
@@ -235,7 +240,13 @@ pub fn command(session: &str, argv: &[String]) -> Result<(u8, String)> {
             format!("no server for session {session:?}"),
         ));
     };
-    proto::write_msg(&mut sock, &ClientMsg::Command(argv.to_vec()))?;
+    proto::write_msg(
+        &mut sock,
+        &ClientMsg::Command {
+            argv: argv.to_vec(),
+            pane,
+        },
+    )?;
     let _ = sock.set_read_timeout(Some(Duration::from_secs(10)));
     match proto::read_msg::<_, ServerMsg>(&mut sock)? {
         Some(ServerMsg::Reply { code, text }) => Ok((code, text)),

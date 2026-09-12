@@ -372,19 +372,23 @@ fn a_script_types_into_a_pane_and_lists_what_it_finds() {
 
     // Same socket and session the running server is on, which is all a
     // script inside a pane inherits from its environment.
-    let run = |h: &Harness, args: &[&str]| {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))
-            .args(args)
+    let run_from = |h: &Harness, pane: Option<&str>, args: &[&str]| {
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"));
+        cmd.args(args)
             .env("TTMUX_CONFIG", &h.cfg)
             .env("TTMUX_SOCKET", &h.sock)
             .env("TTMUX_SESSION", "test")
-            .output()
-            .unwrap();
+            .env_remove("TTMUX_PANE");
+        if let Some(p) = pane {
+            cmd.env("TTMUX_PANE", p);
+        }
+        let out = cmd.output().unwrap();
         (
             out.status.success(),
             String::from_utf8_lossy(&out.stdout).trim().to_string(),
         )
     };
+    let run = |h: &Harness, args: &[&str]| run_from(h, None, args);
 
     let (ok, out) = run(&h, &["list-panes"]);
     assert!(
@@ -400,11 +404,23 @@ fn a_script_types_into_a_pane_and_lists_what_it_finds() {
         s.matches("scripted-ok").count() > 1
     });
 
-    let (ok, _) = run(&h, &["split-window"]);
-    assert!(ok);
+    // The new pane's id comes back, so a script can target it at once.
+    let (ok, out) = run(&h, &["split-window"]);
+    assert!(ok && out == "%2", "{out:?}");
     h.wait_for("a second pane", |s| s.matches('\u{256d}').count() > 1);
     let (ok, out) = run(&h, &["list-panes"]);
     assert!(ok && out.lines().count() == 2, "{out:?}");
+
+    // Focus is on %2 now, but a script run from inside %1 acts on %1, as
+    // tmux reads $TMUX_PANE: the user clicking elsewhere must not redirect
+    // an agent's capture of its own pane.
+    let (ok, out) = run_from(&h, Some("1"), &["capture-pane"]);
+    assert!(ok && out.contains("scripted-ok"), "{out:?}");
+    let (ok, out) = run_from(&h, Some("2"), &["capture-pane"]);
+    assert!(ok && !out.contains("scripted-ok"), "{out:?}");
+    // An explicit target still wins over the caller's own pane.
+    let (ok, out) = run_from(&h, Some("2"), &["capture-pane", "-t", "%1"]);
+    assert!(ok && out.contains("scripted-ok"), "{out:?}");
 
     let (ok, _) = run(&h, &["rename-window", "scripted"]);
     assert!(ok);
@@ -446,6 +462,24 @@ fn the_cli_answers_without_a_terminal() {
     assert_eq!(parsed, ttmux::config::Config::default());
 
     assert!(!run(&["--nonsense"]).0, "an unknown flag must fail");
+
+    // A usage mistake is exit 2 whether or not a session is up, so a script
+    // can tell a typo from "nothing running" without reading stderr.
+    let code = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))
+            .args(args)
+            .env("TTMUX_CONFIG", "/tmp/ttmux-cli-test.toml")
+            .env("TTMUX_SOCKET", "/tmp/ttmux-cli-test-nobody.sock")
+            .output()
+            .unwrap()
+            .status
+            .code()
+    };
+    assert_eq!(code(&["kill-pane", "--oops"]), Some(2));
+    assert_eq!(code(&["not-a-command"]), Some(2));
+    assert_eq!(code(&["kill-pane"]), Some(3), "no session listening");
+    let (ok, out) = run(&["list-commands", "--json"]);
+    assert!(ok && out.contains("\"aliases\""), "{out:?}");
 }
 
 #[test]

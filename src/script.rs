@@ -136,12 +136,22 @@ pub const COMMANDS: &[Spec] = &[
             TARGET_PANE,
             Flag {
                 short: Some("-S"),
-                long: "--history",
+                long: "--start",
+                arg: Some("[LINE]"),
+                about: "include scrollback: - for all of it, -50 for the 50 lines above the screen",
+            },
+            Flag {
+                short: Some("-p"),
+                long: "--print",
                 arg: None,
-                about: "include the scrollback, not only the visible screen",
+                about: "print to stdout, which capture-pane always does; accepted for tmux scripts",
             },
         ],
-        examples: &["ttmux capture-pane", "ttmux capture-pane -t %2 --history"],
+        examples: &[
+            "ttmux capture-pane",
+            "ttmux capture-pane -t %2 -S -",
+            "ttmux capture-pane -p -S -50",
+        ],
     },
     Spec {
         name: "split-window",
@@ -471,23 +481,57 @@ pub fn is_command(verb: &str) -> bool {
     spec(verb).is_some() || alias(verb).is_some()
 }
 
-/// tmux spells some of these twice. The second spelling means the first,
-/// sometimes with a flag already given.
+/// tmux spells most commands twice, and some three times. The other
+/// spellings mean the real name, sometimes with a flag already given.
+/// `(alias, command, flags)`.
+pub const ALIASES: &[(&str, &str, &[&str])] = &[
+    ("send", "send-keys", &[]),
+    ("capturep", "capture-pane", &[]),
+    ("splitw", "split-window", &[]),
+    ("selectp", "select-pane", &[]),
+    ("resizep", "resize-pane", &[]),
+    ("swapp", "swap-pane", &[]),
+    ("move-pane", "join-pane", &[]),
+    ("joinp", "join-pane", &[]),
+    ("breakp", "break-pane", &[]),
+    ("killp", "kill-pane", &[]),
+    ("lsp", "list-panes", &[]),
+    ("neww", "new-window", &[]),
+    ("selectw", "select-window", &[]),
+    ("next-window", "select-window", &["-n"]),
+    ("next", "select-window", &["-n"]),
+    ("previous-window", "select-window", &["-p"]),
+    ("prev-window", "select-window", &["-p"]),
+    ("prev", "select-window", &["-p"]),
+    ("last-window", "select-window", &["-l"]),
+    ("last", "select-window", &["-l"]),
+    ("renamew", "rename-window", &[]),
+    ("swapw", "swap-window", &[]),
+    ("movew", "move-window", &[]),
+    ("selectl", "select-layout", &[]),
+    ("killw", "kill-window", &[]),
+    ("lsw", "list-windows", &[]),
+    ("ls", "list-sessions", &[]),
+    ("display", "display-message", &[]),
+    ("show", "show-options", &[]),
+    ("set", "set-option", &[]),
+    ("lsk", "list-keys", &[]),
+];
+
 fn alias(verb: &str) -> Option<(&'static str, &'static [&'static str])> {
-    Some(match verb {
-        "move-pane" => ("join-pane", &[] as &[&str]),
-        "next-window" => ("select-window", &["-n"]),
-        "previous-window" | "prev-window" => ("select-window", &["-p"]),
-        "last-window" => ("select-window", &["-l"]),
-        "splitw" => ("split-window", &[]),
-        "neww" => ("new-window", &[]),
-        "killp" => ("kill-pane", &[]),
-        "lsp" => ("list-panes", &[]),
-        "lsw" => ("list-windows", &[]),
-        "ls" => ("list-sessions", &[]),
-        "display" => ("display-message", &[]),
-        _ => return None,
-    })
+    ALIASES
+        .iter()
+        .find(|(a, _, _)| *a == verb)
+        .map(|(_, real, flags)| (*real, *flags))
+}
+
+/// The other spellings of a command, for its help.
+fn aliases_of(name: &str) -> Vec<&'static str> {
+    ALIASES
+        .iter()
+        .filter(|(_, real, flags)| *real == name && flags.is_empty())
+        .map(|(a, _, _)| *a)
+        .collect()
 }
 
 /// The real command a verb names, alias or not. `None` for a word that is
@@ -559,6 +603,10 @@ pub fn help(name: &str) -> Option<String> {
             let _ = writeln!(out, "    {e}");
         }
     }
+    let aliases = aliases_of(c.name);
+    if !aliases.is_empty() {
+        let _ = writeln!(out, "\nalso spelled: {}", aliases.join(", "));
+    }
     Some(out)
 }
 
@@ -573,6 +621,7 @@ pub fn commands_json() -> String {
                 "group": c.group,
                 "about": c.about,
                 "usage": c.usage(),
+                "aliases": aliases_of(c.name),
                 "args": c.args,
                 "flags": c.flags.iter().map(|f| serde_json::json!({
                     "short": f.short,
@@ -606,7 +655,9 @@ pub enum Cmd {
     },
     CapturePane {
         target: Option<PaneId>,
-        history: bool,
+        /// `None` is the screen only, `Some(None)` the whole scrollback too,
+        /// and `Some(Some(n))` the last `n` lines of scrollback.
+        history: Option<Option<usize>>,
     },
     Split {
         target: Option<PaneId>,
@@ -739,7 +790,20 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "capture-pane" => {
             let target = a.pane_target()?;
-            let history = a.flag(&["-S", "--history"]);
+            // tmux's -p prints to stdout, which is the only thing this one
+            // does; it is accepted so a tmux script runs as written.
+            a.flag(&["-p", "--print"]);
+            // tmux's -S is a start line: `-` for the very beginning, `-50` for
+            // 50 lines above the screen. Bare -S means all of it.
+            let start = a.optional_value(&["-S", "--start"])?;
+            let history = match start.as_ref().map(|v| v.as_deref()) {
+                None => None,
+                Some(None) | Some(Some("-")) => Some(None),
+                Some(Some(v)) => match v.trim_start_matches('-').parse() {
+                    Ok(n) => Some(Some(n)),
+                    Err(_) => bail!("not a line count: {v}"),
+                },
+            };
             a.end(verb)?;
             Cmd::CapturePane { target, history }
         }
@@ -996,6 +1060,36 @@ impl Args {
         }
         self.words.remove(i);
         Ok(Some(self.words.remove(i)))
+    }
+
+    /// A flag whose value may be left out: `Some(None)` for the bare flag,
+    /// `Some(Some(v))` for `-S -50` or `--start=-50`. The word after the flag
+    /// is its value only when it looks like one: `-`, or digits with an
+    /// optional leading `-`.
+    fn optional_value(&mut self, names: &[&str]) -> Result<Option<Option<String>>> {
+        let looks_like_value = |w: &str| {
+            w == "-"
+                || w.trim_start_matches('-')
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+        };
+        if let Some(i) = self
+            .words
+            .iter()
+            .position(|w| names.iter().any(|n| w.starts_with(&format!("{n}="))))
+        {
+            let word = self.words.remove(i);
+            let v = word.split_once('=').map(|(_, v)| v).unwrap_or_default();
+            return Ok(Some(Some(v.to_string())));
+        }
+        let Some(i) = self.words.iter().position(|w| names.contains(&w.as_str())) else {
+            return Ok(None);
+        };
+        self.words.remove(i);
+        match self.words.get(i) {
+            Some(w) if !w.is_empty() && looks_like_value(w) => Ok(Some(Some(self.words.remove(i)))),
+            _ => Ok(Some(None)),
+        }
     }
 
     /// `-t %3` or `-t 3`: a pane id, as `list-panes` prints it.
@@ -1356,6 +1450,45 @@ mod tests {
         };
         assert_eq!(keys.len(), "--json".len());
         assert!(parse("kill-pane", &split("--json")).is_err());
+    }
+
+    #[test]
+    fn capture_pane_reads_tmux_start_lines_and_ignores_print() {
+        let hist = |line: &str| match parsed(line) {
+            Cmd::CapturePane { history, .. } => history,
+            _ => panic!("not capture-pane"),
+        };
+        assert_eq!(hist("capture-pane"), None);
+        assert_eq!(hist("capture-pane -p"), None);
+        assert_eq!(hist("capture-pane -S"), Some(None));
+        assert_eq!(hist("capture-pane -p -S -"), Some(None));
+        assert_eq!(hist("capture-pane -S -50 -t %2"), Some(Some(50)));
+        assert_eq!(hist("capture-pane --start=-50"), Some(Some(50)));
+        assert!(fails("capture-pane -S soon"));
+        assert!(fails("capture-pane -S - extra"));
+    }
+
+    #[test]
+    fn every_alias_names_a_real_command_and_is_listed_by_it() {
+        for (a, real, flags) in ALIASES {
+            assert!(spec(real).is_some(), "{a} points at unknown {real}");
+            assert!(is_command(a));
+            let doc: serde_json::Value = serde_json::from_str(&commands_json()).unwrap();
+            let listed = doc["commands"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["name"] == *real)
+                .and_then(|c| c["aliases"].as_array())
+                .is_some_and(|l| l.iter().any(|x| x == a));
+            assert_eq!(listed, flags.is_empty(), "{a}");
+        }
+        assert_eq!(parsed("send hi"), parsed("send-keys hi"));
+        assert_eq!(
+            parsed("set appearance.gap 1"),
+            parsed("set-option appearance.gap 1")
+        );
+        assert!(help("send-keys").unwrap().contains("also spelled: send"));
     }
 
     #[test]

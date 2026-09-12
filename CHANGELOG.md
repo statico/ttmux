@@ -7,6 +7,9 @@
   with tmux's names and targets. `ttmux <command> --help` documents one
   command, `ttmux list-commands --json` documents all of them, and the exit
   code says what happened: 0 ran, 1 failed, 2 bad arguments, 3 no session.
+  A command with no `-t` acts on the pane the script runs in, as tmux reads
+  `$TMUX_PANE`. `split-window`, `new-window` and `break-pane` print the id
+  of what they made. `capture-pane -p` and `-S -` work as they do in tmux.
   [API.md](API.md) is the full reference.
 - Panes move between tabs: `break-pane` (<kbd>ctrl+t</kbd> <kbd>!</kbd>),
   `join-pane` (<kbd>ctrl+t</kbd> <kbd>@</kbd>), `swap-pane`, and

@@ -47,6 +47,9 @@ const BUSY_FOR: Duration = Duration::from_millis(400);
 /// answer goes back on.
 pub struct ScriptJob {
     pub cmd: Cmd,
+    /// The pane the script was run from, if any. A command with no target
+    /// acts on it rather than on the focused pane.
+    pub caller: Option<PaneId>,
     pub reply: std::sync::mpsc::SyncSender<Result<String, String>>,
 }
 
@@ -166,6 +169,9 @@ enum Rename {
 pub struct App {
     cfg: Config,
     cfg_path: PathBuf,
+    /// The pane the running scripted command came from, for the length of
+    /// that command. See [`App::script_from`].
+    caller: Option<PaneId>,
     /// The config file's mtime as of the last load, so an edit on disk can be
     /// noticed without polling the contents.
     cfg_text: String,
@@ -288,6 +294,7 @@ impl App {
             tab_hits: vec![],
             area,
             session: std::env::var("TTMUX_SESSION").unwrap_or_else(|_| "main".into()),
+            caller: None,
             drew_graphics: false,
             quit: false,
             detached: false,
@@ -434,7 +441,9 @@ impl App {
         self.slots.get(&self.focus()).and_then(|s| s.pane.cwd())
     }
 
-    fn split(&mut self, dir: Dir) -> Result<()> {
+    /// Split the focused pane. `None` when there was no room, which a key
+    /// press notes and a script reports as an error.
+    fn split(&mut self, dir: Dir) -> Result<Option<PaneId>> {
         let cwd = self.focused_cwd();
         let near = self.focus();
         let id = self.spawn_pane(cwd)?;
@@ -445,11 +454,11 @@ impl App {
             // it lives on in `slots` with no tile: invisible and unkillable.
             self.close_pane(id);
             self.note("no room to split");
-            return Ok(());
+            return Ok(None);
         }
         t.focus = id;
         self.sync_sizes();
-        Ok(())
+        Ok(Some(id))
     }
 
     fn close_pane(&mut self, id: PaneId) {
@@ -569,7 +578,23 @@ impl App {
 
     /// Run one scripted command, from `ttmux send-keys` and friends. The
     /// string is what the caller prints: empty for a command that only acts.
+    /// A missing pane target means the focused pane.
     pub fn script(&mut self, cmd: Cmd) -> Result<String> {
+        self.script_from(cmd, None)
+    }
+
+    /// The same, run from inside `caller`: a command with no `-t` acts on
+    /// that pane, as tmux reads `$TMUX_PANE`, so a script is not at the mercy
+    /// of where the user has clicked since. A caller that has since closed
+    /// falls back to the focused pane.
+    pub fn script_from(&mut self, cmd: Cmd, caller: Option<PaneId>) -> Result<String> {
+        self.caller = caller.filter(|id| self.slots.contains_key(id));
+        let out = self.script_inner(cmd);
+        self.caller = None;
+        out
+    }
+
+    fn script_inner(&mut self, cmd: Cmd) -> Result<String> {
         match cmd {
             Cmd::Run(action) => {
                 self.dispatch(action)?;
@@ -594,19 +619,33 @@ impl App {
             }
             Cmd::CapturePane { target, history } => {
                 let id = self.pane_or_focus(target)?;
-                match self.slots.get_mut(&id) {
-                    Some(s) => Ok(s.pane.dump(history)),
-                    None => bail!("no pane %{id}"),
-                }
+                let Some(s) = self.slots.get_mut(&id) else {
+                    bail!("no pane %{id}");
+                };
+                let text = s.pane.dump(history.is_some());
+                // `-S -N`: only the last N lines of scrollback above the
+                // screen, so a poll for new output is not the whole history.
+                Ok(match history {
+                    Some(Some(n)) => {
+                        let rows = usize::from(s.pane.rows);
+                        let lines: Vec<&str> = text.lines().collect();
+                        let keep = lines.len().min(rows + n);
+                        lines[lines.len() - keep..].join("\n")
+                    }
+                    _ => text,
+                })
             }
             Cmd::Split { target, dir } => {
-                if let Some(id) = target {
-                    let tab = self.tab_of(id)?;
-                    self.select_tab(tab);
-                    self.set_focus(id);
+                let id = self.pane_or_focus(target)?;
+                let tab = self.tab_of(id)?;
+                self.select_tab(tab);
+                self.set_focus(id);
+                // The new pane's id, so a script can target it without a
+                // trip through list-panes.
+                match self.split(dir)? {
+                    Some(new) => Ok(format!("%{new}")),
+                    None => bail!("no room to split %{id}"),
                 }
-                self.split(dir)?;
-                Ok(String::new())
             }
             Cmd::SelectPane(id) => {
                 let tab = self.tab_of(id)?;
@@ -661,7 +700,7 @@ impl App {
             Cmd::BreakPane(target) => {
                 let id = self.pane_or_focus(target)?;
                 self.break_pane(id)?;
-                Ok(String::new())
+                Ok(format!("{}", self.tab + 1))
             }
             Cmd::RenamePane { target, name } => {
                 let id = self.pane_or_focus(target)?;
@@ -678,12 +717,12 @@ impl App {
             Cmd::ListPanes { all, json } => Ok(self.list_panes(all, json)),
             Cmd::NewWindow { name } => {
                 self.new_tab()?;
+                let i = self.tab;
                 if let Some(name) = name {
-                    let i = self.tab;
                     self.tabs[i].name = name;
                     self.tabs[i].renamed = true;
                 }
-                Ok(String::new())
+                Ok(format!("{}", i + 1))
             }
             Cmd::SelectWindow(n) => {
                 let i = self.window_index(n)?;
@@ -1025,7 +1064,7 @@ impl App {
     /// A named pane, or the focused one. A script that names a pane that has
     /// exited must hear about it rather than typing into another one.
     fn pane_or_focus(&self, target: Option<PaneId>) -> Result<PaneId> {
-        match target {
+        match target.or(self.caller) {
             None => Ok(self.focus()),
             Some(id) if self.slots.contains_key(&id) => Ok(id),
             Some(id) => bail!("no pane %{id}"),
@@ -1051,7 +1090,9 @@ impl App {
     fn dispatch(&mut self, action: Action) -> Result<()> {
         use Action::*;
         match action {
-            Split(d) => self.split(d)?,
+            Split(d) => {
+                self.split(d)?;
+            }
             ClosePane => {
                 let id = self.focus();
                 self.close_pane(id);
@@ -1719,7 +1760,9 @@ impl App {
             }
 
             for job in host.commands() {
-                let out = self.script(job.cmd).map_err(|e| format!("{e:#}"));
+                let out = self
+                    .script_from(job.cmd, job.caller)
+                    .map_err(|e| format!("{e:#}"));
                 let _ = job.reply.try_send(out);
                 dirty = true;
                 last_busy = Instant::now();

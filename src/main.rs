@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use anyhow::{bail, Result};
-use ttmux::script;
+use ttmux::script::{self, Cmd};
 
 const USAGE: &str = "\
 ttmux — a modern terminal multiplexer
@@ -80,7 +80,10 @@ fn run() -> Result<ExitCode> {
                 Some(p) => std::env::set_var("TTMUX_CONFIG", p),
                 None => bail!("{arg} needs a path"),
             },
-            other if other.starts_with('-') => bail!("unknown option {other}\n\n{USAGE}"),
+            other if other.starts_with('-') => {
+                eprintln!("ttmux: unknown option {other}\n\n{USAGE}");
+                return Ok(ExitCode::from(script::EXIT_USAGE));
+            }
             other => {
                 verb = Some(other.to_string());
                 rest.extend(args);
@@ -129,7 +132,13 @@ fn run() -> Result<ExitCode> {
         other if script::is_command(other) => {
             return Ok(script_command(other, rest));
         }
-        other => bail!("unknown command {other}\n\n{USAGE}\n{}", script::usage()),
+        other => {
+            eprintln!(
+                "ttmux: unknown command {other}\n\n{USAGE}\n{}",
+                script::usage()
+            );
+            return Ok(ExitCode::from(script::EXIT_USAGE));
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -150,30 +159,30 @@ fn script_command(verb: &str, rest: Vec<String>) -> ExitCode {
             return ExitCode::SUCCESS;
         }
     }
-    // Listing the sessions is the one command that must work when none is
-    // running: "is anything up?" is the question you ask before attaching.
-    if script::spec_name(verb) == Some("list-sessions") {
-        ttmux::proto::cleanup_stale();
-        let json = rest.iter().any(|a| a == "--json");
-        if rest.iter().any(|a| a != "--json") {
-            eprintln!("ttmux: list-sessions takes only --json");
+    // Parsed here as well as in the session, so a typo is a usage error
+    // whether or not anything is running, and never costs a round trip.
+    match script::parse(verb, &rest) {
+        Err(e) => {
+            eprintln!("ttmux: {e:#}");
             return ExitCode::from(script::EXIT_USAGE);
         }
-        let here = std::env::var("TTMUX_SESSION").ok();
-        print!("{}", ttmux::proto::sessions_report(json, here.as_deref()));
-        return ExitCode::SUCCESS;
-    }
-    if verb == "list-commands" {
-        if rest.iter().any(|a| a != "--json") {
-            eprintln!("ttmux: list-commands takes only --json");
-            return ExitCode::from(script::EXIT_USAGE);
+        // Listing the sessions must work when none is running: "is anything
+        // up?" is the question you ask before attaching.
+        Ok(Cmd::ListSessions { json }) => {
+            ttmux::proto::cleanup_stale();
+            let here = std::env::var("TTMUX_SESSION").ok();
+            print!("{}", ttmux::proto::sessions_report(json, here.as_deref()));
+            return ExitCode::SUCCESS;
         }
-        if rest.iter().any(|a| a == "--json") {
+        Ok(Cmd::ListCommands { json: true }) => {
             print!("{}", script::commands_json());
-        } else {
-            print!("{}", script::usage());
+            return ExitCode::SUCCESS;
         }
-        return ExitCode::SUCCESS;
+        Ok(Cmd::ListCommands { json: false }) => {
+            print!("{}", script::usage());
+            return ExitCode::SUCCESS;
+        }
+        Ok(_) => {}
     }
 
     let argv: Vec<String> = std::iter::once(verb.to_string()).chain(rest).collect();
