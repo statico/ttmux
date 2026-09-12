@@ -129,11 +129,13 @@ pub struct Pane {
 }
 
 impl Pane {
-    /// Spawn the configured shell in a new pty.
+    /// Spawn the configured shell in a new pty, or `command` through it, as
+    /// tmux runs `split-window CMD` with `$SHELL -c`.
     pub fn spawn(
         id: PaneId,
         cfg: &Config,
         cwd: Option<PathBuf>,
+        command: Option<&str>,
         cols: u16,
         rows: u16,
     ) -> anyhow::Result<Pane> {
@@ -143,7 +145,10 @@ impl Pane {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
         };
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.args(&cfg.general.shell_args);
+        match command {
+            Some(c) => cmd.args(["-c", c]),
+            None => cmd.args(&cfg.general.shell_args),
+        }
         if let Some(dir) = cwd {
             cmd.cwd(dir);
         }
@@ -591,7 +596,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.general.shell = "/bin/sh".into();
         cfg.general.shell_args = vec!["-c".into(), "printf %s \"$COLORTERM\"".into()];
-        let mut p = Pane::spawn(1, &cfg, None, 40, 4).unwrap();
+        let mut p = Pane::spawn(1, &cfg, None, None, 40, 4).unwrap();
         assert!(pump_until(&mut p, |p| p
             .screen()
             .contents()

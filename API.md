@@ -34,7 +34,7 @@ Inside the session, `-t` picks what the command acts on:
 | Command takes | What `-t` accepts | With no `-t` |
 |---|---|---|
 | A pane | a pane id from `list-panes`, such as `%3` or plain `3` | the pane the script runs in, else the focused pane |
-| A window | a window number, counted from 1 | the current window |
+| A window | a window number counted from 1, or a window name | the current window |
 
 The pane a script runs in is `$TTMUX_PANE`, which every pane has set, the
 way tmux sets `$TMUX_PANE`. So a script that captures or splits "its own"
@@ -115,11 +115,15 @@ ttmux capture-pane -p -S -50
 ### split-window
 
 ```
-ttmux split-window [-t PANE] [-h] [-v]
+ttmux split-window [-t PANE] [-h] [-v] [COMMAND]
 ```
 
 Split a pane in two, and print the new pane's id, such as `%2`. The new
 pane takes the focus. A pane too small to split is an error.
+
+With `COMMAND`, the new pane runs it through your shell with `-c` instead of
+starting an interactive shell, as tmux does. The pane closes when the
+command exits. Put `--` before a command that starts with `-`.
 
 | Flag | Meaning |
 |---|---|
@@ -130,6 +134,7 @@ pane takes the focus. A pane too small to split is an error.
 ```
 ttmux split-window -h
 ttmux split-window -t %1 -v
+ttmux split-window -h 'tail -f log/dev.log'
 ```
 
 ### select-pane
@@ -196,7 +201,7 @@ ttmux swap-pane -s %1 -t %2
 ### join-pane
 
 ```
-ttmux join-pane [-s PANE] [-t N] [-h]
+ttmux join-pane [-s PANE] [-t WINDOW] [-h]
 ```
 
 Move a pane into another window. `move-pane` is another spelling of this
@@ -205,7 +210,7 @@ command.
 | Flag | Meaning |
 |---|---|
 | `-s`, `--source PANE` | the pane to move. Default is the focused one |
-| `-t`, `--target N` | the window to move it into. Default is the current one |
+| `-t`, `--target WINDOW` | the window to move it into, by number or name. Default is the current one |
 | `-h`, `--horizontal` | place it side by side rather than below |
 
 ```
@@ -285,10 +290,11 @@ ttmux list-panes -a --json
 ### new-window
 
 ```
-ttmux new-window [-n NAME]
+ttmux new-window [-n NAME] [COMMAND]
 ```
 
-Open a window, focus it, and print its number.
+Open a window, focus it, and print its number. With `COMMAND`, the window's
+pane runs it instead of a shell, as `split-window` does.
 
 | Flag | Meaning |
 |---|---|
@@ -296,37 +302,39 @@ Open a window, focus it, and print its number.
 
 ```
 ttmux new-window -n logs
+ttmux new-window -n top htop
 ```
 
 ### select-window
 
 ```
-ttmux select-window [-t N] [-n]
+ttmux select-window [-t WINDOW] [-n]
 ```
 
 Focus a window.
 
 | Flag | Meaning |
 |---|---|
-| `-t`, `--target N` | the window to act on, counted from 1. Default is the current one |
+| `-t`, `--target WINDOW` | the window to act on, by number from 1 or by name. Default is the current one |
 | `-n`, `--next` | the next window, `-p` the one before, `-l` the last one |
 
 ```
 ttmux select-window -t 2
+ttmux select-window -t logs
 ttmux select-window -n
 ```
 
 ### rename-window
 
 ```
-ttmux rename-window [-t N] NAME
+ttmux rename-window [-t WINDOW] NAME
 ```
 
 Name a window.
 
 | Flag | Meaning |
 |---|---|
-| `-t`, `--target N` | the window to act on, counted from 1. Default is the current one |
+| `-t`, `--target WINDOW` | the window to act on, by number from 1 or by name. Default is the current one |
 
 ```
 ttmux rename-window build
@@ -335,15 +343,15 @@ ttmux rename-window build
 ### swap-window
 
 ```
-ttmux swap-window [-s N] [-t N]
+ttmux swap-window [-s WINDOW] [-t WINDOW]
 ```
 
 Exchange the places of two windows.
 
 | Flag | Meaning |
 |---|---|
-| `-s`, `--source N` | the window to move. Default is the current one |
-| `-t`, `--target N` | the window to swap it with |
+| `-s`, `--source WINDOW` | the window to move, by number or name. Default is the current one |
+| `-t`, `--target WINDOW` | the window to swap it with |
 
 ```
 ttmux swap-window -s 1 -t 3
@@ -352,14 +360,14 @@ ttmux swap-window -s 1 -t 3
 ### move-window
 
 ```
-ttmux move-window [-s N] [-t N]
+ttmux move-window [-s WINDOW] [-t N]
 ```
 
 Renumber a window, sliding the others along.
 
 | Flag | Meaning |
 |---|---|
-| `-s`, `--source N` | the window to move. Default is the current one |
+| `-s`, `--source WINDOW` | the window to move, by number or name. Default is the current one |
 | `-t`, `--target N` | the position it takes |
 
 ```
@@ -384,14 +392,14 @@ ttmux select-layout main-vertical
 ### kill-window
 
 ```
-ttmux kill-window [-t N]
+ttmux kill-window [-t WINDOW]
 ```
 
 Close a window and every pane in it.
 
 | Flag | Meaning |
 |---|---|
-| `-t`, `--target N` | the window to act on, counted from 1. Default is the current one |
+| `-t`, `--target WINDOW` | the window to act on, by number from 1 or by name. Default is the current one |
 
 ```
 ttmux kill-window -t 2
@@ -552,13 +560,11 @@ ttmux display-message 'build log is in /tmp/build.log'
 #!/bin/sh
 ttmux new-window -n work
 ttmux rename-pane editor
-server=$(ttmux split-window -h)
+server=$(ttmux split-window -h 'npm run dev')
 ttmux rename-pane -t "$server" server
-logs=$(ttmux split-window -v)
+logs=$(ttmux split-window -v 'tail -f log/dev.log')
 ttmux rename-pane -t "$logs" logs
 ttmux select-layout main-vertical
-ttmux send-keys -t "$server" 'npm run dev' Enter
-ttmux send-keys -t "$logs" 'tail -f log/dev.log' Enter
 ttmux select-pane -t "$TTMUX_PANE"
 ```
 
@@ -592,7 +598,7 @@ ttmux select-layout even-horizontal
 ```
 scratch=$(ttmux break-pane -t %3)
 ttmux rename-window -t "$scratch" scratch
-ttmux move-window -s "$scratch" -t 1
+ttmux move-window -s scratch -t 1
 ttmux join-pane -s %3 -t 2
 ttmux select-window -t 2
 ```

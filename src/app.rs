@@ -27,7 +27,7 @@ use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
 use crate::line_edit::{LineEdit, CARET};
 use crate::pty::Pane;
 use crate::render;
-use crate::script::Cmd;
+use crate::script::{Cmd, Win};
 use crate::settings_ui::{Outcome, Settings};
 use crate::status;
 use crate::widget;
@@ -302,7 +302,7 @@ impl App {
         // Not just on reload: a widget that is in the config at startup has
         // to run too.
         app.widgets.reload(&app.cfg.status.widgets);
-        app.new_tab()?;
+        app.new_tab(None)?;
         if first_run {
             app.overlay = Overlay::Welcome(crate::onboarding::Welcome::new());
         }
@@ -420,11 +420,11 @@ impl App {
 
     // ------------------------------------------------------------- panes
 
-    fn spawn_pane(&mut self, cwd: Option<PathBuf>) -> Result<PaneId> {
+    fn spawn_pane(&mut self, cwd: Option<PathBuf>, command: Option<&str>) -> Result<PaneId> {
         let id = self.next_id;
         self.next_id += 1;
         // Real size is pushed by sync_sizes once the layout knows about it.
-        let pane = Pane::spawn(id, &self.cfg, cwd, 80, 24)?;
+        let pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24)?;
         self.slots.insert(
             id,
             Slot {
@@ -443,10 +443,10 @@ impl App {
 
     /// Split the focused pane. `None` when there was no room, which a key
     /// press notes and a script reports as an error.
-    fn split(&mut self, dir: Dir) -> Result<Option<PaneId>> {
+    fn split(&mut self, dir: Dir, command: Option<&str>) -> Result<Option<PaneId>> {
         let cwd = self.focused_cwd();
         let near = self.focus();
-        let id = self.spawn_pane(cwd)?;
+        let id = self.spawn_pane(cwd, command)?;
         let t = self.tab_mut();
         t.layout.set_zoom(None);
         if !t.layout.insert(id, Some(near), Some(dir)) {
@@ -504,13 +504,13 @@ impl App {
 
     // -------------------------------------------------------------- tabs
 
-    fn new_tab(&mut self) -> Result<()> {
+    fn new_tab(&mut self, command: Option<&str>) -> Result<()> {
         let cwd = if self.tabs.is_empty() {
             None
         } else {
             self.focused_cwd()
         };
-        let id = self.spawn_pane(cwd)?;
+        let id = self.spawn_pane(cwd, command)?;
         let mut layout = Layout::new(self.body());
         if self.cfg.general.free_mode {
             layout.set_mode(Mode::Free);
@@ -635,14 +635,18 @@ impl App {
                     _ => text,
                 })
             }
-            Cmd::Split { target, dir } => {
+            Cmd::Split {
+                target,
+                dir,
+                command,
+            } => {
                 let id = self.pane_or_focus(target)?;
                 let tab = self.tab_of(id)?;
                 self.select_tab(tab);
                 self.set_focus(id);
                 // The new pane's id, so a script can target it without a
                 // trip through list-panes.
-                match self.split(dir)? {
+                match self.split(dir, command.as_deref())? {
                     Some(new) => Ok(format!("%{new}")),
                     None => bail!("no room to split %{id}"),
                 }
@@ -691,7 +695,7 @@ impl App {
             } => {
                 let id = self.pane_or_focus(src)?;
                 let to = match window {
-                    Some(n) => self.window_index(n)?,
+                    Some(n) => self.window_index(&n)?,
                     None => self.tab,
                 };
                 self.move_pane_to_tab(id, to, horizontal)?;
@@ -715,8 +719,8 @@ impl App {
                 Ok(String::new())
             }
             Cmd::ListPanes { all, json } => Ok(self.list_panes(all, json)),
-            Cmd::NewWindow { name } => {
-                self.new_tab()?;
+            Cmd::NewWindow { name, command } => {
+                self.new_tab(command.as_deref())?;
                 let i = self.tab;
                 if let Some(name) = name {
                     self.tabs[i].name = name;
@@ -725,13 +729,13 @@ impl App {
                 Ok(format!("{}", i + 1))
             }
             Cmd::SelectWindow(n) => {
-                let i = self.window_index(n)?;
+                let i = self.window_index(&n)?;
                 self.select_tab(i);
                 Ok(String::new())
             }
             Cmd::RenameWindow { target, name } => {
                 let i = match target {
-                    Some(n) => self.window_index(n)?,
+                    Some(n) => self.window_index(&n)?,
                     None => self.tab,
                 };
                 self.tabs[i].name = name;
@@ -740,10 +744,10 @@ impl App {
             }
             Cmd::SwapWindow { src, dst } => {
                 let a = match src {
-                    Some(n) => self.window_index(n)?,
+                    Some(n) => self.window_index(&n)?,
                     None => self.tab,
                 };
-                let b = self.window_index(dst)?;
+                let b = self.window_index(&dst)?;
                 self.tabs.swap(a, b);
                 // The user is still looking at the same panes, so follow the
                 // tab they were on rather than the number it used to have.
@@ -758,10 +762,10 @@ impl App {
             }
             Cmd::MoveWindow { src, dst } => {
                 let from = match src {
-                    Some(n) => self.window_index(n)?,
+                    Some(n) => self.window_index(&n)?,
                     None => self.tab,
                 };
-                let to = self.window_index(dst)?;
+                let to = self.window_index(&dst)?;
                 let t = self.tabs.remove(from);
                 self.tabs.insert(to, t);
                 self.tab = match self.tab {
@@ -784,7 +788,7 @@ impl App {
             }
             Cmd::KillWindow(target) => {
                 let i = match target {
-                    Some(n) => self.window_index(n)?,
+                    Some(n) => self.window_index(&n)?,
                     None => self.tab,
                 };
                 self.close_tab_at(i);
@@ -1079,11 +1083,18 @@ impl App {
     }
 
     /// Windows are numbered from 1 on the status bar, so a script counts
-    /// them the way the screen does.
-    fn window_index(&self, n: usize) -> Result<usize> {
-        match n.checked_sub(1) {
-            Some(i) if i < self.tabs.len() => Ok(i),
-            _ => bail!("no window {n}"),
+    /// them the way the screen does, or names one as `new-window -n` did.
+    fn window_index(&self, w: &Win) -> Result<usize> {
+        match w {
+            Win::Index(n) => match n.checked_sub(1) {
+                Some(i) if i < self.tabs.len() => Ok(i),
+                _ => bail!("no window {n}"),
+            },
+            Win::Name(name) => self
+                .tabs
+                .iter()
+                .position(|t| t.name == *name)
+                .ok_or_else(|| anyhow::anyhow!("no window named {name}")),
         }
     }
 
@@ -1091,7 +1102,7 @@ impl App {
         use Action::*;
         match action {
             Split(d) => {
-                self.split(d)?;
+                self.split(d, None)?;
             }
             ClosePane => {
                 let id = self.focus();
@@ -1194,7 +1205,7 @@ impl App {
                 self.tab_mut().layout.toggle_float(id);
                 self.sync_sizes();
             }
-            NewTab => self.new_tab()?,
+            NewTab => self.new_tab(None)?,
             CloseTab => self.close_tab(),
             NextTab => {
                 let n = (self.tab + 1) % self.tabs.len();
@@ -2639,8 +2650,8 @@ mod tests {
     #[test]
     fn close_pane_finds_the_owning_tab() {
         let mut a = app();
-        a.new_tab().unwrap();
-        a.new_tab().unwrap();
+        a.new_tab(None).unwrap();
+        a.new_tab(None).unwrap();
         let tab0_pane = a.tabs[0].layout.ids()[0];
         let tab1_pane = a.tabs[1].layout.ids()[0];
         a.select_tab(0);
@@ -2666,7 +2677,7 @@ mod tests {
     fn moving_focus_off_a_zoomed_pane_unzooms() {
         let mut a = app();
         let first = a.focus();
-        a.split(Dir::Right).unwrap();
+        a.split(Dir::Right, None).unwrap();
         let second = a.focus();
         assert_ne!(first, second);
 

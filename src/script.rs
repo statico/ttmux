@@ -94,8 +94,8 @@ const TARGET_PANE: Flag = Flag {
 const TARGET_WINDOW: Flag = Flag {
     short: Some("-t"),
     long: "--target",
-    arg: Some("N"),
-    about: "the window to act on, counted from 1; default the current one",
+    arg: Some("WINDOW"),
+    about: "the window to act on, by number from 1 or by name; default the current one",
 };
 
 const JSON: Flag = Flag {
@@ -156,8 +156,8 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         name: "split-window",
         group: "panes",
-        about: "split a pane in two",
-        args: "",
+        about: "split a pane in two, running COMMAND or a shell in the new one",
+        args: "[COMMAND]",
         flags: &[
             TARGET_PANE,
             Flag {
@@ -173,7 +173,11 @@ pub const COMMANDS: &[Spec] = &[
                 about: "one above the other, the default as in tmux",
             },
         ],
-        examples: &["ttmux split-window -h", "ttmux split-window -t %1 -v"],
+        examples: &[
+            "ttmux split-window -h",
+            "ttmux split-window -t %1 -v",
+            "ttmux split-window -h 'tail -f log/dev.log'",
+        ],
     },
     Spec {
         name: "select-pane",
@@ -255,8 +259,8 @@ pub const COMMANDS: &[Spec] = &[
             Flag {
                 short: Some("-t"),
                 long: "--target",
-                arg: Some("N"),
-                about: "the window to move it into; default the current one",
+                arg: Some("WINDOW"),
+                about: "the window to move it into, by number or name; default the current one",
             },
             Flag {
                 short: Some("-h"),
@@ -310,15 +314,15 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         name: "new-window",
         group: "windows",
-        about: "open a window",
-        args: "",
+        about: "open a window, running COMMAND or a shell in it",
+        args: "[COMMAND]",
         flags: &[Flag {
             short: Some("-n"),
             long: "--name",
             arg: Some("NAME"),
             about: "name it as it is created",
         }],
-        examples: &["ttmux new-window -n logs"],
+        examples: &["ttmux new-window -n logs", "ttmux new-window -n top htop"],
     },
     Spec {
         name: "select-window",
@@ -353,13 +357,13 @@ pub const COMMANDS: &[Spec] = &[
             Flag {
                 short: Some("-s"),
                 long: "--source",
-                arg: Some("N"),
-                about: "the window to move; default the current one",
+                arg: Some("WINDOW"),
+                about: "the window to move, by number or name; default the current one",
             },
             Flag {
                 short: Some("-t"),
                 long: "--target",
-                arg: Some("N"),
+                arg: Some("WINDOW"),
                 about: "the window to swap it with",
             },
         ],
@@ -374,8 +378,8 @@ pub const COMMANDS: &[Spec] = &[
             Flag {
                 short: Some("-s"),
                 long: "--source",
-                arg: Some("N"),
-                about: "the window to move; default the current one",
+                arg: Some("WINDOW"),
+                about: "the window to move, by number or name; default the current one",
             },
             Flag {
                 short: Some("-t"),
@@ -644,6 +648,14 @@ pub fn commands_json() -> String {
 
 // ----------------------------------------------------------------- parsing
 
+/// A window as a script names it: `-t 2` or `-t logs`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Win {
+    /// Counted from 1, as the status bar shows.
+    Index(usize),
+    Name(String),
+}
+
 /// One scripted command, already parsed and checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cmd {
@@ -662,6 +674,8 @@ pub enum Cmd {
     Split {
         target: Option<PaneId>,
         dir: Dir,
+        /// Run this through the shell instead of starting an interactive one.
+        command: Option<String>,
     },
     SelectPane(PaneId),
     /// Zoom a pane, which is a resize to the whole window.
@@ -679,7 +693,7 @@ pub enum Cmd {
     },
     JoinPane {
         src: Option<PaneId>,
-        window: Option<usize>,
+        window: Option<Win>,
         horizontal: bool,
     },
     BreakPane(Option<PaneId>),
@@ -694,21 +708,22 @@ pub enum Cmd {
     },
     NewWindow {
         name: Option<String>,
+        command: Option<String>,
     },
-    SelectWindow(usize),
+    SelectWindow(Win),
     RenameWindow {
-        target: Option<usize>,
+        target: Option<Win>,
         name: String,
     },
     SwapWindow {
-        src: Option<usize>,
-        dst: usize,
+        src: Option<Win>,
+        dst: Win,
     },
     MoveWindow {
-        src: Option<usize>,
-        dst: usize,
+        src: Option<Win>,
+        dst: Win,
     },
-    KillWindow(Option<usize>),
+    KillWindow(Option<Win>),
     ListWindows {
         json: bool,
     },
@@ -817,8 +832,11 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
                 a.flag(&["-v", "--vertical"]);
                 Dir::Down
             };
-            a.end(verb)?;
-            Cmd::Split { target, dir }
+            Cmd::Split {
+                target,
+                dir,
+                command: a.command(verb)?,
+            }
         }
         "select-pane" => {
             let dir = a.direction();
@@ -898,8 +916,10 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "new-window" => {
             let name = a.value(&["-n", "--name"])?;
-            a.end(verb)?;
-            Cmd::NewWindow { name }
+            Cmd::NewWindow {
+                name,
+                command: a.command(verb)?,
+            }
         }
         "select-window" => {
             if a.flag(&["-n", "--next"]) {
@@ -1108,19 +1128,35 @@ impl Args {
         }
     }
 
-    /// `-t 2`: a window, counted from 1 as the status bar counts them.
-    fn window_target(&mut self) -> Result<Option<usize>> {
+    /// `-t 2` or `-t logs`: a window by number, counted from 1 as the status
+    /// bar counts them, or by name.
+    fn window_target(&mut self) -> Result<Option<Win>> {
         self.window_value(&["-t", "--target"])
     }
 
-    fn window_value(&mut self, names: &[&str]) -> Result<Option<usize>> {
+    fn window_value(&mut self, names: &[&str]) -> Result<Option<Win>> {
         let Some(v) = self.value(names)? else {
             return Ok(None);
         };
-        match v.parse() {
-            Ok(n) if n >= 1 => Ok(Some(n)),
-            _ => bail!("not a window number: {v}"),
+        Ok(Some(match v.parse() {
+            Ok(n) if n >= 1 => Win::Index(n),
+            Ok(_) => bail!("not a window number: {v}"),
+            Err(_) => Win::Name(v),
+        }))
+    }
+
+    /// The rest of the line as one shell command, or nothing. A leftover
+    /// flag is a typo, not a program called `-x`; `--` lets one through.
+    fn command(mut self, verb: &str) -> Result<Option<String>> {
+        match self.words.first().map(String::as_str) {
+            Some("--") => {
+                self.words.remove(0);
+            }
+            Some(w) if w.starts_with('-') => bail!("{verb}: unexpected argument {w}"),
+            _ => {}
         }
+        let c = self.joined();
+        Ok((!c.is_empty()).then_some(c))
     }
 
     fn direction(&mut self) -> Option<Dir> {
@@ -1262,14 +1298,16 @@ mod tests {
             parsed("split-window"),
             Cmd::Split {
                 target: None,
-                dir: Dir::Down
+                dir: Dir::Down,
+                command: None,
             }
         );
         assert_eq!(
             parsed("split-window -h"),
             Cmd::Split {
                 target: None,
-                dir: Dir::Right
+                dir: Dir::Right,
+                command: None,
             }
         );
     }
@@ -1320,7 +1358,7 @@ mod tests {
             parsed("join-pane -s %4 -t 2 -h"),
             Cmd::JoinPane {
                 src: Some(4),
-                window: Some(2),
+                window: Some(Win::Index(2)),
                 horizontal: true
             }
         );
@@ -1345,13 +1383,16 @@ mod tests {
         assert_eq!(
             parsed("swap-window -s 1 -t 3"),
             Cmd::SwapWindow {
-                src: Some(1),
-                dst: 3
+                src: Some(Win::Index(1)),
+                dst: Win::Index(3)
             }
         );
         assert_eq!(
             parsed("move-window -t 1"),
-            Cmd::MoveWindow { src: None, dst: 1 }
+            Cmd::MoveWindow {
+                src: None,
+                dst: Win::Index(1)
+            }
         );
         assert!(fails("move-window -s 2"));
     }
@@ -1400,7 +1441,7 @@ mod tests {
         assert_eq!(
             parsed("rename-window -t 2 build and test"),
             Cmd::RenameWindow {
-                target: Some(2),
+                target: Some(Win::Index(2)),
                 name: "build and test".into(),
             }
         );
@@ -1415,7 +1456,6 @@ mod tests {
     #[test]
     fn a_bad_target_is_an_error_rather_than_pane_zero() {
         assert!(fails("kill-pane -t nope"));
-        assert!(fails("select-window -t 0"));
     }
 
     #[test]
@@ -1450,6 +1490,42 @@ mod tests {
         };
         assert_eq!(keys.len(), "--json".len());
         assert!(parse("kill-pane", &split("--json")).is_err());
+    }
+
+    #[test]
+    fn a_window_is_named_by_number_or_by_name() {
+        assert_eq!(
+            parsed("select-window -t 2"),
+            Cmd::SelectWindow(Win::Index(2))
+        );
+        assert_eq!(
+            parsed("select-window -t logs"),
+            Cmd::SelectWindow(Win::Name("logs".into()))
+        );
+        // Windows count from 1, so 0 is a mistake rather than a name.
+        assert!(fails("kill-window -t 0"));
+    }
+
+    #[test]
+    fn a_new_pane_or_window_can_run_a_command() {
+        let split = |line: &str| match parsed(line) {
+            Cmd::Split { command, .. } => command,
+            _ => panic!("not split-window"),
+        };
+        assert_eq!(split("split-window -h"), None);
+        assert_eq!(
+            split("split-window -h tail -f x.log"),
+            Some("tail -f x.log".into())
+        );
+        assert_eq!(split("split-window -- -weird"), Some("-weird".into()));
+        assert!(fails("split-window -x"));
+        assert_eq!(
+            parsed("new-window -n top htop"),
+            Cmd::NewWindow {
+                name: Some("top".into()),
+                command: Some("htop".into())
+            }
+        );
     }
 
     #[test]

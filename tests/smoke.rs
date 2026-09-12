@@ -426,6 +426,16 @@ fn a_script_types_into_a_pane_and_lists_what_it_finds() {
     assert!(ok);
     h.wait_for("the new window name", |s| s.contains("scripted"));
 
+    // A command runs in the new pane instead of a shell, and a window is
+    // reachable by the name it was given.
+    let (ok, out) = run(&h, &["split-window", "-h", "echo cmd-ran; sleep 30"]);
+    assert!(ok && out == "%3", "{out:?}");
+    h.wait_for("the command's output", |s| s.contains("cmd-ran"));
+    let (ok, _) = run(&h, &["select-window", "-t", "scripted"]);
+    assert!(ok);
+    let (ok, _) = run(&h, &["select-window", "-t", "nope"]);
+    assert!(!ok);
+
     // A target that is not there is an error, not a silent hit on another
     // pane.
     let (ok, _) = run(&h, &["send-keys", "-t", "%99", "x"]);
