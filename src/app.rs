@@ -2306,16 +2306,40 @@ pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config
     }
 
     if !hint.is_empty() && inner.h < modal_box(rect).h {
-        crate::settings_ui::put(
-            buf,
-            inner.x,
-            inner.bottom(),
-            hint,
-            inner.w,
-            Style::default().bg(bg).fg(fg).add_modifier(Modifier::DIM),
-        );
+        let dim = Style::default().bg(bg).fg(fg).add_modifier(Modifier::DIM);
+        let key = Style::default()
+            .bg(bg)
+            .fg(cfg.status.accent.into())
+            .add_modifier(Modifier::BOLD);
+        let mut x = inner.x;
+        for (i, (k, rest)) in hint_parts(hint).into_iter().enumerate() {
+            let gap = if i == 0 { "" } else { "   " };
+            for (text, style) in [(gap, dim), (k, key), (rest, dim)] {
+                let room = inner.right().saturating_sub(x);
+                crate::settings_ui::put(buf, x, inner.bottom(), text, room, style);
+                x = x.saturating_add(text.chars().count() as u16);
+            }
+        }
     }
     inner
+}
+
+/// A hint split into its phrases, each as (key, the rest): "Esc to close"
+/// gives ("Esc", " to close"), so the keys can be lit like a keycap legend.
+/// A phrase that is all words, like "any other key cancels", has no key.
+fn hint_parts(hint: &str) -> Vec<(&str, &str)> {
+    hint.split(", ")
+        .map(|p| match p.split_once(" to ") {
+            Some((k, _))
+                if !k
+                    .split_whitespace()
+                    .any(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_lowercase())) =>
+            {
+                (k, &p[k.len()..])
+            }
+            _ => ("", p),
+        })
+        .collect()
 }
 
 fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
@@ -2324,25 +2348,31 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
     // rather than quietly hiding the bindings past the bottom.
     let rows = modal_content(rect).h as usize;
     let hint = format!(
-        "{}-{} of {} — up and down scroll, any other key closes.",
+        "↑↓ to scroll, any other key closes, {}–{} of {}",
         (scroll + 1).min(map.len()),
         (scroll + rows).min(map.len()),
         map.len()
     );
     let inner = modal(buf, rect, "Help", &hint, cfg);
-    let style = Style::default().fg(cfg.status.fg.into());
-    let accent = Style::default().fg(cfg.status.accent.into());
+    let bg = Style::default().bg(modal_bg(cfg));
+    let style = bg.fg(cfg.status.fg.into());
+    let accent = bg.fg(cfg.status.accent.into()).add_modifier(Modifier::BOLD);
+    // Keys right-aligned against the actions, as in the which-key popup, so
+    // both columns read from the same edge.
+    const KEYS: usize = 20;
     for (i, (binding, action)) in map.iter().skip(scroll).enumerate() {
         let y = inner.y + i as u16;
         if y >= inner.y + inner.h {
             break;
         }
-        buf.set_stringn(inner.x, y, binding.to_string(), 22, accent);
-        buf.set_stringn(
-            inner.x + 24,
+        let b = format!("{:>KEYS$}", binding.to_string());
+        crate::settings_ui::put(buf, inner.x, y, &b, inner.w, accent);
+        crate::settings_ui::put(
+            buf,
+            inner.x + KEYS as u16 + 3,
             y,
-            action.to_string(),
-            inner.w.saturating_sub(24) as usize,
+            &action.to_string(),
+            inner.w.saturating_sub(KEYS as u16 + 3),
             style,
         );
     }
@@ -2359,7 +2389,7 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg:
         buf,
         rect,
         "Commands",
-        "Type to filter, ↑↓ to select, Enter to run, Esc to cancel",
+        "type to filter, ↑↓ to select, Enter to run, Esc to cancel",
         cfg,
     );
     let style = Style::default().fg(cfg.status.fg.into());
