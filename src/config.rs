@@ -278,6 +278,8 @@ pub enum BorderStyle {
     Heavy,
     Double,
     Dashed,
+    /// One shared line between panes, like tmux: no box, no corners.
+    Divider,
     None,
 }
 

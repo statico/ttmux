@@ -35,7 +35,9 @@ pub const SECTIONS: &[&str] = &["General", "Appearance", "Status bar", "Agents",
 /// Index of the (dynamic) key-bindings section.
 const KEYS: usize = 4;
 
-const BORDER_STYLES: &[&str] = &["curved", "square", "heavy", "double", "dashed", "none"];
+const BORDER_STYLES: &[&str] = &[
+    "curved", "square", "heavy", "double", "dashed", "divider", "none",
+];
 const TITLE_POSITIONS: &[&str] = &["top", "bottom", "hidden"];
 const EFFECTS: &[&str] = &["flat", "starfield", "gradient"];
 const KEYS_PRESETS: &[&str] = &["vim", "tmux", "screen"];
@@ -112,6 +114,7 @@ fn border_style_name(s: BorderStyle) -> &'static str {
         BorderStyle::Heavy => "heavy",
         BorderStyle::Double => "double",
         BorderStyle::Dashed => "dashed",
+        BorderStyle::Divider => "divider",
         BorderStyle::None => "none",
     }
 }
@@ -291,6 +294,7 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
                 "heavy" => BorderStyle::Heavy,
                 "double" => BorderStyle::Double,
                 "dashed" => BorderStyle::Dashed,
+                "divider" => BorderStyle::Divider,
                 "none" => BorderStyle::None,
                 other => return Err(format!("unknown border style: {other}")),
             }
@@ -1059,7 +1063,7 @@ mod tests {
     fn choice_cycles_and_wraps() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         goto(&mut s, &cfg, 1, "border-style");
-        let seen: Vec<BorderStyle> = (0..5)
+        let seen: Vec<BorderStyle> = (0..6)
             .map(|_| {
                 s.on_key(k(KeyCode::Right), &mut cfg);
                 cfg.appearance.border_style
@@ -1072,6 +1076,7 @@ mod tests {
                 BorderStyle::Heavy,
                 BorderStyle::Double,
                 BorderStyle::Dashed,
+                BorderStyle::Divider,
                 BorderStyle::None,
             ]
         );

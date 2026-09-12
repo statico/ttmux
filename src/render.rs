@@ -44,6 +44,8 @@ pub fn frame_chars(style: BorderStyle) -> Frame {
         BorderStyle::Heavy => ('┏', '┓', '┗', '┛', '━', '┃'),
         BorderStyle::Double => ('╔', '╗', '╚', '╝', '═', '║'),
         BorderStyle::Dashed => ('╭', '╮', '╰', '╯', '┄', '┆'),
+        // A divider has no corners: only the two shared lines are drawn.
+        BorderStyle::Divider => (' ', ' ', ' ', ' ', '─', '│'),
         BorderStyle::None => (' ', ' ', ' ', ' ', ' ', ' '),
     };
     Frame {
@@ -57,6 +59,58 @@ pub fn frame_chars(style: BorderStyle) -> Frame {
 }
 
 const ZOOM: &str = " ⛶ ";
+
+/// How a border is painted: alert beats focus, and focus is also bold.
+fn border_style(focused: bool, alert: bool, cfg: &Appearance) -> Style {
+    let colour = if alert {
+        cfg.border_alert
+    } else if focused {
+        cfg.border_focused
+    } else {
+        cfg.border
+    };
+    let style = Style::new().fg(colour.into());
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
+}
+
+/// Draw the lines a pane shares with its neighbours, on its own left and top
+/// edges. Each divider belongs to one pane, so two panes side by side have a
+/// single line between them, as tmux does.
+pub fn draw_divider(
+    buf: &mut Buffer,
+    rect: Rect,
+    left: bool,
+    top: bool,
+    focused: bool,
+    alert: bool,
+    cfg: &Appearance,
+) {
+    let style = border_style(focused, alert, cfg);
+    let f = frame_chars(BorderStyle::Divider);
+    if left {
+        for y in rect.y..rect.bottom() {
+            join(buf, rect.x, y, f.v, style);
+        }
+    }
+    if top {
+        for x in rect.x..rect.right() {
+            join(buf, x, rect.y, f.h, style);
+        }
+    }
+}
+
+/// Write a divider cell, crossing whatever line is already there. Without it
+/// a T-junction between three panes is whichever pane drew last.
+fn join(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
+    let crossed = buf
+        .cell((x, y))
+        .is_some_and(|c| matches!(c.symbol(), "─" | "│" | "┼") && c.symbol() != ch.to_string());
+    put(buf, x, y, if crossed { '┼' } else { ch }, style);
+}
 
 fn put(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
     put_cell(buf, x, y, ch.encode_utf8(&mut [0u8; 4]), style);
@@ -115,24 +169,14 @@ pub fn draw_border(
     // Against `right()`/`bottom()` rather than `w`/`h`: both saturate, so a
     // rect starting near u16::MAX has less usable width than it claims, and
     // the corner arithmetic below would wrap.
-    if cfg.border_style == BorderStyle::None
+    if matches!(cfg.border_style, BorderStyle::None | BorderStyle::Divider)
         || rect.right() - rect.x < 2
         || rect.bottom() - rect.y < 2
     {
         return;
     }
     let f = frame_chars(cfg.border_style);
-    let colour = if alert {
-        cfg.border_alert
-    } else if focused {
-        cfg.border_focused
-    } else {
-        cfg.border
-    };
-    let mut style = Style::new().fg(colour.into());
-    if focused {
-        style = style.add_modifier(Modifier::BOLD);
-    }
+    let style = border_style(focused, alert, cfg);
 
     let (x0, y0) = (rect.x, rect.y);
     let (x1, y1) = (rect.right() - 1, rect.bottom() - 1);
