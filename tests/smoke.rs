@@ -473,9 +473,9 @@ fn a_pane_honours_hvp_cursor_positioning() {
     let at = |row: &str, col: usize, s: &str| {
         row.chars().skip(col).take(s.chars().count()).eq(s.chars())
     };
-    for i in 3..=6usize {
+    for (i, line) in lines.iter().enumerate().take(7).skip(3) {
         assert!(
-            at(&lines[i], 3, &format!("R{i}")),
+            at(line, 3, &format!("R{i}")),
             "row {i} did not land at column 3:\n{}",
             h.screen()
         );
