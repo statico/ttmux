@@ -134,7 +134,7 @@ fn the_help_overlay_opens_and_closes() {
     });
 
     h.send(b"\x1b"); // any key closes it
-    h.wait_for("help to close", |s| !s.contains("toggle-layout-mode"));
+    h.wait_for("help to close", |s| !s.contains("toggle-float"));
 }
 
 #[test]
@@ -329,5 +329,41 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
             hits.trim()
         );
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_help_overlay_hides_the_pane_behind_it() {
+    // The real end-to-end check for bleed-through: fill the pane with a
+    // distinctive word, open help over it, and require that word to be gone
+    // from every row the overlay covers.
+    let marker = "BLEEDMARKER";
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(format!("for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo {marker}; done\n").as_bytes());
+    h.wait_for("the pane to fill", |s| s.matches(marker).count() >= 12);
+
+    h.send(b"\x14?"); // ctrl+t ?
+    h.wait_for("the help overlay", |s| s.contains("toggle-float"));
+
+    // Only assert on the rows the overlay actually covers: from its title row
+    // to its bottom border. Outside that the pane is supposed to show.
+    let lines: Vec<String> = h.screen().lines().map(str::to_string).collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains("help"))
+        .expect("overlay title row");
+    let bottom = lines[top..]
+        .iter()
+        .position(|l| l.contains('╰'))
+        .expect("overlay bottom border")
+        + top;
+    assert!(bottom > top + 2, "overlay looks too small to test");
+    for (y, line) in lines.iter().enumerate().take(bottom + 1).skip(top) {
+        let covered: String = line.chars().skip(6).take(68).collect();
+        assert!(
+            !covered.contains(marker),
+            "help let the pane through on row {y}: {line:?}"
+        );
     }
 }

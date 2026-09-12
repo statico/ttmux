@@ -83,7 +83,11 @@ pub fn draw(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, ctx: &Ctx) -> Vec<(us
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
             if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol(" ").set_style(base);
+                // Reset first: `set_style` merges modifiers, so a bar drawn
+                // over a pane would keep its underline or inverse.
+                cell.reset();
+                cell.set_symbol(" ");
+                cell.set_style(base);
             }
         }
     }

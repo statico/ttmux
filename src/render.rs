@@ -22,6 +22,20 @@ pub struct Frame {
 }
 
 /// Glyphs for a border style. `None` yields spaces so callers never get junk.
+/// Write a cell from scratch.
+///
+/// `Cell::set_style` *merges* modifiers into whatever the cell already holds
+/// and leaves its underline colour alone, so painting a pane over another one
+/// inherits its underline, bold or inverse. Resetting first is what makes a
+/// float opaque.
+fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+    if let Some(cell) = buf.cell_mut((x, y)) {
+        cell.reset();
+        cell.set_symbol(symbol);
+        cell.set_style(style);
+    }
+}
+
 pub fn frame_chars(style: BorderStyle) -> Frame {
     let (tl, tr, bl, br, h, v) = match style {
         BorderStyle::Curved => ('╭', '╮', '╰', '╯', '─', '│'),
@@ -45,10 +59,7 @@ pub fn frame_chars(style: BorderStyle) -> Frame {
 const ZOOM: &str = " ⛶ ";
 
 fn put(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
-    if let Some(cell) = buf.cell_mut((x, y)) {
-        cell.set_char(ch);
-        cell.set_style(style);
-    }
+    put_cell(buf, x, y, ch.encode_utf8(&mut [0u8; 4]), style);
 }
 
 /// Write `s` at `(x, y)`, honouring wide characters. Returns the width used.
@@ -61,10 +72,7 @@ fn put_str(buf: &mut Buffer, x: u16, y: u16, s: &str, style: Style) -> u16 {
         }
         put(buf, cx, y, ch, style);
         if w == 2 {
-            if let Some(cell) = buf.cell_mut((cx.saturating_add(1), y)) {
-                cell.set_symbol("");
-                cell.set_style(style);
-            }
+            put_cell(buf, cx.saturating_add(1), y, "", style);
         }
         cx = cx.saturating_add(w);
     }
@@ -196,20 +204,10 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
             let text = vc.contents();
             let w = text.width().max(1) as u16;
             let (x, y) = (rect.x + col, rect.y + row);
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                if text.is_empty() {
-                    cell.set_symbol(" ");
-                } else {
-                    cell.set_symbol(text);
-                }
-                cell.set_style(style);
-            }
+            put_cell(buf, x, y, if text.is_empty() { " " } else { text }, style);
             if w == 2 {
                 if col + 1 < rect.w {
-                    if let Some(cell) = buf.cell_mut((x + 1, y)) {
-                        cell.set_symbol("");
-                        cell.set_style(style);
-                    }
+                    put_cell(buf, x + 1, y, "", style);
                 }
                 col += 2;
             } else {
@@ -219,7 +217,6 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
     }
 }
 
-/// Darken the L-shaped band one cell right of and below `rect`.
 /// Blank a rect and give it a style. An overlay is drawn on top of panes that
 /// are already in the buffer, and `Buffer::set_style` restyles cells without
 /// replacing their symbols, so anything that does not clear first shows the
@@ -227,13 +224,12 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
 pub fn clear(buf: &mut Buffer, rect: Rect, style: Style) {
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol(" ").set_style(style);
-            }
+            put_cell(buf, x, y, " ", style);
         }
     }
 }
 
+/// Darken the L-shaped band one cell right of and below `rect`.
 pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
     if rect.w == 0 || rect.h == 0 {
         return;
@@ -257,6 +253,67 @@ pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every cell in `rect`, with `X` under a full house of attributes: what a
+    /// pane running `ls` with an underlined filename leaves in the buffer.
+    fn dirty(w: u16, h: u16) -> Buffer {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h));
+        let loud = Style::new()
+            .fg(Color::Red)
+            .bg(Color::Green)
+            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD | Modifier::REVERSED);
+        for y in 0..h {
+            for x in 0..w {
+                let cell = buf.cell_mut((x, y)).unwrap();
+                cell.set_symbol("X");
+                cell.set_style(loud);
+            }
+        }
+        buf
+    }
+
+    #[test]
+    fn painting_over_a_pane_does_not_inherit_its_attributes() {
+        // `Cell::set_style` merges modifiers rather than replacing them, so a
+        // float drawn over an underlined `ls` listing used to keep the
+        // underline. Anything that paints a cell has to reset it first.
+        let mut buf = dirty(20, 6);
+        let rect = Rect::new(4, 1, 12, 4);
+        let cfg = Appearance::default();
+        let parser = vt100::Parser::new(2, 10, 0);
+        draw_border(&mut buf, rect, "float", true, false, false, &cfg);
+        draw_screen(&mut buf, rect.shrink(1), parser.screen(), false);
+
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                let cell = buf.cell((x, y)).unwrap();
+                assert!(
+                    !cell.modifier.contains(Modifier::UNDERLINED)
+                        && !cell.modifier.contains(Modifier::REVERSED),
+                    "stale attributes at {x},{y}: {:?}",
+                    cell.modifier
+                );
+                assert_ne!(cell.symbol(), "X", "pane text left at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn clear_wipes_attributes_too() {
+        let mut buf = dirty(8, 3);
+        clear(
+            &mut buf,
+            Rect::new(0, 0, 8, 3),
+            Style::new().bg(Color::Black),
+        );
+        for y in 0..3 {
+            for x in 0..8 {
+                let cell = buf.cell((x, y)).unwrap();
+                assert_eq!(cell.modifier, Modifier::empty());
+                assert_eq!(cell.symbol(), " ");
+            }
+        }
+    }
     use super::*;
 
     fn buffer(w: u16, h: u16) -> Buffer {

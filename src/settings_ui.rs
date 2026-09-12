@@ -883,6 +883,7 @@ fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max: u16, style: Style) {
         }
         if cx >= a.x {
             if let Some(cell) = buf.cell_mut((cx, y)) {
+                cell.reset();
                 cell.set_char(ch);
                 cell.set_style(style);
             }
