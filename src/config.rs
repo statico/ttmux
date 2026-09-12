@@ -1,7 +1,10 @@
 //! Configuration: TOML on disk, fully editable from inside the UI.
 //!
 //! Everything here must round-trip: the settings UI mutates a `Config` and
-//! writes it straight back out, so serde field names double as UI labels.
+//! writes it straight back out. The settings UI labels its rows with these
+//! same kebab-case names, but spells them out by hand rather than deriving
+//! them, so renaming a field here means renaming it there too;
+//! `settings_ui::every_config_key_has_a_row` is what catches the miss.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -28,8 +31,9 @@ impl Chord {
 
     /// Normalise an incoming key event so it compares equal to a parsed chord.
     ///
-    /// Terminals report `shift+a` as `A` with the shift bit set; we fold that
-    /// into the bare character so `a` and `A` are distinct but unambiguous.
+    /// Terminals report `shift+a` as `A` with the shift bit set. Folding the
+    /// case back out keeps one spelling for the chord, so a config that says
+    /// `shift+a` matches whichever form the terminal sends.
     pub fn from_event(ev: KeyEvent) -> Self {
         let mut mods = ev.modifiers;
         let code = match ev.code {
@@ -39,7 +43,6 @@ impl Chord {
             }
             other => other,
         };
-        mods.remove(KeyModifiers::NONE);
         Self { code, mods }
     }
 }
@@ -387,8 +390,13 @@ pub struct Bar {
     pub right: Vec<String>,
 }
 
-/// Same shape, every field optional: a partial `[status.header]` table must
-/// fall back to *that row's* defaults, not to an empty bar.
+// Header and footer are the same type with *different* defaults, which serde
+// cannot express: `#[serde(default)]` on `Bar` can only name one `Default`, so
+// `[status.header] enabled = true` would silently blank the other three
+// fields. Deserializing an all-optional twin and laying it over that row's own
+// defaults is the only way to keep a partial table partial. Do not collapse
+// this into a plain `#[serde(default)]` — `partial_status_fills_in_defaults`
+// is the test that catches it.
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
 struct BarPatch {
@@ -436,11 +444,11 @@ fn de_footer<'de, D: Deserializer<'de>>(d: D) -> Result<Bar, D::Error> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct StatusBar {
-    /// Drawn on the top row.
-    #[serde(default = "default_header", deserialize_with = "de_header")]
+    /// Drawn on the top row. Independent of `footer`: either, neither or both.
+    #[serde(deserialize_with = "de_header")]
     pub header: Bar,
     /// Drawn on the bottom row.
-    #[serde(default = "default_footer", deserialize_with = "de_footer")]
+    #[serde(deserialize_with = "de_footer")]
     pub footer: Bar,
     pub bg: Rgb,
     pub fg: Rgb,
@@ -553,9 +561,8 @@ fn direct_keys() -> Vec<(&'static str, &'static str)> {
 /// prefixed bindings.
 pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
     let prefixed: &[(&str, &str)] = match p {
-        // Leader is ctrl+t; the pane keys follow vim's window commands (and
-        // the user's own ~/.tmux.conf), with the tmux spellings kept as
-        // aliases so the old muscle memory still lands.
+        // Leader is ctrl+t; the pane keys follow vim's window commands, with
+        // the tmux spellings kept as aliases so old muscle memory still lands.
         KeysPreset::Vim => &[
             ("ctrl+t s", "split down"),
             ("ctrl+t v", "split right"),
@@ -585,21 +592,25 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+t p", "prev-tab"),
             ("ctrl+t &", "close-tab"),
             ("ctrl+t ctrl+t", "last-tab"),
-            // `select-layout tiled` in their config; we have no grid preset,
-            // and even-horizontal is the nearest "make it all equal".
+            // tmux's `select-layout tiled`. There is no grid preset here, and
+            // even-horizontal is the nearest "make it all equal".
             ("ctrl+t =", "set-preset even-horizontal"),
             ("ctrl+t shift+a", "rename-tab"),
             ("ctrl+t [", "scroll-up 10"),
-            // choose-tree / choose-window in their tmux config; the palette is
-            // the nearest thing we have to a chooser.
+            // tmux's choose-tree / choose-window; the palette is the nearest
+            // chooser ttmux has.
             ("ctrl+t ;", "command-palette"),
             ("ctrl+t \"", "command-palette"),
-            // `Escape` is copy-mode for them; we only have scrollback.
+            // `esc` is copy-mode in tmux; scrollback is the closest analogue.
             ("ctrl+t esc", "scroll-up 10"),
             ("ctrl+t ?", "help"),
             ("ctrl+t ,", "settings"),
             ("ctrl+t r", "reload-config"),
             ("ctrl+t shift+q", "quit"),
+            // tmux is `prefix d`; `prefix C-d` is common enough in the wild
+            // that both spellings are bound.
+            ("ctrl+t d", "detach"),
+            ("ctrl+t ctrl+d", "detach"),
         ],
         KeysPreset::Tmux => &[
             ("ctrl+b \"", "split down"),
@@ -619,6 +630,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b ?", "help"),
             ("ctrl+b space", "next-preset"),
             ("ctrl+b [", "scroll-up 10"),
+            ("ctrl+b d", "detach"),
         ],
         KeysPreset::Screen => &[
             ("ctrl+a |", "split right"),
@@ -631,6 +643,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a shift+k", "close-pane"),
             ("ctrl+a ?", "help"),
             ("ctrl+a esc", "scroll-up 10"),
+            ("ctrl+a d", "detach"),
         ],
     };
     direct_keys()
@@ -821,16 +834,83 @@ mod tests {
     }
 
     #[test]
-    fn saves_and_loads_from_disk() {
+    fn save_creates_missing_directories_and_load_reads_it_back() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("sub/ttmux.toml");
         let mut c = Config::default();
         c.general.scrollback = 42;
         c.save(&p).unwrap();
         assert_eq!(Config::load(&p).unwrap(), c);
+    }
+
+    #[test]
+    fn load_of_a_missing_file_is_the_default_config() {
+        let dir = tempfile::tempdir().unwrap();
         assert_eq!(
             Config::load(&dir.path().join("missing.toml")).unwrap(),
             Config::default()
         );
+    }
+
+    #[test]
+    fn save_then_load_preserves_every_non_default_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ttmux.toml");
+        let mut c = Config::default();
+        c.general.shell = "/bin/zsh".into();
+        c.general.shell_args = vec!["-l".into()];
+        c.general.mouse = false;
+        c.general.scrollback = 7;
+        c.general.free_mode = true;
+        c.general.focus_follows_mouse = true;
+        c.general.passthrough_images = false;
+        c.general.prefix_timeout_ms = 250;
+        c.general.keys_preset = KeysPreset::Screen;
+        c.appearance.border_style = BorderStyle::None;
+        c.appearance.border = rgb("#010203");
+        c.appearance.border_focused = Rgb(Color::Reset);
+        c.appearance.border_alert = rgb("#0f0f0f");
+        c.appearance.title_position = TitlePosition::Hidden;
+        c.appearance.dim_unfocused = true;
+        c.appearance.gap = 3;
+        c.appearance.float_shadow = false;
+        c.status.header = Bar {
+            enabled: true,
+            left: vec!["time".into()],
+            center: vec![],
+            right: vec!["host".into(), "session".into()],
+        };
+        c.status.footer = Bar::default();
+        c.status.bg = rgb("#000000");
+        c.status.fg = rgb("#ffffff");
+        c.status.accent = Rgb(Color::Indexed(9));
+        c.status.separator = " ~ ".into();
+        c.status.time_format = "%Y-%m-%d".into();
+        c.status.effect = BarEffect::Starfield;
+        c.agents.enabled = false;
+        c.agents.bell_on_attention = false;
+        c.agents.attention_patterns = vec!["?".into()];
+        c.agents.busy_patterns = vec![];
+        c.agents.done_patterns = vec!["done".into()];
+        c.keys.insert("ctrl+t z".into(), "quit".into());
+        c.keys.insert("ctrl+t x".into(), "none".into());
+
+        c.save(&p).unwrap();
+        assert_eq!(Config::load(&p).unwrap(), c);
+    }
+
+    // An empty `keys` table is the default, and a round trip must not turn it
+    // into a missing one that then re-inherits anything.
+    #[test]
+    fn save_then_load_preserves_an_empty_keys_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("ttmux.toml");
+        let mut c = Config::default();
+        c.status.effect = BarEffect::Gradient;
+        c.general.keys_preset = KeysPreset::Tmux;
+        c.save(&p).unwrap();
+        let back = Config::load(&p).unwrap();
+        assert!(back.keys.is_empty());
+        assert_eq!(back, c);
     }
 }

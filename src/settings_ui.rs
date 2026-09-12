@@ -1,9 +1,11 @@
 //! The in-app settings editor: a two-column panel that mutates a live `Config`.
 //!
 //! The whole point of ttmux is that you never have to read a config-file man
-//! page, so every knob in [`Config`] is reachable here. The field table lives
-//! in exactly one place — [`fields`] describes a section and [`set`] applies an
-//! edit back — so the two can never drift (see `every_field_round_trips`).
+//! page, so every knob in [`Config`] is reachable here. [`fields`] lists a
+//! section's rows and [`set`] writes one back, matched only by row index:
+//! insert a row in one and the other silently edits the wrong field, which is
+//! what `every_field_round_trips_through_the_setter` and
+//! `every_config_key_has_a_row` exist to catch.
 
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -15,7 +17,7 @@ use crate::config::{
 };
 use crate::layout::Rect;
 
-/// What the app should do after handing us an event.
+/// What the app should do once the overlay has handled an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
@@ -148,6 +150,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 int_f("scrollback", g.scrollback as u64, 0, 1_000_000),
                 bool_f("free-mode", g.free_mode),
                 bool_f("focus-follows-mouse", g.focus_follows_mouse),
+                bool_f("passthrough-images", g.passthrough_images),
                 int_f("prefix-timeout-ms", g.prefix_timeout_ms, 0, 10_000),
                 choice_f("keys-preset", KEYS_PRESETS, keys_preset_name(g.keys_preset)),
             ]
@@ -235,10 +238,6 @@ fn parse_list(v: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_colour(v: &str) -> Result<Rgb, String> {
-    v.parse::<Rgb>()
-}
-
 /// Is this binding the user's, rather than the preset's? Parsed rather than
 /// string-compared, so a hand-written `Ctrl+T Z` still matches.
 fn overridden(cfg: &Config, b: &str) -> bool {
@@ -272,8 +271,9 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (0, 3) => cfg.general.scrollback = parse_num(value)?.max(0) as usize,
         (0, 4) => cfg.general.free_mode = parse_bool(value),
         (0, 5) => cfg.general.focus_follows_mouse = parse_bool(value),
-        (0, 6) => cfg.general.prefix_timeout_ms = parse_num(value)?.max(0) as u64,
-        (0, 7) => {
+        (0, 6) => cfg.general.passthrough_images = parse_bool(value),
+        (0, 7) => cfg.general.prefix_timeout_ms = parse_num(value)?.max(0) as u64,
+        (0, 8) => {
             cfg.general.keys_preset = match value {
                 "vim" => KeysPreset::Vim,
                 "tmux" => KeysPreset::Tmux,
@@ -293,9 +293,9 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
                 other => return Err(format!("unknown border style: {other}")),
             }
         }
-        (1, 1) => cfg.appearance.border = parse_colour(value)?,
-        (1, 2) => cfg.appearance.border_focused = parse_colour(value)?,
-        (1, 3) => cfg.appearance.border_alert = parse_colour(value)?,
+        (1, 1) => cfg.appearance.border = value.parse()?,
+        (1, 2) => cfg.appearance.border_focused = value.parse()?,
+        (1, 3) => cfg.appearance.border_alert = value.parse()?,
         (1, 4) => {
             cfg.appearance.title_position = match value {
                 "top" => TitlePosition::Top,
@@ -316,9 +316,9 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (2, 5) => cfg.status.footer.left = parse_list(value),
         (2, 6) => cfg.status.footer.center = parse_list(value),
         (2, 7) => cfg.status.footer.right = parse_list(value),
-        (2, 8) => cfg.status.bg = parse_colour(value)?,
-        (2, 9) => cfg.status.fg = parse_colour(value)?,
-        (2, 10) => cfg.status.accent = parse_colour(value)?,
+        (2, 8) => cfg.status.bg = value.parse()?,
+        (2, 9) => cfg.status.fg = value.parse()?,
+        (2, 10) => cfg.status.accent = value.parse()?,
         (2, 11) => cfg.status.separator = value.to_string(),
         (2, 12) => cfg.status.time_format = value.to_string(),
         (2, 13) => {
@@ -468,11 +468,6 @@ impl Settings {
         s
     }
 
-    fn clamp_row(&mut self, cfg: &Config) {
-        let n = fields(cfg, self.section).len();
-        self.row = self.row.min(n.saturating_sub(1));
-    }
-
     // ------------------------------------------------------------- keyboard
 
     pub fn on_key(&mut self, ev: KeyEvent, cfg: &mut Config) -> Outcome {
@@ -555,7 +550,7 @@ impl Settings {
             KeyCode::Char('d') if self.section == KEYS => {
                 if let Some(b) = cfg.keymap().0.keys().nth(self.row).map(|b| b.to_string()) {
                     unbind(cfg, &b);
-                    self.clamp_row(cfg);
+                    self.row = self.row.min(fields(cfg, KEYS).len().saturating_sub(1));
                     return Outcome::Apply;
                 }
             }
@@ -881,22 +876,9 @@ fn row_text(label: &str, value: &str, w: u16) -> String {
     let w = w as usize;
     let (l, v) = (label.chars().count(), value.chars().count());
     if l + v + 2 >= w {
-        let mut s = format!("{label} {value}");
-        s.truncate_chars(w);
-        return s;
+        return format!("{label} {value}").chars().take(w).collect();
     }
     format!("{label} {} {value}", ".".repeat(w - l - v - 2))
-}
-
-trait TruncateChars {
-    fn truncate_chars(&mut self, n: usize);
-}
-impl TruncateChars for String {
-    fn truncate_chars(&mut self, n: usize) {
-        if let Some((i, _)) = self.char_indices().nth(n) {
-            self.truncate(i);
-        }
-    }
 }
 
 fn filtered_actions(filter: &str) -> Vec<String> {
@@ -1189,7 +1171,8 @@ mod tests {
             assert_eq!(s.apply(&mut cfg, name), Outcome::Apply);
             assert_eq!(border_style_name(cfg.appearance.border_style), *name);
         }
-        // The stock-tmux look must be reachable without editing TOML.
+        // `none` is a real choice, not an error state: a borderless layout
+        // has to be reachable without editing TOML.
         assert_eq!(cfg.appearance.border_style, BorderStyle::None);
 
         goto(&mut s, &cfg, 0, "mouse");
@@ -1276,10 +1259,132 @@ mod tests {
     }
 
     #[test]
-    fn save_and_close() {
+    fn s_asks_for_a_save_and_esc_closes() {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         assert_eq!(s.on_key(c('s'), &mut cfg), Outcome::Save);
         assert_eq!(s.on_key(k(KeyCode::Esc), &mut cfg), Outcome::Close);
+    }
+
+    #[test]
+    fn title_position_cycles_through_all_three() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 1, "title-position");
+        for want in [
+            TitlePosition::Bottom,
+            TitlePosition::Hidden,
+            TitlePosition::Top,
+        ] {
+            assert_eq!(s.on_key(k(KeyCode::Right), &mut cfg), Outcome::Apply);
+            assert_eq!(cfg.appearance.title_position, want);
+        }
+    }
+
+    #[test]
+    fn image_passthrough_toggles_from_the_general_section() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 0, "passthrough-images");
+        assert!(cfg.general.passthrough_images);
+        assert_eq!(s.on_key(k(KeyCode::Char(' ')), &mut cfg), Outcome::Apply);
+        assert!(!cfg.general.passthrough_images);
+    }
+
+    /// Every leaf key of a serialized `Config`, as `table.field` paths.
+    fn leaf_keys(v: &toml::Value, prefix: &str, out: &mut Vec<String>) {
+        match v {
+            toml::Value::Table(t) => {
+                for (k, v) in t {
+                    let p = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
+                    leaf_keys(v, &p, out);
+                }
+            }
+            _ => out.push(prefix.to_string()),
+        }
+    }
+
+    // "Fully customizable within the UI" is a promise, not an aspiration: a
+    // field added to `Config` without a row here is unreachable without
+    // hand-editing the TOML.
+    #[test]
+    fn every_config_key_has_a_row() {
+        let cfg = Config::default();
+        let top = toml::Value::try_from(&cfg).unwrap();
+        for (section, table) in ["general", "appearance", "status", "agents"]
+            .iter()
+            .enumerate()
+        {
+            let mut keys = vec![];
+            leaf_keys(&top[table], "", &mut keys);
+            let labels: Vec<&str> = fields(&cfg, section).iter().map(|f| f.label).collect();
+            for key in keys {
+                assert!(labels.contains(&key.as_str()), "[{table}] {key} has no row");
+            }
+        }
+    }
+
+    // Unbinding everything leaves the keys section with no rows at all; every
+    // key and click must still be a no-op rather than an index panic.
+    #[test]
+    fn an_empty_keys_section_survives_input() {
+        let mut cfg = Config::default();
+        for b in cfg
+            .keymap()
+            .0
+            .keys()
+            .map(|b| b.to_string())
+            .collect::<Vec<_>>()
+        {
+            cfg.keys.insert(b, "none".into());
+        }
+        assert!(fields(&cfg, KEYS).is_empty());
+
+        let mut s = Settings::new();
+        s.section = KEYS;
+        s.focus = Focus::Fields;
+        let area = Rect::new(0, 0, 60, 20);
+        for ev in [
+            k(KeyCode::Down),
+            k(KeyCode::Up),
+            k(KeyCode::Right),
+            k(KeyCode::Left),
+            k(KeyCode::Enter),
+            c('d'),
+        ] {
+            assert_eq!(s.on_key(ev, &mut cfg), Outcome::Continue);
+        }
+        s.on_mouse(click(30, 5), area, &mut cfg);
+        let mut buf = Buffer::empty(TRect::new(0, 0, 60, 20));
+        s.draw(&mut buf, area, &cfg);
+    }
+
+    // A config read off disk can hold values the UI's own ranges forbid.
+    // Listing and drawing them must report, not panic.
+    #[test]
+    fn out_of_range_values_from_toml_draw_without_panicking() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [general]
+            scrollback = 99999999
+            prefix-timeout-ms = 18446744073709551615
+            [appearance]
+            gap = 65535
+            [status]
+            separator = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            [keys]
+            "not a key" = "quit"
+            "ctrl+t z" = "not an action"
+            "#,
+        )
+        .unwrap();
+        let mut s = Settings::new();
+        let mut buf = Buffer::empty(TRect::new(0, 0, 20, 6));
+        for section in 0..SECTIONS.len() {
+            s.section = section;
+            s.draw(&mut buf, Rect::new(0, 0, 20, 6), &cfg);
+        }
     }
 
     #[test]
@@ -1292,8 +1397,6 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{section}:{i} {}: {e}", f.label));
             }
             assert_eq!(cfg, before, "section {section} drifted");
-            // And the table itself is stable.
-            assert_eq!(fields(&cfg, section), fields(&before, section));
         }
     }
 
