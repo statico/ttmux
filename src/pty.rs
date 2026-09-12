@@ -354,6 +354,29 @@ impl Pane {
         self.parser.screen_mut().set_scrollback(0);
     }
 
+    /// The pane's text, for `capture-pane`. With `history`, the scrollback
+    /// comes first: one line per step back, because a screenful at a time
+    /// would double up wherever the history is not a whole number of screens.
+    pub fn dump(&mut self, history: bool) -> String {
+        let mut lines: Vec<String> = vec![];
+        if history {
+            self.parser.screen_mut().set_scrollback(usize::MAX);
+            let oldest = self.parser.screen().scrollback();
+            for at in (1..=oldest).rev() {
+                self.parser.screen_mut().set_scrollback(at);
+                if let Some(row) = self.parser.screen().rows(0, self.cols).next() {
+                    lines.push(row);
+                }
+            }
+            self.parser.screen_mut().set_scrollback(self.scroll);
+        }
+        lines.extend(self.parser.screen().rows(0, self.cols));
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
+
     /// Recent plain text from the screen, for agent detection.
     pub fn tail(&self, lines: usize) -> String {
         let screen = self.parser.screen();

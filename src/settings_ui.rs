@@ -158,6 +158,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 bool_f("passthrough-images", g.passthrough_images),
                 int_f("prefix-timeout-ms", g.prefix_timeout_ms, 0, 10_000),
                 choice_f("keys-preset", KEYS_PRESETS, keys_preset_name(g.keys_preset)),
+                bool_f("which-key", g.which_key),
             ]
         }
         1 => {
@@ -286,6 +287,7 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
                 other => return Err(format!("unknown keys preset: {other}")),
             }
         }
+        (0, 9) => cfg.general.which_key = parse_bool(value),
 
         (1, 0) => {
             cfg.appearance.border_style = match value {

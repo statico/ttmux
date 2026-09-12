@@ -135,6 +135,9 @@ With no target the command acts on the focused pane. The session is the one
 `$TTMUX_SESSION` names, which every pane already has set. `ttmux --help`
 prints the full list.
 
+[API.md](API.md) is the full reference: every command, every flag, the exit
+codes, and recipes.
+
 ## Config
 
 The file is `~/.config/ttmux/ttmux.toml`. ttmux writes it for you on the

@@ -128,6 +128,27 @@ enum Overlay {
     Welcome(crate::onboarding::Welcome),
 }
 
+/// Pretty JSON with a trailing newline, so a script can pipe it straight
+/// into `jq` and a human reading it gets a line break.
+fn json_line(v: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_default() + "\n"
+}
+
+/// The TOML value a `set-option` argument means. A shell has only strings,
+/// so the type comes from what the word looks like.
+fn parse_scalar(word: &str) -> toml::Value {
+    if let Ok(b) = word.parse::<bool>() {
+        return toml::Value::Boolean(b);
+    }
+    if let Ok(i) = word.parse::<i64>() {
+        return toml::Value::Integer(i);
+    }
+    if let Ok(f) = word.parse::<f64>() {
+        return toml::Value::Float(f);
+    }
+    toml::Value::String(word.to_string())
+}
+
 /// What a rename prompt is about to name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rename {
@@ -561,15 +582,72 @@ impl App {
                 }
                 Ok(String::new())
             }
+            Cmd::CapturePane { target, history } => {
+                let id = self.pane_or_focus(target)?;
+                match self.slots.get_mut(&id) {
+                    Some(s) => Ok(s.pane.dump(history)),
+                    None => bail!("no pane %{id}"),
+                }
+            }
+            Cmd::Split { target, dir } => {
+                if let Some(id) = target {
+                    let tab = self.tab_of(id)?;
+                    self.select_tab(tab);
+                    self.set_focus(id);
+                }
+                self.split(dir)?;
+                Ok(String::new())
+            }
             Cmd::SelectPane(id) => {
                 let tab = self.tab_of(id)?;
                 self.select_tab(tab);
                 self.set_focus(id);
                 Ok(String::new())
             }
-            Cmd::SelectWindow(n) => {
-                let i = self.window_index(n)?;
-                self.select_tab(i);
+            Cmd::ResizePane { target, dir, n } => {
+                let id = self.pane_or_focus(target)?;
+                let tab = self.tab_of(id)?;
+                self.tabs[tab].layout.resize(id, dir, n);
+                self.sync_sizes();
+                Ok(String::new())
+            }
+            Cmd::SwapPane { src, dst } => {
+                let a = self.pane_or_focus(src)?;
+                let b = self.pane_or_focus(Some(dst))?;
+                let ta = self.tab_of(a)?;
+                let tb = self.tab_of(b)?;
+                if ta != tb {
+                    bail!("%{a} and %{b} are in different windows; use join-pane");
+                }
+                if !self.tabs[ta].layout.swap(a, b) {
+                    bail!("cannot swap %{a} with %{b}");
+                }
+                self.sync_sizes();
+                Ok(String::new())
+            }
+            Cmd::JoinPane {
+                src,
+                window,
+                horizontal,
+            } => {
+                let id = self.pane_or_focus(src)?;
+                let to = match window {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                self.move_pane_to_tab(id, to, horizontal)?;
+                Ok(String::new())
+            }
+            Cmd::BreakPane(target) => {
+                let id = self.pane_or_focus(target)?;
+                self.break_pane(id)?;
+                Ok(String::new())
+            }
+            Cmd::RenamePane { target, name } => {
+                let id = self.pane_or_focus(target)?;
+                if let Some(s) = self.slots.get_mut(&id) {
+                    s.pane.title_override = Some(name);
+                }
                 Ok(String::new())
             }
             Cmd::KillPane(target) => {
@@ -577,12 +655,19 @@ impl App {
                 self.close_pane(id);
                 Ok(String::new())
             }
-            Cmd::KillWindow(target) => {
-                let i = match target {
-                    Some(n) => self.window_index(n)?,
-                    None => self.tab,
-                };
-                self.close_tab_at(i);
+            Cmd::ListPanes { all, json } => Ok(self.list_panes(all, json)),
+            Cmd::NewWindow { name } => {
+                self.new_tab()?;
+                if let Some(name) = name {
+                    let i = self.tab;
+                    self.tabs[i].name = name;
+                    self.tabs[i].renamed = true;
+                }
+                Ok(String::new())
+            }
+            Cmd::SelectWindow(n) => {
+                let i = self.window_index(n)?;
+                self.select_tab(i);
                 Ok(String::new())
             }
             Cmd::RenameWindow { target, name } => {
@@ -594,45 +679,321 @@ impl App {
                 self.tabs[i].renamed = true;
                 Ok(String::new())
             }
-            Cmd::RenamePane { target, name } => {
-                let id = self.pane_or_focus(target)?;
-                if let Some(s) = self.slots.get_mut(&id) {
-                    s.pane.title_override = Some(name);
-                }
+            Cmd::SwapWindow { src, dst } => {
+                let a = match src {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                let b = self.window_index(dst)?;
+                self.tabs.swap(a, b);
+                // The user is still looking at the same panes, so follow the
+                // tab they were on rather than the number it used to have.
+                self.tab = match self.tab {
+                    t if t == a => b,
+                    t if t == b => a,
+                    t => t,
+                };
+                self.last_tab = None;
+                self.relayout();
                 Ok(String::new())
             }
-            Cmd::ListPanes => {
-                let focus = self.focus();
-                let mut out = String::new();
-                for (id, rect) in self.tabs[self.tab].layout.geometry() {
-                    let title = self
-                        .slots
-                        .get(&id)
-                        .map(|s| s.pane.title())
-                        .unwrap_or_default();
-                    let active = if id == focus { " (active)" } else { "" };
-                    let _ = writeln!(out, "%{id}: [{}x{}] {title}{active}", rect.w, rect.h);
-                }
-                Ok(out)
+            Cmd::MoveWindow { src, dst } => {
+                let from = match src {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                let to = self.window_index(dst)?;
+                let t = self.tabs.remove(from);
+                self.tabs.insert(to, t);
+                self.tab = match self.tab {
+                    t if t == from => to,
+                    t => {
+                        // Everything between the two ends slides one place.
+                        let mut t = t;
+                        if from < t {
+                            t -= 1;
+                        }
+                        if to <= t {
+                            t += 1;
+                        }
+                        t
+                    }
+                };
+                self.last_tab = None;
+                self.relayout();
+                Ok(String::new())
             }
-            Cmd::ListWindows => {
-                let mut out = String::new();
-                for (i, t) in self.tabs.iter().enumerate() {
-                    let panes = t.layout.ids().len();
-                    let active = if i == self.tab { " (active)" } else { "" };
-                    let _ = writeln!(
-                        out,
-                        "{}: {} ({panes} panes){active}",
-                        i + 1,
-                        self.tab_label(i, t)
-                    );
-                }
-                Ok(out)
+            Cmd::KillWindow(target) => {
+                let i = match target {
+                    Some(n) => self.window_index(n)?,
+                    None => self.tab,
+                };
+                self.close_tab_at(i);
+                Ok(String::new())
             }
+            Cmd::ListWindows { json } => Ok(self.list_windows(json)),
+            Cmd::ListSessions { json } => Ok(self.list_sessions(json)),
             Cmd::Display(text) => {
                 self.note(text);
                 Ok(String::new())
             }
+            Cmd::ShowOptions { key, json } => self.show_options(key.as_deref(), json),
+            Cmd::SetOption { key, value } => {
+                self.set_option(&key, &value)?;
+                Ok(String::new())
+            }
+            Cmd::ListKeys { json } => Ok(self.list_keys(json)),
+            Cmd::ListCommands { json } => Ok(if json {
+                crate::script::commands_json()
+            } else {
+                crate::script::usage()
+            }),
+        }
+    }
+
+    // ------------------------------------------------- scripted listings
+
+    fn list_panes(&self, all: bool, json: bool) -> String {
+        let tabs: Vec<usize> = if all {
+            (0..self.tabs.len()).collect()
+        } else {
+            vec![self.tab]
+        };
+        let mut rows = vec![];
+        for ti in tabs {
+            let t = &self.tabs[ti];
+            for (id, rect) in t.layout.geometry() {
+                let title = self
+                    .slots
+                    .get(&id)
+                    .map(|s| s.pane.title())
+                    .unwrap_or_default();
+                rows.push((ti + 1, id, rect, title, t.focus == id && ti == self.tab));
+            }
+        }
+        if json {
+            let panes: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(w, id, r, title, active)| {
+                    serde_json::json!({
+                        "id": format!("%{id}"),
+                        "window": w,
+                        "width": r.w,
+                        "height": r.h,
+                        "title": title,
+                        "active": active,
+                    })
+                })
+                .collect();
+            return json_line(&serde_json::json!({ "panes": panes }));
+        }
+        let mut out = String::new();
+        for (w, id, r, title, active) in rows {
+            let active = if active { " (active)" } else { "" };
+            let win = if all { format!("{w}.") } else { String::new() };
+            let _ = writeln!(out, "{win}%{id}: [{}x{}] {title}{active}", r.w, r.h);
+            let _ = active;
+        }
+        out
+    }
+
+    fn list_windows(&self, json: bool) -> String {
+        if json {
+            let windows: Vec<serde_json::Value> = self
+                .tabs
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    serde_json::json!({
+                        "index": i + 1,
+                        "name": self.tab_label(i, t),
+                        "panes": t.layout.ids().len(),
+                        "active": i == self.tab,
+                        "zoomed": t.layout.zoomed.is_some(),
+                    })
+                })
+                .collect();
+            return json_line(&serde_json::json!({ "windows": windows }));
+        }
+        let mut out = String::new();
+        for (i, t) in self.tabs.iter().enumerate() {
+            let panes = t.layout.ids().len();
+            let active = if i == self.tab { " (active)" } else { "" };
+            let _ = writeln!(
+                out,
+                "{}: {} ({panes} panes){active}",
+                i + 1,
+                self.tab_label(i, t)
+            );
+        }
+        out
+    }
+
+    fn list_sessions(&self, json: bool) -> String {
+        let rows: Vec<(String, bool)> = crate::proto::list_sessions()
+            .into_iter()
+            .map(|(name, path)| (name, crate::proto::is_live(&path)))
+            .collect();
+        if json {
+            let sessions: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|(name, live)| {
+                    serde_json::json!({
+                        "name": name,
+                        "live": live,
+                        "attached": *name == self.session,
+                    })
+                })
+                .collect();
+            return json_line(&serde_json::json!({ "sessions": sessions }));
+        }
+        let mut out = String::new();
+        for (name, live) in rows {
+            let live = if live { "live" } else { "stale" };
+            let here = if name == self.session {
+                " (this one)"
+            } else {
+                ""
+            };
+            let _ = writeln!(out, "{name}: {live}{here}");
+        }
+        out
+    }
+
+    fn list_keys(&self, json: bool) -> String {
+        let (map, _errors) = self.cfg.keymap();
+        if json {
+            let keys: Vec<serde_json::Value> = map
+                .iter()
+                .map(|(b, a)| serde_json::json!({"key": b.to_string(), "action": a.to_string()}))
+                .collect();
+            return json_line(&serde_json::json!({ "keys": keys }));
+        }
+        let mut out = String::new();
+        for (b, a) in &map {
+            let _ = writeln!(out, "{b:<16} {a}");
+        }
+        out
+    }
+
+    /// The config as TOML, or one dotted key of it. Reading the live config
+    /// rather than the file, so it answers for what is running.
+    fn show_options(&self, key: Option<&str>, json: bool) -> Result<String> {
+        let all = toml::Value::try_from(&self.cfg)?;
+        let Some(key) = key else {
+            return Ok(if json {
+                json_line(&serde_json::to_value(&self.cfg)?)
+            } else {
+                toml::to_string_pretty(&self.cfg)?
+            });
+        };
+        let mut cur = &all;
+        for part in key.split('.') {
+            cur = cur
+                .get(part)
+                .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
+        }
+        Ok(match cur {
+            toml::Value::String(s) if !json => s.clone(),
+            other => other.to_string(),
+        })
+    }
+
+    /// Write one dotted key into the config file. The file is the config, so
+    /// a scripted change survives a restart, and the hot reload applies it.
+    fn set_option(&mut self, key: &str, value: &str) -> Result<()> {
+        let text = std::fs::read_to_string(&self.cfg_path).unwrap_or_default();
+        let mut doc: toml::Value = if text.trim().is_empty() {
+            toml::Value::try_from(Config::default())?
+        } else {
+            toml::from_str(&text)?
+        };
+        let parts: Vec<&str> = key.split('.').collect();
+        let (last, path) = parts.split_last().expect("split never yields nothing");
+        let mut cur = &mut doc;
+        for part in path {
+            cur = cur
+                .get_mut(*part)
+                .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
+        }
+        let table = cur
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
+        // `keys` takes any name the user invents; everything else must
+        // already be there, so a typo is an error and not a dead setting.
+        if !table.contains_key(*last) && !key.starts_with("keys.") {
+            bail!("no such option: {key}");
+        }
+        table.insert((*last).to_string(), parse_scalar(value));
+        let text = toml::to_string_pretty(&doc)?;
+        // Parsed before it is written: a bad value must not leave a config
+        // on disk that ttmux cannot start from.
+        let cfg: Config = toml::from_str(&text)?;
+        crate::config::write_private(&self.cfg_path, &text)?;
+        self.apply_config(cfg);
+        Ok(())
+    }
+
+    /// Move `id` into another tab's layout, splitting that tab's focused pane.
+    fn move_pane_to_tab(&mut self, id: PaneId, to: usize, horizontal: bool) -> Result<()> {
+        let from = self.tab_of(id)?;
+        if from == to {
+            bail!("%{id} is already in window {}", to + 1);
+        }
+        let near = self.tabs[to].focus;
+        let dir = if horizontal { Dir::Right } else { Dir::Down };
+        if !self.tabs[to].layout.insert(id, Some(near), Some(dir)) {
+            bail!("no room in window {}", to + 1);
+        }
+        self.detach_pane(from, id);
+        self.tabs[to].focus = id;
+        self.relayout();
+        Ok(())
+    }
+
+    /// Move `id` out into a window of its own.
+    fn break_pane(&mut self, id: PaneId) -> Result<()> {
+        let from = self.tab_of(id)?;
+        if self.tabs[from].layout.ids().len() == 1 {
+            bail!("%{id} is the only pane in its window");
+        }
+        let mut layout = Layout::new(self.body());
+        if self.cfg.general.free_mode {
+            layout.set_mode(Mode::Free);
+        }
+        layout.insert(id, None, None);
+        self.tabs.push(Tab {
+            name: format!("{}", self.tabs.len() + 1),
+            layout,
+            focus: id,
+            renamed: false,
+        });
+        self.detach_pane(from, id);
+        // `detach_pane` can close the tab it emptied, which shifts every
+        // index after it, so the new tab is found by its contents.
+        self.tab = self
+            .tabs
+            .iter()
+            .position(|t| t.layout.ids() == [id])
+            .unwrap_or(self.tabs.len() - 1);
+        self.last_tab = None;
+        self.relayout();
+        Ok(())
+    }
+
+    /// Take a pane out of one tab's layout without killing it. The pane keeps
+    /// running, which is what makes moving it possible at all.
+    fn detach_pane(&mut self, tab: usize, id: PaneId) {
+        let t = &mut self.tabs[tab];
+        let next = t.layout.next(id).filter(|n| *n != id);
+        t.layout.remove(id);
+        if t.focus == id {
+            t.focus = next
+                .or_else(|| t.layout.ids().first().copied())
+                .unwrap_or(0);
+        }
+        if t.layout.is_empty() {
+            self.close_tab_at(tab);
         }
     }
 
