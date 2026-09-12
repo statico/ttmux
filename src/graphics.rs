@@ -55,7 +55,14 @@ enum State {
     /// Inside a prefix that may turn out to be one of ours.
     Maybe,
     Body(Kind),
+    /// A kitty chunk was cut by other output: what follows is that output
+    /// and then the chunk's base64 tail up to its ST.
+    Resync,
 }
+
+/// Longest `Resync` waits for the ST: a kitty chunk carries at most 4096
+/// bytes of payload, and a status line is well under the rest.
+const RESYNC_MAX: usize = 8192;
 
 /// Resumable splitter: a sequence may be cut across any number of `feed`s.
 #[derive(Default)]
@@ -76,6 +83,15 @@ pub struct Scanner {
     /// The dropped sequence said more chunks follow, read before its bytes
     /// were released.
     dropped_more: bool,
+}
+
+/// Whether a kitty APC is part of a chunked transmission at all.
+fn is_chunk(seq: &[u8]) -> bool {
+    let body = &seq[3..];
+    let end = body.iter().position(|b| *b == b';' || *b == ESC);
+    body[..end.unwrap_or(body.len())]
+        .split(|b| *b == b',')
+        .any(|kv| kv.starts_with(b"m="))
 }
 
 /// Whether a kitty APC says more chunks follow.
@@ -179,6 +195,28 @@ impl Scanner {
                         }
                     }
                 }
+                State::Resync => {
+                    self.buf.push(b);
+                    let n = self.buf.len();
+                    if self.buf.ends_with(b"\x1b\\") {
+                        // The tail is the base64 run before the ST; the
+                        // other output is everything before that.
+                        // ponytail: output that itself ends in base64
+                        // letters loses them; mpv's ends in "%)".
+                        let text = &self.buf[..n - 2];
+                        let b64 = |c: &u8| c.is_ascii_alphanumeric() || b"+/=".contains(c);
+                        let keep = text.iter().rposition(|c| !b64(c)).map_or(0, |at| at + 1);
+                        out.push(Piece::Plain(Cow::Owned(text[..keep].to_vec())));
+                        self.buf.clear();
+                        self.state = State::Ground;
+                        plain = i;
+                    } else if n >= RESYNC_MAX {
+                        // No ST: it was not a cut chunk after all.
+                        out.push(Piece::Plain(Cow::Owned(std::mem::take(&mut self.buf))));
+                        self.state = State::Ground;
+                        plain = i;
+                    }
+                }
                 State::Body(k) => {
                     // An ESC that does not start ST cancels the string, as in
                     // any terminal: mpv's status line, written from another
@@ -187,6 +225,8 @@ impl Scanner {
                     // the host prints the rest of the base64 over the window.
                     if self.esc && b != b'\\' {
                         self.esc = false;
+                        let chunked = k == Kind::Apc
+                            && (!self.chunks.is_empty() || self.dropped || is_chunk(&self.buf));
                         if k == Kind::Apc {
                             self.chunks_dropped = !self.chunks.is_empty()
                                 || if self.dropped {
@@ -195,6 +235,14 @@ impl Scanner {
                                     more_chunks(&self.buf)
                                 };
                             self.chunks = Vec::new();
+                        }
+                        // mpv's case: the interrupted chunk's tail is still to
+                        // come, and a terminal would print it. Wait for it.
+                        if chunked {
+                            self.dropped = false;
+                            self.buf = vec![ESC, b];
+                            self.state = State::Resync;
+                            continue;
                         }
                         // vt100 gets the cancelled bytes and ignores them the
                         // same way; this ESC opens whatever comes next.
@@ -335,13 +383,18 @@ mod tests {
     #[test]
     fn an_escape_inside_a_sequence_cancels_it() {
         // A status line written into the middle of a chunked image: the
-        // image is abandoned, the status line reaches vt100 intact, and the
-        // chunks still to come are not replayed without their start.
-        let input: &[u8] = b"\x1b_Ga=T,m=1;AA\x1b\\\x1b_Gm=1;BB\x1b[1K\rV: 1\
-                             CC\x1b\\\x1b_Gm=0;DD\x1b\\";
+        // image is abandoned, the status line reaches vt100 without the
+        // chunk's tail, and the chunks still to come are not replayed
+        // without their start.
+        let input: &[u8] = b"\x1b_Ga=T,m=1;AA\x1b\\\x1b_Gm=1;BB\x1b[1K\rV: 00:01 (72%)\
+                             CC//\x1b\\\x1b_Gm=0;DD\x1b\\x";
         let (plain, imgs) = run(&[input]);
         assert!(imgs.is_empty(), "{imgs:?}");
-        assert_eq!(plain, b"\x1b_Gm=1;BB\x1b[1K\rV: 1CC\x1b\\");
+        assert_eq!(plain, b"\x1b[1K\rV: 00:01 (72%)x");
+
+        // Any other cut sequence is just cancelled, as in a terminal.
+        let other: &[u8] = b"\x1b_Ga=T;AA\x1b[mCC\x1b\\";
+        assert_eq!(run(&[other]), (other.to_vec(), vec![]));
         // The same bytes one at a time, then a good image straight after.
         let mut bytes: Vec<&[u8]> = input.chunks(1).collect();
         bytes.push(KITTY);
