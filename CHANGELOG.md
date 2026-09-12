@@ -4,7 +4,21 @@
 
 - Scripting API: `ttmux send-keys`, `split-window`, `select-pane`,
   `list-panes`, `rename-window`, `display-message`, `run ACTION` and more,
-  with tmux's names and targets.
+  with tmux's names and targets. `ttmux <command> --help` documents one
+  command, `ttmux list-commands --json` documents all of them, and the exit
+  code says what happened: 0 ran, 1 failed, 2 bad arguments, 3 no session.
+  [API.md](API.md) is the full reference.
+- Panes move between tabs: `break-pane` (<kbd>ctrl+t</kbd> <kbd>!</kbd>),
+  `join-pane` (<kbd>ctrl+t</kbd> <kbd>@</kbd>), `swap-pane`, and
+  `move-tab left`/`right` (<kbd>ctrl+t</kbd> <kbd><</kbd> and <kbd>></kbd>).
+- A which-key popup. Hold the prefix and ttmux lists what can follow it.
+  Turn it off with `general.which-key = false`.
+- A command line on <kbd>ctrl+t</kbd> <kbd>:</kbd>, with Tab completion and
+  a usage hint for every scripting command.
+- The help overlay scrolls, so a long keymap no longer runs off the bottom.
+- SECURITY.md describes the threat model and the hardening.
+- The config file is written readable only by you. Widget commands live in
+  it and ttmux runs them with `sh -c`.
 
 ## 0.2.0 — 2026-09-11
 

@@ -653,6 +653,31 @@ pub enum Cmd {
 
 /// Parse `verb` and its arguments. Errors name the command, because the
 /// caller is a script and the message is all it gets.
+/// Split a typed line into words the way a shell would, so the `:` line and
+/// a shell agree on `rename-window 'my tab'`. Quotes group; nothing else is
+/// special, because a command line is not a shell.
+pub fn split(line: &str) -> Vec<String> {
+    let mut out = vec![];
+    let mut cur = String::new();
+    let mut quote = None;
+    for c in line.chars() {
+        match c {
+            '\'' | '"' if quote == Some(c) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            ' ' if quote.is_none() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
     // An alias is the same command with some of its flags already given.
     if let Some((real, extra)) = alias(verb) {
@@ -1268,7 +1293,7 @@ mod tests {
     fn every_command_parses_its_own_examples() {
         for c in COMMANDS {
             for ex in c.examples {
-                let words = shell_words(ex);
+                let words = split(ex);
                 assert_eq!(words[0], "ttmux", "{ex}");
                 parse(&words[1], &words[2..]).unwrap_or_else(|e| panic!("{ex}: {e:#}"));
             }
@@ -1276,27 +1301,6 @@ mod tests {
     }
 
     /// Split on spaces, keeping '...' together, the way a shell would.
-    fn shell_words(line: &str) -> Vec<String> {
-        let mut out = vec![];
-        let mut cur = String::new();
-        let mut quoted = false;
-        for c in line.chars() {
-            match c {
-                '\'' => quoted = !quoted,
-                ' ' if !quoted => {
-                    if !cur.is_empty() {
-                        out.push(std::mem::take(&mut cur));
-                    }
-                }
-                _ => cur.push(c),
-            }
-        }
-        if !cur.is_empty() {
-            out.push(cur);
-        }
-        out
-    }
-
     #[test]
     fn every_command_has_help_and_appears_in_the_usage() {
         let all = usage();

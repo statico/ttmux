@@ -65,6 +65,12 @@ impl Keys {
         self.pending.is_some()
     }
 
+    /// The prefix being held, for the which-key popup that lists what can
+    /// follow it.
+    pub fn pending_prefix(&self) -> Option<&Chord> {
+        self.pending.as_ref().map(|(c, _)| c)
+    }
+
     /// `resolve` with an injectable clock, so the timeout is testable.
     fn resolve_at(&mut self, ev: KeyEvent, now: Instant) -> Resolution {
         let chord = Chord::from_event(ev);

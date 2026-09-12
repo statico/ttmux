@@ -178,7 +178,55 @@ fn the_help_overlay_opens_and_closes() {
     });
 
     h.send(b"\x1b"); // any key closes it
-    h.wait_for("help to close", |s| !s.contains("toggle-float"));
+    h.wait_for("help to close", |s| !s.contains("any other key closes"));
+}
+
+#[test]
+fn the_leader_key_shows_what_can_follow_it() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+
+    h.send(b"\x14"); // ctrl+t, and nothing after it
+    h.wait_for("the which-key popup", |s| {
+        s.contains("ctrl+t") && s.contains("new-tab")
+    });
+
+    // The second chord still works: the popup is a hint, not a mode.
+    h.send(b"c");
+    h.wait_for("a second tab", |s| !s.contains("new-tab"));
+}
+
+#[test]
+fn the_command_line_runs_a_scripting_command() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+
+    h.send(b"\x14:"); // ctrl+t :
+    h.wait_for("the command line", |s| {
+        s.contains("send-keys  capture-pane")
+    });
+    h.send(b"spl\t"); // completion fills in the rest
+    h.wait_for("the completed command", |s| s.contains("split-window"));
+    h.send(b" -h\r");
+    h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
+}
+
+#[test]
+fn a_pane_breaks_out_into_its_own_tab_and_joins_back() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x14v"); // two panes in one tab
+    h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
+
+    h.send(b"\x14!"); // break-pane
+    h.wait_for("a second tab", |s| {
+        s.matches('╭').count() == 1 && s.contains("2:")
+    });
+
+    h.send(b"\x14@"); // join-pane asks which tab
+    h.wait_for("the join prompt", |s| s.contains("Join pane into tab"));
+    h.send(b"1\r");
+    h.wait_for("both panes together again", |s| s.matches('╭').count() > 1);
 }
 
 #[test]
@@ -466,7 +514,7 @@ fn the_help_overlay_hides_the_pane_behind_it() {
     h.wait_for("the pane to fill", |s| s.matches(marker).count() >= 12);
 
     h.send(b"\x14?"); // ctrl+t ?
-    h.wait_for("the help overlay", |s| s.contains("toggle-float"));
+    h.wait_for("the help overlay", |s| s.contains("any other key closes"));
 
     // Only assert on the rows the overlay actually covers: from its title row
     // to its bottom border. Outside that the pane is supposed to show.
