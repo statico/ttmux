@@ -421,7 +421,7 @@ fn the_help_overlay_hides_the_pane_behind_it() {
 fn a_first_run_offers_the_keymap_picker_and_then_gets_out_of_the_way() {
     let mut h = Harness::start_first_run(80, 24);
     h.wait_for("the welcome panel", |s| {
-        s.contains("welcome to ttmux") && s.contains("Modern")
+        s.contains("Welcome to ttmux") && s.contains("Modern")
     });
     // It says the choice is not permanent, which is the whole point of
     // showing it before anyone has learned a key.
@@ -430,12 +430,12 @@ fn a_first_run_offers_the_keymap_picker_and_then_gets_out_of_the_way() {
     // Pick stock tmux, and the closing screen names that preset's keys.
     h.send(b"2");
     h.wait_for("the closing screen", |s| {
-        s.contains("You're set") && s.contains("ctrl+b")
+        s.contains("You're ready to go") && s.contains("ctrl+b")
     });
 
     h.send(b"\r");
     h.wait_for("the picker to get out of the way", |s| {
-        !s.contains("You're set") && s.contains('\u{256d}')
+        !s.contains("You're ready to go") && s.contains('\u{256d}')
     });
 
     // The preset it wrote is live: ctrl+b % splits, ctrl+t does nothing.
