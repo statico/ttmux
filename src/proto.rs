@@ -41,6 +41,10 @@ pub enum ClientMsg {
         cols: u16,
         rows: u16,
         term: String,
+        /// The terminal's (foreground, background) as `rgb:` specs, when it
+        /// answered OSC 10 and 11. Panes that ask get these back.
+        #[serde(default)]
+        colours: Option<(String, String)>,
     },
     Input(crossterm::event::Event),
     Detach,
@@ -295,6 +299,7 @@ mod tests {
                 cols: 80,
                 rows: 24,
                 term: "xterm-256color".into(),
+                colours: None,
             },
             ClientMsg::Input(Event::Key(KeyEvent::from(KeyCode::Char('q')))),
             ClientMsg::Input(Event::Resize(100, 40)),

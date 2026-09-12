@@ -4,6 +4,18 @@
 
 - Programs that ask the terminal where the cursor is, like fzf's ctrl+r,
   get an answer, so they draw at once instead of after the next key.
+- Panes get answers to the other queries programs block on: device
+  attributes, version, window size, mode reports (DECRQM) and the
+  terminal's foreground and background, so neovim, fish and delta pick
+  the right theme and stop waiting.
+- Synchronized output (mode 2026) holds a pane's redraw until it is
+  complete, with a one second limit.
+- Focus events reach the focused pane on pane switches and when the
+  terminal window gains or loses focus.
+- Each pane keeps its own cursor shape, and detaching restores yours.
+- OSC 52 copies reach your clipboard, and notifications (OSC 9, 99, 777)
+  reach your terminal.
+- A paste can no longer end its own bracket early.
 
 ## 0.3.1 — 2026-09-12
 

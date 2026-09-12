@@ -7,6 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
@@ -33,6 +34,48 @@ struct Sink {
     bell: bool,
     /// Answers to the child's terminal queries, written back after each pump.
     replies: Vec<u8>,
+    /// Bytes meant for the outer terminal: clipboard copies and notifications.
+    host: Vec<u8>,
+    /// DECSET 1004: the child wants `CSI I` and `CSI O` on focus changes.
+    focus_events: bool,
+    /// DECSCUSR shape, 0 being the terminal's default.
+    cursor_shape: u16,
+    /// DECSET 2026: when the child began a synchronized update.
+    synced: Option<Instant>,
+    /// The last OSC 52 copy, base64, for a child that asks to paste.
+    clipboard: Vec<u8>,
+    /// OSC 10 and 11 answers, `rgb:rrrr/gggg/bbbb`, when the outer terminal
+    /// told us its colours.
+    pub colours: Option<(String, String)>,
+}
+
+/// Longest a synchronized update may hold the pane's frame, as tmux does,
+/// so a child that dies mid-update does not freeze its pane.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// DECRPM's answer for a DEC private mode: 1 set, 2 reset, 0 unknown.
+fn mode_status(sink: &Sink, screen: &vt100::Screen, mode: u16) -> u8 {
+    use vt100::{MouseProtocolEncoding as E, MouseProtocolMode as M};
+    let on = match mode {
+        1 => screen.application_cursor(),
+        25 => !screen.hide_cursor(),
+        47 | 1047 | 1049 => screen.alternate_screen(),
+        9 => screen.mouse_protocol_mode() == M::Press,
+        1000 => screen.mouse_protocol_mode() == M::PressRelease,
+        1002 => screen.mouse_protocol_mode() == M::ButtonMotion,
+        1003 => screen.mouse_protocol_mode() == M::AnyMotion,
+        1005 => screen.mouse_protocol_encoding() == E::Utf8,
+        1006 => screen.mouse_protocol_encoding() == E::Sgr,
+        1004 => sink.focus_events,
+        2004 => screen.bracketed_paste(),
+        2026 => sink.synced.is_some(),
+        _ => return 0,
+    };
+    if on {
+        1
+    } else {
+        2
+    }
 }
 
 impl vt100::Callbacks for Sink {
@@ -47,28 +90,99 @@ impl vt100::Callbacks for Sink {
             .filter(|c| !c.is_control())
             .collect();
     }
-    /// The queries a program blocks on. fzf, for one, asks where the cursor
-    /// is and draws nothing until it hears back.
-    // ponytail: DSR and DA1 only; add DA2, XTVERSION or OSC colour queries
-    // when a program is found waiting on one.
+    /// The queries a program blocks on, and the modes vt100 does not keep.
+    /// fzf, for one, asks where the cursor is and draws nothing until it
+    /// hears back; neovim and fish send a batch ending in DA1 and wait.
+    // ponytail: no XTGETTCAP or kitty keyboard replies; a program that asks
+    // falls back when DA1 answers first.
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
         i1: Option<u8>,
-        _: Option<u8>,
+        i2: Option<u8>,
         params: &[&[u16]],
         c: char,
     ) {
         let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
-        match (i1, c, first) {
-            (None, 'n', 5) => self.replies.extend_from_slice(b"\x1b[0n"),
-            (None, 'n', 6) => {
+        let mut reply = |r: String| self.replies.extend_from_slice(r.as_bytes());
+        match (i1, i2, c) {
+            (None, None, 'n') if first == 5 => reply("\x1b[0n".into()),
+            (None, None, 'n') if first == 6 => {
                 let (row, col) = screen.cursor_position();
-                self.replies
-                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+                reply(format!("\x1b[{};{}R", row + 1, col + 1));
             }
             // VT220 with ANSI colour, what tmux answers too.
-            (None, 'c', 0) => self.replies.extend_from_slice(b"\x1b[?62;22c"),
+            (None, None, 'c') if first == 0 => reply("\x1b[?62;22;52c".into()),
+            // DA2: a VT220, firmware 10, no ROM cartridge.
+            (Some(b'>'), None, 'c') if first == 0 => reply("\x1b[>1;10;0c".into()),
+            // XTVERSION: how neovim and yazi tell which terminal this is.
+            (Some(b'>'), None, 'q') if first == 0 => {
+                reply(format!("\x1bP>|ttmux {}\x1b\\", env!("CARGO_PKG_VERSION")))
+            }
+            // The text area in characters.
+            (None, None, 't') if first == 18 => {
+                let (rows, cols) = screen.size();
+                reply(format!("\x1b[8;{rows};{cols}t"));
+            }
+            (Some(b'?'), Some(b'$'), 'p') => {
+                let status = mode_status(self, screen, first);
+                self.replies
+                    .extend_from_slice(format!("\x1b[?{first};{status}$y").as_bytes());
+            }
+            // vt100 hands over the whole DECSET/DECRST once per mode it did
+            // not know, so each pass sets every mode named, idempotently.
+            (Some(b'?'), None, 'h' | 'l') => {
+                let on = c == 'h';
+                for mode in params.iter().filter_map(|p| p.first()) {
+                    match mode {
+                        1004 => self.focus_events = on,
+                        2026 => self.synced = on.then(Instant::now),
+                        _ => {}
+                    }
+                }
+            }
+            (Some(b' '), None, 'q') => self.cursor_shape = first,
+            _ => {}
+        }
+    }
+
+    fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
+        self.clipboard = data.to_vec();
+        self.host.extend_from_slice(b"\x1b]52;");
+        self.host.extend_from_slice(ty);
+        self.host.push(b';');
+        self.host.extend_from_slice(data);
+        self.host.extend_from_slice(b"\x1b\\");
+    }
+
+    /// Answered from the last copy rather than the real clipboard: reading
+    /// the outer one would need its reply routed back, and neovim otherwise
+    /// waits on this.
+    fn paste_from_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8]) {
+        self.replies.extend_from_slice(b"\x1b]52;");
+        self.replies.extend_from_slice(ty);
+        self.replies.push(b';');
+        self.replies.extend_from_slice(&self.clipboard);
+        self.replies.extend_from_slice(b"\x1b\\");
+    }
+
+    fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
+        match params {
+            // Colour queries: neovim picks light or dark from the answer.
+            [n @ (b"10" | b"11"), b"?"] => {
+                if let Some((fg, bg)) = &self.colours {
+                    let colour = if *n == b"10" { fg } else { bg };
+                    let n = std::str::from_utf8(n).unwrap_or_default();
+                    self.replies
+                        .extend_from_slice(format!("\x1b]{n};{colour}\x1b\\").as_bytes());
+                }
+            }
+            // Desktop notifications go to the terminal that can show them.
+            [b"9" | b"99" | b"777", ..] => {
+                self.host.extend_from_slice(b"\x1b]");
+                self.host.extend_from_slice(&params.join(&b';'));
+                self.host.extend_from_slice(b"\x1b\\");
+            }
             _ => {}
         }
     }
@@ -324,12 +438,42 @@ impl Pane {
         if !replies.is_empty() {
             self.send(&replies);
         }
+        let sink = self.parser.callbacks_mut();
+        if sink.synced.is_some_and(|t| t.elapsed() >= SYNC_TIMEOUT) {
+            sink.synced = None;
+        }
+        let holding = sink.synced.is_some();
         if std::mem::take(&mut self.parser.callbacks_mut().bell) {
             self.bell = true;
         }
         // New output only reaches the live view; keep the scrollback offset put.
         self.parser.screen_mut().set_scrollback(self.scroll);
-        true
+        // Mid synchronized update the screen is half drawn; the update's end
+        // is the change worth a frame.
+        !holding
+    }
+
+    /// Bytes for the outer terminal since the last call: OSC 52 copies and
+    /// desktop notifications.
+    pub fn take_host_bytes(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.parser.callbacks_mut().host)
+    }
+
+    /// The DECSCUSR cursor shape the child asked for, 0 for the default.
+    pub fn cursor_shape(&self) -> u16 {
+        self.parser.callbacks().cursor_shape
+    }
+
+    /// Tell the child it gained or lost focus, if it asked to hear.
+    pub fn focus_changed(&mut self, focused: bool) {
+        if self.parser.callbacks().focus_events {
+            self.send(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        }
+    }
+
+    /// The outer terminal's foreground and background, for OSC 10 and 11.
+    pub fn set_colours(&mut self, colours: Option<(String, String)>) {
+        self.parser.callbacks_mut().colours = colours;
     }
 
     /// Graphics sequences captured since the last call, oldest first; the
@@ -765,6 +909,42 @@ mod tests {
     fn cursor_and_status_queries_are_answered() {
         let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
         p.process(b"\x1b[3;5H\x1b[6n\x1b[5n\x1b[c\x1b[?6n");
-        assert_eq!(p.callbacks().replies, b"\x1b[3;5R\x1b[0n\x1b[?62;22c");
+        assert_eq!(p.callbacks().replies, b"\x1b[3;5R\x1b[0n\x1b[?62;22;52c");
+    }
+
+    #[test]
+    fn modes_vt100_ignores_are_tracked_and_reported() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b[?1004;2004h\x1b[?1004$p\x1b[?2004$p\x1b[?2026$p\x1b[?7777$p");
+        assert!(p.callbacks().focus_events);
+        assert_eq!(
+            String::from_utf8_lossy(&p.callbacks().replies),
+            "\x1b[?1004;1$y\x1b[?2004;1$y\x1b[?2026;2$y\x1b[?7777;0$y"
+        );
+        p.callbacks_mut().replies.clear();
+        p.process(b"\x1b[?1004l\x1b[5 q\x1b[>c\x1b[>q\x1b[18t");
+        assert!(!p.callbacks().focus_events);
+        assert_eq!(p.callbacks().cursor_shape, 5);
+        let r = String::from_utf8_lossy(&p.callbacks().replies).to_string();
+        assert!(r.starts_with("\x1b[>1;10;0c\x1bP>|ttmux "), "{r:?}");
+        assert!(r.ends_with("\x1b\\\x1b[8;10;20t"), "{r:?}");
+    }
+
+    #[test]
+    fn clipboard_notifications_and_colours_reach_the_right_side() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b]52;c;aGk=\x07\x1b]777;notify;done;ok\x07\x1b]11;?\x07");
+        assert_eq!(
+            p.callbacks().host,
+            b"\x1b]52;c;aGk=\x1b\\\x1b]777;notify;done;ok\x1b\\"
+        );
+        assert!(p.callbacks().replies.is_empty(), "no colours known yet");
+        p.callbacks_mut().colours =
+            Some(("rgb:ffff/ffff/ffff".into(), "rgb:0000/0000/0000".into()));
+        p.process(b"\x1b]11;?\x07\x1b]52;c;?\x07");
+        assert_eq!(
+            String::from_utf8_lossy(&p.callbacks().replies),
+            "\x1b]11;rgb:0000/0000/0000\x1b\\\x1b]52;c;aGk=\x1b\\"
+        );
     }
 }

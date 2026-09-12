@@ -79,6 +79,8 @@ struct Hub {
     /// on its next pass round the loop.
     jobs: Sender<ScriptJob>,
     kill: AtomicBool,
+    /// Colours the last client to say hello reported, for the app to take.
+    colours: Mutex<Option<(String, String)>>,
 }
 
 impl Hub {
@@ -266,6 +268,10 @@ impl Host for ServerHost {
     fn commands(&mut self) -> Vec<ScriptJob> {
         self.jobs.try_iter().collect()
     }
+
+    fn colours(&mut self) -> Option<(String, String)> {
+        self.hub.colours.lock().unwrap().take()
+    }
 }
 
 // --------------------------------------------------------------- clients
@@ -293,7 +299,11 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
             cols,
             rows,
             term,
+            colours,
         })) => {
+            if colours.is_some() {
+                *hub.colours.lock().unwrap() = colours;
+            }
             if v != proto::PROTOCOL {
                 let why = format!(
                     "client speaks protocol {v}, this server speaks {}",
@@ -593,6 +603,7 @@ fn run(listener: UnixListener) -> Result<()> {
         jobs: jobs_tx,
         events: tx,
         kill: AtomicBool::new(false),
+        colours: Mutex::new(None),
     });
 
     let mut app = App::new(cfg, cfg_path, Rect::new(0, 0, w, h), cfg_seen)?;
