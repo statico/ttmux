@@ -3,6 +3,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use crate::layout::Preset;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Dir {
     Left,
@@ -56,6 +58,8 @@ pub enum Action {
     ToggleLayoutMode,
     /// Cycle tiling presets: even-h, even-v, main-v, main-h.
     NextPreset,
+    /// Jump straight to one tiling preset.
+    SetPreset(Preset),
     /// Zoom (maximise) the focused pane.
     ToggleZoom,
     /// Toggle floating for the focused pane (free mode).
@@ -66,6 +70,8 @@ pub enum Action {
     NextTab,
     PrevTab,
     SelectTab(usize),
+    /// Back to the tab you were on before this one (tmux's `last-window`).
+    LastTab,
     RenameTab,
     /// Scrollback.
     ScrollUp(usize),
@@ -82,6 +88,8 @@ pub enum Action {
     ReloadConfig,
     /// Leave ttmux (kills children).
     Quit,
+    /// Send the leader chord itself to the pane, tmux's `send-prefix`.
+    SendPrefix,
     /// Do nothing (useful for unbinding).
     Nop,
 }
@@ -100,6 +108,7 @@ impl fmt::Display for Action {
             SwapNext => write!(f, "swap-next"),
             ToggleLayoutMode => write!(f, "toggle-layout-mode"),
             NextPreset => write!(f, "next-preset"),
+            SetPreset(p) => write!(f, "set-preset {}", p.as_str()),
             ToggleZoom => write!(f, "toggle-zoom"),
             ToggleFloat => write!(f, "toggle-float"),
             NewTab => write!(f, "new-tab"),
@@ -107,6 +116,7 @@ impl fmt::Display for Action {
             NextTab => write!(f, "next-tab"),
             PrevTab => write!(f, "prev-tab"),
             SelectTab(i) => write!(f, "select-tab {i}"),
+            LastTab => write!(f, "last-tab"),
             RenameTab => write!(f, "rename-tab"),
             ScrollUp(n) => write!(f, "scroll-up {n}"),
             ScrollDown(n) => write!(f, "scroll-down {n}"),
@@ -118,6 +128,7 @@ impl fmt::Display for Action {
             NextAlert => write!(f, "next-alert"),
             ReloadConfig => write!(f, "reload-config"),
             Quit => write!(f, "quit"),
+            SendPrefix => write!(f, "send-prefix"),
             Nop => write!(f, "nop"),
         }
     }
@@ -154,6 +165,7 @@ impl FromStr for Action {
             "swap-next" => SwapNext,
             "toggle-layout-mode" => ToggleLayoutMode,
             "next-preset" => NextPreset,
+            "set-preset" => SetPreset(arg.ok_or("`set-preset` needs a name")?.parse()?),
             "toggle-zoom" => ToggleZoom,
             "toggle-float" => ToggleFloat,
             "new-tab" => NewTab,
@@ -161,6 +173,7 @@ impl FromStr for Action {
             "next-tab" => NextTab,
             "prev-tab" => PrevTab,
             "select-tab" => SelectTab(arg.and_then(|a| a.parse().ok()).unwrap_or(1)),
+            "last-tab" => LastTab,
             "rename-tab" => RenameTab,
             "scroll-up" => ScrollUp(num(1) as usize),
             "scroll-down" => ScrollDown(num(1) as usize),
@@ -172,6 +185,7 @@ impl FromStr for Action {
             "next-alert" => NextAlert,
             "reload-config" => ReloadConfig,
             "quit" => Quit,
+            "send-prefix" => SendPrefix,
             "nop" | "" => Nop,
             other => return Err(format!("unknown action: {other}")),
         })
@@ -192,12 +206,17 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::SwapNext,
     Action::ToggleLayoutMode,
     Action::NextPreset,
+    Action::SetPreset(Preset::EvenHorizontal),
+    Action::SetPreset(Preset::EvenVertical),
+    Action::SetPreset(Preset::MainVertical),
+    Action::SetPreset(Preset::MainHorizontal),
     Action::ToggleZoom,
     Action::ToggleFloat,
     Action::NewTab,
     Action::CloseTab,
     Action::NextTab,
     Action::PrevTab,
+    Action::LastTab,
     Action::RenameTab,
     Action::ScrollTop,
     Action::ScrollBottom,
@@ -206,6 +225,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::CommandPalette,
     Action::NextAlert,
     Action::ReloadConfig,
+    Action::SendPrefix,
     Action::Quit,
 ];
 
@@ -230,6 +250,12 @@ mod tests {
         assert_eq!("resize left 5".parse(), Ok(Action::Resize(Dir::Left, 5)));
         assert_eq!("resize left".parse(), Ok(Action::Resize(Dir::Left, 2)));
         assert_eq!("select-tab 3".parse(), Ok(Action::SelectTab(3)));
+        assert_eq!(
+            "set-preset main-v".parse(),
+            Ok(Action::SetPreset(Preset::MainVertical))
+        );
+        assert!("set-preset".parse::<Action>().is_err());
+        assert!("set-preset sideways".parse::<Action>().is_err());
         assert!("frobnicate".parse::<Action>().is_err());
         assert!("focus sideways".parse::<Action>().is_err());
     }

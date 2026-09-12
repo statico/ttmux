@@ -174,7 +174,7 @@ fn config_survives_a_save_load_round_trip_with_edits() {
 
     let mut cfg = Config::default();
     cfg.general.scrollback = 500;
-    cfg.status.left = vec!["session".into(), "host".into()];
+    cfg.status.footer.left = vec!["session".into(), "host".into()];
     cfg.keys
         .insert("ctrl+t g".into(), "toggle-layout-mode".into());
     cfg.save(&path).unwrap();

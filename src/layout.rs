@@ -92,6 +92,32 @@ pub enum Preset {
     Tree,
 }
 
+impl Preset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Preset::EvenHorizontal => "even-horizontal",
+            Preset::EvenVertical => "even-vertical",
+            Preset::MainVertical => "main-vertical",
+            Preset::MainHorizontal => "main-horizontal",
+            Preset::Tree => "tree",
+        }
+    }
+}
+
+impl std::str::FromStr for Preset {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "even-horizontal" | "even-h" => Preset::EvenHorizontal,
+            "even-vertical" | "even-v" => Preset::EvenVertical,
+            "main-vertical" | "main-v" => Preset::MainVertical,
+            "main-horizontal" | "main-h" => Preset::MainHorizontal,
+            "tree" => Preset::Tree,
+            other => return Err(format!("unknown preset: {other}")),
+        })
+    }
+}
+
 /// How wide the move grab on a tile's top border is.
 ///
 /// `render::draw_border` writes the title at `x + 2` as ` title `, but layout
