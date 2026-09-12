@@ -55,19 +55,22 @@ pub fn draw(buf: &mut Buffer, area: Rect, prefix: &Chord, cfg: &Config) {
     let cols = ((area.w - 4) / cw).clamp(1, cells.len() as u16);
     let nrows = cells.len().div_ceil(cols as usize) as u16;
     let w = (cols * cw + 4).min(area.w);
-    let h = (nrows + 4).min(area.h.saturating_sub(1));
+    // Two rows are kept clear: the status bar, and the shadow above it.
+    let h = (nrows + 4).min(area.h.saturating_sub(2));
     let rect = Rect::new(
         area.x + (area.w - w) / 2,
-        area.bottom().saturating_sub(1 + h),
+        area.bottom().saturating_sub(2 + h),
         w,
         h,
     );
 
     let inner = crate::app::modal(buf, rect, &prefix.to_string(), "any other key cancels", cfg);
-    let key_style = Style::default()
+    // put_cell resets the cell, so the modal ground has to be repainted.
+    let ground = Style::default().bg(crate::app::modal_bg(cfg));
+    let key_style = ground
         .fg(cfg.status.accent.into())
         .add_modifier(Modifier::BOLD);
-    let act_style = Style::default().fg(cfg.status.fg.into());
+    let act_style = ground.fg(cfg.status.fg.into());
     for (i, ((key, _), cell)) in rows.iter().zip(&cells).enumerate() {
         let x = inner.x + (i as u16 / nrows) * cw;
         let y = inner.y + i as u16 % nrows;
@@ -166,8 +169,15 @@ mod tests {
         let t = text(&buf);
         assert!(t.contains("new-tab"), "{t}");
         assert!(t.contains("toggle-zoom"), "{t}");
-        // Nothing is painted over the status bar row.
+        // Nothing is painted over the status bar row, not even the shadow.
         assert!(t.lines().last().unwrap().trim().is_empty());
+        assert!((0..80).all(|x| buf[(x, 23)] == ratatui::buffer::Cell::default()));
+        // Labels sit on the modal ground, not the terminal default.
+        let (x, y) = (0..24u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "z")
+            .unwrap();
+        assert_eq!(buf[(x, y)].bg, crate::app::modal_bg(&Config::default()));
     }
 
     #[test]
