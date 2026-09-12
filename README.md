@@ -239,6 +239,11 @@ keybind = alt+right=unbind
 macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64. CI builds
 and tests all three.
 
+## Security
+
+[SECURITY.md](SECURITY.md) describes the threat model, the hardening, and
+how to report a vulnerability.
+
 ## Development
 
 ```
