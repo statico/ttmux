@@ -178,6 +178,8 @@ pub struct App {
     slots: HashMap<PaneId, Slot>,
     next_id: PaneId,
     overlay: Overlay,
+    /// Lines run on the `:` line, oldest first, so Up recalls across opens.
+    cmd_history: Vec<String>,
     message: Option<(String, Instant)>,
     /// Hitboxes published by the last status draw, for mouse clicks. Both
     /// rows can list tabs, so the row is part of the box.
@@ -281,6 +283,7 @@ impl App {
             slots: HashMap::new(),
             next_id: 1,
             overlay: Overlay::None,
+            cmd_history: vec![],
             message: None,
             tab_hits: vec![],
             area,
@@ -799,7 +802,6 @@ impl App {
             let active = if active { " (active)" } else { "" };
             let win = if all { format!("{w}.") } else { String::new() };
             let _ = writeln!(out, "{win}%{id}: [{}x{}] {title}{active}", r.w, r.h);
-            let _ = active;
         }
         out
     }
@@ -901,7 +903,8 @@ impl App {
                 .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
         }
         Ok(match cur {
-            toml::Value::String(s) if !json => s.clone(),
+            _ if json => json_line(&serde_json::to_value(cur)?),
+            toml::Value::String(s) => s.clone(),
             other => other.to_string(),
         })
     }
@@ -915,12 +918,29 @@ impl App {
         } else {
             toml::from_str(&text)?
         };
-        let parts: Vec<&str> = key.split('.').collect();
-        let (last, path) = parts.split_last().expect("split never yields nothing");
+        // A binding is one name however many dots it has: `keys.ctrl+b .`
+        // is the chord `ctrl+b .`, not a path three levels deep.
+        let binding = key.strip_prefix("keys.");
+        let (last, path) = match binding {
+            Some(chord) => (chord, vec!["keys"]),
+            None => {
+                let mut parts: Vec<&str> = key.split('.').collect();
+                let last = parts.pop().expect("split never yields nothing");
+                (last, parts)
+            }
+        };
         let mut cur = &mut doc;
         for part in path {
+            // A hand-written config need not have every section in it, and
+            // `[keys]` is missing from most of them.
             cur = cur
-                .get_mut(*part)
+                .as_table_mut()
+                .filter(|t| t.contains_key(part) || part == "keys")
+                .and_then(|t| {
+                    t.entry(part)
+                        .or_insert_with(|| toml::Value::Table(Default::default()));
+                    t.get_mut(part)
+                })
                 .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
         }
         let table = cur
@@ -928,10 +948,10 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("no such option: {key}"))?;
         // `keys` takes any name the user invents; everything else must
         // already be there, so a typo is an error and not a dead setting.
-        if !table.contains_key(*last) && !key.starts_with("keys.") {
+        if !table.contains_key(last) && binding.is_none() {
             bail!("no such option: {key}");
         }
-        table.insert((*last).to_string(), parse_scalar(value));
+        table.insert(last.to_string(), parse_scalar(value));
         let text = toml::to_string_pretty(&doc)?;
         // Parsed before it is written: a bad value must not leave a config
         // on disk that ttmux cannot start from.
@@ -953,7 +973,13 @@ impl App {
             bail!("no room in window {}", to + 1);
         }
         self.detach_pane(from, id);
+        // `detach_pane` can close the tab it emptied, which shifts every
+        // index after it, so the destination is found again by its contents.
+        let to = self.tab_of(id)?;
         self.tabs[to].focus = id;
+        // A zoom there would hide the pane that just arrived, and typing
+        // would go to a pane nothing is drawing.
+        self.tabs[to].layout.set_zoom(None);
         self.relayout();
         Ok(())
     }
@@ -1213,7 +1239,7 @@ impl App {
                     sel: 0,
                 }
             }
-            CommandLine => self.overlay = Overlay::Command(CmdLine::new()),
+            CommandLine => self.overlay = Overlay::Command(CmdLine::new(self.cmd_history.clone())),
             NextAlert => match self.next_alert() {
                 Some((tab, id)) => {
                     self.tab = tab;
@@ -1520,6 +1546,7 @@ impl App {
             CmdOutcome::Run(line) => line,
         };
         self.overlay = Overlay::None;
+        self.cmd_history.push(line.clone());
         let words = crate::script::split(&line);
         let Some((verb, args)) = words.split_first() else {
             return Ok(());
@@ -2225,9 +2252,11 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
     let (map, _) = cfg.keymap();
     // The keymap is longer than any screen is tall, so the help scrolls
     // rather than quietly hiding the bindings past the bottom.
+    let rows = modal_content(rect).h as usize;
     let hint = format!(
-        "{}/{} — up and down scroll, any other key closes.",
-        scroll + 1,
+        "{}-{} of {} — up and down scroll, any other key closes.",
+        (scroll + 1).min(map.len()),
+        (scroll + rows).min(map.len()),
         map.len()
     );
     let inner = modal(buf, rect, "Help", &hint, cfg);
@@ -2753,6 +2782,65 @@ mod tests {
         let mut a = app();
         a.dispatch(Action::Quit).unwrap();
         assert_eq!(a.exit(), Some(Exit::Quit));
+    }
+
+    #[test]
+    fn joining_the_last_pane_of_a_window_does_not_land_on_a_gone_tab() {
+        // The source window empties and is removed, so every index above it
+        // shifts. Before the fix this indexed past the end of `tabs`.
+        let mut a = app();
+        a.dispatch(Action::NewTab).unwrap();
+        assert_eq!(a.tabs.len(), 2);
+        let id = a.focus();
+        a.move_pane_to_tab(id, 0, false).unwrap();
+        assert_eq!(a.tabs.len(), 1);
+        assert_eq!(a.tab, 0);
+        assert_eq!(a.tabs[0].focus, id);
+        assert!(a.tabs[0].layout.ids().contains(&id));
+    }
+
+    #[test]
+    fn a_pane_joining_a_zoomed_window_is_visible_when_it_lands() {
+        let mut a = app();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        a.dispatch(Action::NewTab).unwrap();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        a.dispatch(Action::ToggleZoom).unwrap();
+        assert!(a.tabs[1].layout.zoomed.is_some());
+
+        a.select_tab(0);
+        let id = a.focus();
+        a.move_pane_to_tab(id, 1, false).unwrap();
+        assert_eq!(a.tabs[1].layout.zoomed, None, "zoom would hide the arrival");
+        assert_eq!(a.tabs[1].focus, id);
+    }
+
+    #[test]
+    fn set_option_writes_a_binding_whose_name_has_a_dot_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ttmux.toml");
+        std::fs::write(&path, "[general]\nmouse = true\n").unwrap();
+        let mut a = app();
+        a.cfg_path = path.clone();
+        // No `[keys]` section on disk, and the chord itself holds a dot.
+        a.set_option("keys.ctrl+b .", "rename-tab").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.keys.get("ctrl+b ."), Some(&"rename-tab".to_string()));
+        assert!(a.set_option("general.nonsense", "1").is_err());
+    }
+
+    #[test]
+    fn show_options_prints_json_for_one_key_too() {
+        let a = app();
+        let out = a.show_options(Some("general.mouse"), true).unwrap();
+        assert_eq!(out.trim(), "true");
+        let out = a.show_options(Some("general.shell"), true).unwrap();
+        assert_eq!(out.trim(), "\"/bin/cat\"", "JSON strings keep their quotes");
+        assert_eq!(
+            a.show_options(Some("general.shell"), false).unwrap(),
+            "/bin/cat"
+        );
     }
 
     #[test]
