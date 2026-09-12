@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-12
 
 - Programs that ask the terminal where the cursor is, like fzf's ctrl+r,
   get an answer, so they draw at once instead of after the next key.
