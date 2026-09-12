@@ -108,6 +108,56 @@ fn each_border_style_renders_its_own_corners() {
     assert_eq!(buf.cell((0u16, 0u16)).unwrap().symbol(), " ");
 }
 
+/// The app's rule for which sides of a pane carry a divider, mirrored here.
+fn dividers(cfg: &Config, layout: &Layout, focus: u32, w: u16, h: u16) -> Buffer {
+    let mut buf = Buffer::empty(RRect::new(0, 0, w, h));
+    let area = layout.area();
+    for (id, outer) in layout.geometry() {
+        render::draw_divider(
+            &mut buf,
+            outer,
+            outer.x > area.x,
+            outer.y > area.y,
+            id == focus,
+            false,
+            &cfg.appearance,
+        );
+    }
+    buf
+}
+
+#[test]
+fn divider_mode_draws_one_line_between_panes_and_none_at_the_edges() {
+    let mut cfg = Config::default();
+    cfg.appearance.border_style = BorderStyle::Divider;
+    let lines = text(&dividers(&cfg, &two_panes(), 1, 40, 10));
+    // One column of line, nothing around the outside.
+    for row in lines.iter().take(9) {
+        assert_eq!(
+            row,
+            "                    │",
+            "full render:\n{}",
+            lines.join("\n")
+        );
+    }
+}
+
+#[test]
+fn dividers_cross_where_three_panes_meet() {
+    let mut cfg = Config::default();
+    cfg.appearance.border_style = BorderStyle::Divider;
+    let mut l = two_panes();
+    l.insert(3, Some(2), Some(Dir::Down));
+    let buf = dividers(&cfg, &l, 1, 40, 10);
+    let lines = text(&buf);
+    let junction = lines
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.contains('┼'))
+        .map(|(y, _)| y);
+    assert!(junction.is_some(), "no junction in:\n{}", lines.join("\n"));
+}
+
 #[test]
 fn the_status_bar_fills_its_row_and_names_the_session() {
     let cfg = Config::default();

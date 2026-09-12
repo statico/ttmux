@@ -56,7 +56,7 @@ the parts that work and replaces the parts that do not.
 |---|---|---|
 | Config | `.tmux.conf`, reload by hand | TOML, edited in the app with <kbd>ctrl+t</kbd> <kbd>,</kbd> |
 | Layout | tiling only | tiling **or** free-floating, drag and drop |
-| Borders | single-line ASCII | curved, square, heavy, double, dashed |
+| Borders | single-line ASCII | curved, square, heavy, double, dashed, or one tmux-style divider |
 | Mouse | bolted on | click, drag, resize, and wheel |
 | Agents | — | a per-pane busy, needs-you, or done mark |
 
@@ -122,7 +122,7 @@ keys-preset = "vim"          # vim | tmux | screen
 passthrough-images = true    # kitty, iTerm2, and sixel inline images
 
 [appearance]
-border-style = "curved"      # curved | square | heavy | double | dashed | none
+border-style = "curved"      # curved | square | heavy | double | dashed | divider | none
 border-focused = "#7aa2f7"
 gap = 0
 

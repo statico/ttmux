@@ -289,18 +289,35 @@ impl App {
     /// its screen is drawn in. `inner` is also what the pty is sized to, so
     /// these must come from one place or the content is clipped and the mouse
     /// coordinates are off.
-    fn frame(&self, outer: Rect) -> (Rect, Rect) {
-        (outer.shrink(self.cfg.appearance.gap), self.inner(outer))
+    fn frame(&self, id: PaneId, outer: Rect) -> (Rect, Rect) {
+        (outer.shrink(self.cfg.appearance.gap), self.inner(id, outer))
     }
 
     /// The drawable interior of a pane: outer rect minus gap and border.
-    fn inner(&self, outer: Rect) -> Rect {
+    fn inner(&self, id: PaneId, outer: Rect) -> Rect {
         let outer = outer.shrink(self.cfg.appearance.gap);
-        if self.cfg.appearance.border_style == BorderStyle::None {
-            outer
-        } else {
-            outer.shrink(1)
+        match self.cfg.appearance.border_style {
+            BorderStyle::None => outer,
+            // A divider costs the pane only the sides it draws one on, so a
+            // pane against the edge of the screen keeps those rows.
+            BorderStyle::Divider if !self.tabs[self.tab].layout.is_floating(id) => {
+                let (left, top) = self.divider_sides(outer);
+                Rect::new(
+                    outer.x + left as u16,
+                    outer.y + top as u16,
+                    outer.w.saturating_sub(left as u16),
+                    outer.h.saturating_sub(top as u16),
+                )
+            }
+            _ => outer.shrink(1),
         }
+    }
+
+    /// Which sides of a pane face another pane rather than the edge of the
+    /// tab, and so carry its share of the dividers.
+    fn divider_sides(&self, outer: Rect) -> (bool, bool) {
+        let area = self.tabs[self.tab].layout.area();
+        (outer.x > area.x, outer.y > area.y)
     }
 
     /// Focus a pane in the current tab. A zoomed pane hides every other pane,
@@ -327,7 +344,7 @@ impl App {
     fn sync_sizes(&mut self) {
         let geo = self.tabs[self.tab].layout.geometry();
         for (id, outer) in geo {
-            let r = self.inner(outer);
+            let r = self.inner(id, outer);
             if let Some(slot) = self.slots.get_mut(&id) {
                 let (cols, rows) = (r.w.max(1), r.h.max(1));
                 if slot.pane.cols != cols || slot.pane.rows != rows {
@@ -1009,7 +1026,7 @@ impl App {
         let Some(outer) = self.tabs[self.tab].layout.rect_of(id) else {
             return;
         };
-        let inner = self.inner(outer);
+        let inner = self.inner(id, outer);
         if !inner.contains(ev.column, ev.row) {
             return;
         }
@@ -1217,21 +1234,41 @@ impl App {
                 let Some(slot) = self.slots.get(&id) else {
                     continue;
                 };
-                let (framed, inner) = self.frame(outer);
+                let (framed, inner) = self.frame(id, outer);
                 let floating = self.tabs[self.tab].layout.is_floating(id);
                 if floating && self.cfg.appearance.float_shadow {
                     render::draw_shadow(buf, framed);
                 }
                 let focused = id == focus;
-                render::draw_border(
-                    buf,
-                    framed,
-                    &slot.pane.title(),
-                    focused,
-                    slot.state.is_alert(),
-                    zoomed && focused,
-                    &self.cfg.appearance,
-                );
+                // A float has no neighbours to share a line with, so it keeps
+                // a box even in divider mode, or it reads as part of the pane
+                // underneath it.
+                if self.cfg.appearance.border_style == BorderStyle::Divider && !floating {
+                    let (left, top) = self.divider_sides(framed);
+                    render::draw_divider(
+                        buf,
+                        framed,
+                        left,
+                        top,
+                        focused,
+                        slot.state.is_alert(),
+                        &self.cfg.appearance,
+                    );
+                } else {
+                    let mut ap = self.cfg.appearance.clone();
+                    if ap.border_style == BorderStyle::Divider {
+                        ap.border_style = BorderStyle::Square;
+                    }
+                    render::draw_border(
+                        buf,
+                        framed,
+                        &slot.pane.title(),
+                        focused,
+                        slot.state.is_alert(),
+                        zoomed && focused,
+                        &ap,
+                    );
+                }
                 render::draw_screen(
                     buf,
                     inner,
@@ -1847,26 +1884,43 @@ mod tests {
     #[test]
     fn frame_and_inner_agree() {
         let mut a = app();
+        let id = a.focus();
         let tile = Rect::new(0, 0, 20, 10);
 
         a.cfg.appearance.gap = 1;
-        let (framed, inner) = a.frame(tile);
+        let (framed, inner) = a.frame(id, tile);
         assert_eq!(framed, Rect::new(1, 1, 18, 8));
         assert_eq!(inner, Rect::new(2, 2, 16, 6));
-        assert_eq!(inner, a.inner(tile));
+        assert_eq!(inner, a.inner(id, tile));
 
         a.cfg.appearance.gap = 0;
-        let (framed, inner) = a.frame(tile);
+        let (framed, inner) = a.frame(id, tile);
         assert_eq!(framed, tile);
         assert_eq!(inner, Rect::new(1, 1, 18, 8));
-        assert_eq!(inner, a.inner(tile));
+        assert_eq!(inner, a.inner(id, tile));
 
         a.cfg.appearance.gap = 1;
         a.cfg.appearance.border_style = BorderStyle::None;
-        let (framed, inner) = a.frame(tile);
+        let (framed, inner) = a.frame(id, tile);
         assert_eq!(framed, Rect::new(1, 1, 18, 8));
         assert_eq!(inner, Rect::new(1, 1, 18, 8));
-        assert_eq!(inner, a.inner(tile));
+        assert_eq!(inner, a.inner(id, tile));
+    }
+
+    #[test]
+    fn a_divider_costs_a_pane_only_the_sides_that_face_another_pane() {
+        let mut a = app();
+        a.cfg.appearance.border_style = BorderStyle::Divider;
+        let left = a.focus();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        let right = a.focus();
+
+        let rect = |id| a.tabs[a.tab].layout.rect_of(id).unwrap();
+        // The left pane touches the edge of the tab on three sides and keeps
+        // every cell; the right pane pays for the one line between them.
+        assert_eq!(a.inner(left, rect(left)), rect(left));
+        let r = rect(right);
+        assert_eq!(a.inner(right, r), Rect::new(r.x + 1, r.y, r.w - 1, r.h));
     }
 
     #[test]
@@ -2194,7 +2248,7 @@ mod tests {
         let mut host = FakeHost::default();
 
         let id = a.focus();
-        let inner = a.inner(a.tabs[a.tab].layout.rect_of(id).unwrap());
+        let inner = a.inner(id, a.tabs[a.tab].layout.rect_of(id).unwrap());
         a.slots.get_mut(&id).unwrap().images.push(Image {
             row: inner.h + 5,
             col: 0,
