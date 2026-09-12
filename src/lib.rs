@@ -8,6 +8,7 @@ pub mod config;
 pub mod graphics;
 pub mod input;
 pub mod layout;
+pub mod line_edit;
 pub mod onboarding;
 pub mod proto;
 pub mod pty;

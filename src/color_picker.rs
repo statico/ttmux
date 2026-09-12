@@ -18,6 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::{Config, Rgb};
 use crate::layout::Rect;
+use crate::line_edit::{LineEdit, CARET};
 use crate::settings_ui::put;
 
 /// What the settings panel should do with the picker after an event.
@@ -59,7 +60,7 @@ pub struct Picker {
     cur: Rgb,
     /// The hex field's buffer. Anything `Rgb` parses is allowed, so names
     /// and palette indices stay reachable now that the picker owns the row.
-    text: String,
+    text: LineEdit,
     focus: Focus,
     row: usize,
     col: usize,
@@ -81,7 +82,7 @@ impl Picker {
         Picker {
             prev: current.to_string(),
             cur,
-            text: cur.to_string(),
+            text: LineEdit::new(cur.to_string()),
             focus: Focus::Grid,
             row,
             col,
@@ -136,16 +137,12 @@ impl Picker {
     }
 
     fn key_hex(&mut self, ev: KeyEvent) {
-        match ev.code {
-            KeyCode::Backspace => {
-                self.text.pop();
-            }
-            KeyCode::Char(c) => self.text.push(c),
-            _ => return,
+        if !self.text.key(ev) {
+            return;
         }
         // Live: every keystroke that parses moves the preview, and the ones
         // that do not are simply not applied yet.
-        if let Ok(c) = self.text.parse::<Rgb>() {
+        if let Ok(c) = self.text.text().parse::<Rgb>() {
             self.cur = c;
         }
     }
@@ -182,7 +179,7 @@ impl Picker {
 
     fn set(&mut self, c: Color) {
         self.cur = Rgb(c);
-        self.text = self.cur.to_string();
+        self.text = LineEdit::new(self.cur.to_string());
     }
 
     pub fn on_mouse(&mut self, ev: MouseEvent, r: Rect) -> Outcome {
@@ -215,13 +212,17 @@ impl Picker {
             }
         };
 
-        let bad = self.text.parse::<Rgb>().is_err();
+        let bad = self.text.text().parse::<Rgb>().is_err();
         let on = |f: Focus| if self.focus == f { "›" } else { " " };
-        let cursor = if self.focus == Focus::Hex { "▏" } else { "" };
+        let hex = if self.focus == Focus::Hex {
+            self.text.with_caret(CARET)
+        } else {
+            self.text.text().to_string()
+        };
         line(
             buf,
             HEX_Y,
-            &format!("{} hex  {}{cursor}", on(Focus::Hex), self.text),
+            &format!("{} hex  {hex}", on(Focus::Hex)),
             if bad { plain.fg(Color::Red) } else { plain },
         );
 

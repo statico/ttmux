@@ -17,6 +17,7 @@ use crate::config::{
     BarEffect, Binding, BorderStyle, Chord, Config, KeysPreset, Rgb, TitlePosition,
 };
 use crate::layout::Rect;
+use crate::line_edit::{LineEdit, CARET};
 
 /// What the app should do once the overlay has handled an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,7 +401,7 @@ fn geometry(area: Rect) -> Geom {
 enum Edit {
     None,
     /// Text/colour/number/list buffer for the selected row.
-    Buffer(String),
+    Buffer(LineEdit),
     /// A colour row: the swatch/hex/channel picker owns the editing.
     Colour(Box<Picker>),
     /// Waiting for a key to rebind the selected row.
@@ -410,7 +411,7 @@ enum Edit {
     /// Got the key, now choosing the action.
     PickAction {
         chord: String,
-        filter: String,
+        filter: LineEdit,
         sel: usize,
     },
 }
@@ -549,7 +550,7 @@ impl Settings {
                         self.edit = Edit::Colour(Box::new(Picker::new(&fs[self.row].value)))
                     }
                     Some(_) if self.section == KEYS => self.edit = Edit::Capture,
-                    Some(_) => self.edit = Edit::Buffer(fs[self.row].value.clone()),
+                    Some(_) => self.edit = Edit::Buffer(LineEdit::new(fs[self.row].value.clone())),
                     None => {}
                 }
             }
@@ -603,13 +604,17 @@ impl Settings {
         }
     }
 
-    fn key_buffer(&mut self, ev: KeyEvent, cfg: &mut Config, mut buf: String) -> Outcome {
+    fn key_buffer(&mut self, ev: KeyEvent, cfg: &mut Config, mut buf: LineEdit) -> Outcome {
+        if buf.key(ev) {
+            self.edit = Edit::Buffer(buf);
+            return Outcome::Continue;
+        }
         match ev.code {
             KeyCode::Esc => {
                 self.edit = Edit::None;
                 self.error = None;
             }
-            KeyCode::Enter => match set(cfg, self.section, self.row, &buf) {
+            KeyCode::Enter => match set(cfg, self.section, self.row, buf.text()) {
                 Ok(()) => {
                     self.edit = Edit::None;
                     self.error = None;
@@ -617,14 +622,6 @@ impl Settings {
                 }
                 Err(e) => self.error = Some(e),
             },
-            KeyCode::Backspace => {
-                buf.pop();
-                self.edit = Edit::Buffer(buf);
-            }
-            KeyCode::Char(c) => {
-                buf.push(c);
-                self.edit = Edit::Buffer(buf);
-            }
             _ => {}
         }
         Outcome::Continue
@@ -684,7 +681,7 @@ impl Settings {
         }
         self.edit = Edit::PickAction {
             chord,
-            filter: String::new(),
+            filter: LineEdit::default(),
             sel: 0,
         };
         Outcome::Continue
@@ -695,18 +692,22 @@ impl Settings {
         ev: KeyEvent,
         cfg: &mut Config,
         chord: String,
-        mut filter: String,
+        mut filter: LineEdit,
         mut sel: usize,
     ) -> Outcome {
-        let matches = filtered_actions(&filter);
+        let matches = filtered_actions(filter.text());
+        if filter.key(ev) {
+            self.edit = Edit::PickAction {
+                chord,
+                filter,
+                sel: 0,
+            };
+            return Outcome::Continue;
+        }
         match ev.code {
             KeyCode::Esc => self.edit = Edit::None,
             KeyCode::Up => sel = sel.saturating_sub(1),
             KeyCode::Down => sel = (sel + 1).min(matches.len().saturating_sub(1)),
-            KeyCode::Backspace => {
-                filter.pop();
-                sel = 0;
-            }
             KeyCode::Enter => {
                 self.edit = Edit::None;
                 if let Some(a) = matches.get(sel) {
@@ -719,10 +720,6 @@ impl Settings {
                     return Outcome::Apply;
                 }
                 return Outcome::Continue;
-            }
-            KeyCode::Char(c) => {
-                filter.push(c);
-                sel = 0;
             }
             _ => {}
         }
@@ -875,7 +872,7 @@ impl Settings {
             };
             if selected {
                 match &self.edit {
-                    Edit::Buffer(b) => value = format!("{b}▏"),
+                    Edit::Buffer(b) => value = b.with_caret(CARET),
                     Edit::Capture => value = "press a key…".into(),
                     _ => {}
                 }
@@ -889,9 +886,16 @@ impl Settings {
         }
     }
 
-    fn draw_picker(&self, buf: &mut Buffer, r: Rect, filter: &str, sel: usize, base: Style) {
-        put(buf, r.x, r.y, &format!("action: {filter}▏"), r.w, base);
-        for (i, a) in filtered_actions(filter)
+    fn draw_picker(&self, buf: &mut Buffer, r: Rect, filter: &LineEdit, sel: usize, base: Style) {
+        put(
+            buf,
+            r.x,
+            r.y,
+            &format!("action: {}", filter.with_caret(CARET)),
+            r.w,
+            base,
+        );
+        for (i, a) in filtered_actions(filter.text())
             .iter()
             .enumerate()
             .take(r.h.saturating_sub(1) as usize)

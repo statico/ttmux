@@ -22,6 +22,7 @@ use crate::config::{Bar, BorderStyle, Config};
 use crate::graphics::Image;
 use crate::input::{encode_key, encode_mouse, Keys, Resolution};
 use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
+use crate::line_edit::{LineEdit, CARET};
 use crate::pty::Pane;
 use crate::render;
 use crate::settings_ui::{Outcome, Settings};
@@ -101,8 +102,8 @@ enum Overlay {
     None,
     Help,
     Settings(Settings),
-    Palette { query: String, sel: usize },
-    Prompt { label: String, input: String },
+    Palette { query: LineEdit, sel: usize },
+    Prompt { label: String, input: LineEdit },
     Welcome(crate::onboarding::Welcome),
 }
 
@@ -588,7 +589,7 @@ impl App {
             RenameTab => {
                 self.overlay = Overlay::Prompt {
                     label: "Rename tab".into(),
-                    input: self.tabs[self.tab].name.clone(),
+                    input: LineEdit::new(self.tabs[self.tab].name.clone()),
                 }
             }
             ScrollUp(n) => self.scroll(-(n as isize)),
@@ -614,7 +615,7 @@ impl App {
             }
             CommandPalette => {
                 self.overlay = Overlay::Palette {
-                    query: String::new(),
+                    query: LineEdit::default(),
                     sel: 0,
                 }
             }
@@ -833,25 +834,22 @@ impl App {
         let Overlay::Palette { query, sel } = &mut self.overlay else {
             return Ok(());
         };
+        // The field gets first refusal; it leaves Enter, Esc and the arrows.
+        if query.key(ev) {
+            *sel = 0;
+            return Ok(());
+        }
         match ev.code {
             KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Backspace => {
-                query.pop();
-                *sel = 0;
-            }
             KeyCode::Up => *sel = sel.saturating_sub(1),
             KeyCode::Down => *sel += 1,
             KeyCode::Enter => {
-                let hits = Self::palette_matches(query);
+                let hits = Self::palette_matches(query.text());
                 let action = hits.get((*sel).min(hits.len().saturating_sub(1))).copied();
                 self.overlay = Overlay::None;
                 if let Some(a) = action {
                     self.dispatch(a.clone())?;
                 }
-            }
-            KeyCode::Char(c) => {
-                query.push(c);
-                *sel = 0;
             }
             _ => {}
         }
@@ -862,13 +860,13 @@ impl App {
         let Overlay::Prompt { input, .. } = &mut self.overlay else {
             return Ok(());
         };
+        if input.key(ev) {
+            return Ok(());
+        }
         match ev.code {
             KeyCode::Esc => self.overlay = Overlay::None,
-            KeyCode::Backspace => {
-                input.pop();
-            }
             KeyCode::Enter => {
-                let name = input.clone();
+                let name = input.text().to_string();
                 self.overlay = Overlay::None;
                 if !name.is_empty() {
                     let t = self.tab_mut();
@@ -876,7 +874,6 @@ impl App {
                     t.renamed = true;
                 }
             }
-            KeyCode::Char(c) => input.push(c),
             _ => {}
         }
         Ok(())
@@ -1553,7 +1550,7 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
     }
 }
 
-fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Config) {
+fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg: &Config) {
     let inner = modal(
         buf,
         rect,
@@ -1568,7 +1565,7 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
     buf.set_stringn(
         inner.x,
         inner.y,
-        format!("> {query}"),
+        format!("> {}", query.with_caret(CARET)),
         inner.w as usize,
         Style::default()
             .fg(cfg.status.accent.into())
@@ -1577,7 +1574,7 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
     if inner.w == 0 {
         return;
     }
-    let hits = App::palette_matches(query);
+    let hits = App::palette_matches(query.text());
     let sel = sel.min(hits.len().saturating_sub(1));
     for (i, a) in hits.iter().enumerate() {
         let y = inner.y + 2 + i as u16;
@@ -1590,7 +1587,7 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
     }
 }
 
-fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Config) {
+fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &LineEdit, cfg: &Config) {
     let w = area.w.min(60);
     // Five rows: border, the field, a blank, the hint, border.
     let h = 5.min(area.h);
@@ -1609,7 +1606,7 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
     buf.set_stringn(
         inner.x,
         inner.y,
-        format!("{input}▏"),
+        input.with_caret(CARET),
         inner.w as usize,
         Style::default().fg(cfg.status.fg.into()),
     );
@@ -1735,6 +1732,25 @@ mod tests {
     }
 
     #[test]
+    fn the_rename_prompt_takes_readline_keys() {
+        let mut a = app();
+        a.tab_mut().name = "old name".into();
+        a.dispatch(Action::RenameTab).unwrap();
+        // Ctrl-A then Ctrl-K: go to the front and wipe the rest.
+        a.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL))
+            .unwrap();
+        a.on_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+            .unwrap();
+        for c in "new".chars() {
+            a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(a.tabs[a.tab].name, "new");
+    }
+
+    #[test]
     fn typing_into_a_pane_asks_for_no_repaint_but_a_command_does() {
         let mut a = app();
         // A wasted frame per keystroke is what this costs when it regresses.
@@ -1837,7 +1853,7 @@ mod tests {
         for h in [1, 2, 3, 4, 5] {
             let area = Rect::new(0, 0, 20, h);
             let mut buf = Buffer::empty(area.into());
-            draw_prompt(&mut buf, area, "rename", "x", &cfg);
+            draw_prompt(&mut buf, area, "rename", &LineEdit::new("x"), &cfg);
         }
     }
 
@@ -1854,11 +1870,11 @@ mod tests {
         assert!(read(&buf).contains("any key to close"), "help");
 
         let mut buf = Buffer::empty(area.into());
-        draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
+        draw_palette(&mut buf, overlay_rect(area), &LineEdit::default(), 0, &cfg);
         assert!(read(&buf).contains("Enter to run"), "palette");
 
         let mut buf = Buffer::empty(area.into());
-        draw_prompt(&mut buf, area, "rename tab", "x", &cfg);
+        draw_prompt(&mut buf, area, "rename tab", &LineEdit::new("x"), &cfg);
         assert!(read(&buf).contains("Esc to cancel"), "prompt");
 
         let mut buf = Buffer::empty(area.into());
@@ -1881,7 +1897,7 @@ mod tests {
         let cfg = Config::default();
         let area = Rect::new(0, 0, 2, 5);
         let mut buf = Buffer::empty(area.into());
-        draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
+        draw_palette(&mut buf, overlay_rect(area), &LineEdit::default(), 0, &cfg);
     }
 
     #[test]
@@ -1915,7 +1931,7 @@ mod tests {
         assert_opaque(&buf, "help");
 
         let mut buf = filled();
-        draw_palette(&mut buf, rect, "", 0, &cfg);
+        draw_palette(&mut buf, rect, &LineEdit::default(), 0, &cfg);
         assert_opaque(&buf, "palette");
 
         let mut buf = filled();
