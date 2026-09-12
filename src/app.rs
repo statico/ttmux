@@ -568,7 +568,7 @@ impl App {
             }
             RenameTab => {
                 self.overlay = Overlay::Prompt {
-                    label: "rename tab".into(),
+                    label: "Rename tab".into(),
                     input: self.tabs[self.tab].name.clone(),
                 }
             }
@@ -1403,7 +1403,7 @@ pub fn modal(buf: &mut Buffer, rect: Rect, title: &str, hint: &str, cfg: &Config
 }
 
 fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config) {
-    let inner = modal(buf, rect, "help", "any key to close", cfg);
+    let inner = modal(buf, rect, "Help", "Press any key to close.", cfg);
     let (map, _) = cfg.keymap();
     let style = Style::default().fg(cfg.status.fg.into());
     let accent = Style::default().fg(cfg.status.accent.into());
@@ -1427,8 +1427,8 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &str, sel: usize, cfg: &Con
     let inner = modal(
         buf,
         rect,
-        "commands",
-        "type to filter  ↑↓ select  enter run  esc cancel",
+        "Commands",
+        "Type to filter, ↑↓ to select, Enter to run, Esc to cancel",
         cfg,
     );
     let style = Style::default().fg(cfg.status.fg.into());
@@ -1470,7 +1470,7 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &str, cfg: &Con
         w,
         h,
     );
-    let inner = modal(buf, rect, label, "enter confirm  esc cancel", cfg);
+    let inner = modal(buf, rect, label, "Enter to confirm, Esc to cancel", cfg);
     // A 1-row area leaves the border with no interior; set_stringn would then
     // write outside the buffer.
     if inner.h == 0 {
@@ -1709,25 +1709,25 @@ mod tests {
 
         let mut buf = Buffer::empty(area.into());
         draw_palette(&mut buf, overlay_rect(area), "", 0, &cfg);
-        assert!(read(&buf).contains("enter run"), "palette");
+        assert!(read(&buf).contains("Enter to run"), "palette");
 
         let mut buf = Buffer::empty(area.into());
         draw_prompt(&mut buf, area, "rename tab", "x", &cfg);
-        assert!(read(&buf).contains("esc cancel"), "prompt");
+        assert!(read(&buf).contains("Esc to cancel"), "prompt");
 
         let mut buf = Buffer::empty(area.into());
         Settings::new().draw(&mut buf, overlay_rect(area), &cfg);
         let text = read(&buf);
-        assert!(text.contains("esc close"), "settings");
-        assert_eq!(text.matches("esc close").count(), 1, "stacked hints");
+        assert!(text.contains("Esc to close"), "settings");
+        assert_eq!(text.matches("Esc to close").count(), 1, "stacked hints");
 
         let mut buf = Buffer::empty(area.into());
         let w = crate::onboarding::Welcome::new();
         let inner = modal(&mut buf, overlay_rect(area), w.title(), w.hint(), &cfg);
         w.draw(&mut buf, inner, &cfg);
         let text = read(&buf);
-        assert!(text.contains("enter confirm"), "welcome");
-        assert_eq!(text.matches("enter confirm").count(), 1, "stacked hints");
+        assert!(text.contains("Enter to confirm"), "welcome");
+        assert_eq!(text.matches("Enter to confirm").count(), 1, "stacked hints");
     }
 
     #[test]

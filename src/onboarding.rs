@@ -106,21 +106,21 @@ impl Welcome {
     /// never spells the same keys out a second time.
     pub fn hint(&self) -> &'static str {
         match self.step {
-            Step::Pick => "↑↓ or 1-3 choose  enter confirm",
-            Step::Ready => "any key to start",
+            Step::Pick => "↑↓ or 1-3 to choose, Enter to confirm",
+            Step::Ready => "Press any key to continue.",
         }
     }
 
     pub fn title(&self) -> &'static str {
         match self.step {
-            Step::Pick => "welcome to ttmux",
-            Step::Ready => "you're set",
+            Step::Pick => "Welcome to ttmux!",
+            Step::Ready => "You're ready to go!",
         }
     }
 
     fn draw_pick(&self, buf: &mut Buffer, inner: Rect, cfg: &Config) {
         let mut row = Rows::new(buf, inner, cfg);
-        row.line("Pick a set of keyboard shortcuts.", row.plain);
+        row.line("Pick a default keybinding set:", row.plain);
         row.skip();
         for (i, (_, name, leader, blurb)) in CHOICES.iter().enumerate() {
             let on = i == self.sel;
@@ -138,7 +138,7 @@ impl Welcome {
             "Nothing here is permanent -- every key, colour and layout",
             row.dim,
         );
-        row.line("option can be changed later in settings.", row.dim);
+        row.line("option can be changed later in Settings.", row.dim);
     }
 }
 
@@ -150,7 +150,10 @@ impl Default for Welcome {
 
 fn draw_ready(buf: &mut Buffer, inner: Rect, cfg: &Config) {
     let mut row = Rows::new(buf, inner, cfg);
-    row.line("You're set.", row.accent.add_modifier(Modifier::BOLD));
+    row.line(
+        "Here are some quick keys to memorise:",
+        row.accent.add_modifier(Modifier::BOLD),
+    );
     row.skip();
     // Read the keys back out of the resolved keymap rather than hardcoding
     // them: the text has to match the preset that was just chosen.
@@ -166,7 +169,7 @@ fn draw_ready(buf: &mut Buffer, inner: Rect, cfg: &Config) {
         );
     }
     row.skip();
-    row.line("Enjoy.", row.plain);
+    row.line("Enjoy!", row.plain);
 }
 
 /// The first binding for `action`, or a placeholder when it is unbound.

@@ -794,7 +794,7 @@ impl Settings {
         let base = Style::default()
             .fg(cfg.status.fg.into())
             .bg(crate::app::modal_bg(cfg));
-        crate::app::modal(buf, area, "settings", self.hint(), cfg);
+        crate::app::modal(buf, area, "Settings", self.hint(), cfg);
         let g = geometry(area);
 
         for (i, name) in SECTIONS.iter().enumerate() {
@@ -845,11 +845,11 @@ impl Settings {
     /// What the modal chrome prints along the bottom.
     fn hint(&self) -> &'static str {
         match self.edit {
-            Edit::Capture | Edit::CaptureNew => "press a key…  esc cancel",
-            Edit::Buffer(_) => "type to edit  enter commit  esc cancel",
-            Edit::Colour(_) => "↑↓←→ pick  tab hex/rgb  enter accept  esc cancel",
-            Edit::PickAction { .. } => "type to filter  ↑↓ select  enter bind  esc cancel",
-            Edit::None => "↑↓ move  ←→ change  enter edit  s save  esc close",
+            Edit::Capture | Edit::CaptureNew => "Press a key… Esc to cancel",
+            Edit::Buffer(_) => "Type to edit, Enter to commit, Esc to cancel",
+            Edit::Colour(_) => "↑↓←→ to pick, Tab for hex/RGB, Enter to accept, Esc to cancel",
+            Edit::PickAction { .. } => "Type to filter, ↑↓ to select, Enter to bind, Esc to cancel",
+            Edit::None => "↑↓ to move, ←→ to change, Enter to edit, S to save, Esc to close",
         }
     }
 
@@ -1609,6 +1609,6 @@ mod tests {
             assert!(text.contains(name), "missing {name}\n{text}");
         }
         assert!(text.contains("scrollback"));
-        assert!(text.contains("esc close"));
+        assert!(text.contains("Esc to close"));
     }
 }
