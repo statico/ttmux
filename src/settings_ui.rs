@@ -742,14 +742,21 @@ impl Settings {
             MouseEventKind::ScrollDown => {
                 self.scroll = (self.scroll + 1).min(total.saturating_sub(rows));
             }
+            // Dragging across the grid of colours previews each one it
+            // crosses, so the picker sees a held button too.
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+                if matches!(self.edit, Edit::Colour(_)) =>
+            {
+                let Edit::Colour(p) = &mut self.edit else {
+                    return Outcome::Continue;
+                };
+                let mut p = p.clone();
+                p.on_mouse(ev, picker_rect(g.fields));
+                let value = p.value();
+                self.edit = Edit::Colour(p);
+                return self.apply(cfg, &value);
+            }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Edit::Colour(p) = &mut self.edit {
-                    let mut p = p.clone();
-                    p.on_mouse(ev, picker_rect(g.fields));
-                    let value = p.value();
-                    self.edit = Edit::Colour(p);
-                    return self.apply(cfg, &value);
-                }
                 if self.editing() {
                     return Outcome::Continue;
                 }
