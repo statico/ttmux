@@ -1270,31 +1270,34 @@ mod tests {
         let cfg = Config::default();
         let area = Rect::new(0, 0, 80, 24);
         let rect = overlay_rect(area);
-        let overlays: Vec<(&str, Box<dyn Fn(&mut Buffer)>)> = vec![
-            ("help", Box::new(|b: &mut Buffer| draw_help(b, rect, &cfg))),
-            (
-                "palette",
-                Box::new(|b: &mut Buffer| draw_palette(b, rect, "", 0, &cfg)),
-            ),
-            (
-                "settings",
-                Box::new(|b: &mut Buffer| Settings::new().draw(b, rect, &cfg)),
-            ),
-        ];
-        for (name, draw) in overlays {
+        let filled = || {
             let mut buf = Buffer::empty(area.into());
             for y in area.y..area.bottom() {
                 for x in area.x..area.right() {
                     buf.cell_mut((x, y)).unwrap().set_symbol("X");
                 }
             }
-            draw(&mut buf);
+            buf
+        };
+        let assert_opaque = |buf: &Buffer, name: &str| {
             for y in rect.y..rect.bottom() {
                 for x in rect.x..rect.right() {
-                    let sym = buf.cell((x, y)).unwrap().symbol().to_string();
+                    let sym = buf.cell((x, y)).unwrap().symbol();
                     assert_ne!(sym, "X", "{name} leaked the pane at {x},{y}");
                 }
             }
-        }
+        };
+
+        let mut buf = filled();
+        draw_help(&mut buf, rect, &cfg);
+        assert_opaque(&buf, "help");
+
+        let mut buf = filled();
+        draw_palette(&mut buf, rect, "", 0, &cfg);
+        assert_opaque(&buf, "palette");
+
+        let mut buf = filled();
+        Settings::new().draw(&mut buf, rect, &cfg);
+        assert_opaque(&buf, "settings");
     }
 }

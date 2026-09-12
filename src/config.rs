@@ -481,28 +481,39 @@ pub fn default_keys() -> BTreeMap<String, String> {
         ("ctrl+alt+n", "next-alert"),
         ("shift+pageup", "scroll-up 10"),
         ("shift+pagedown", "scroll-down 10"),
-        // Prefixed, tmux muscle memory.
-        ("ctrl+a %", "split right"),
-        ("ctrl+a \"", "split down"),
-        ("ctrl+a x", "close-pane"),
-        ("ctrl+a o", "focus-next"),
-        ("ctrl+a h", "focus left"),
-        ("ctrl+a j", "focus down"),
-        ("ctrl+a k", "focus up"),
-        ("ctrl+a l", "focus right"),
-        ("ctrl+a space", "next-preset"),
-        ("ctrl+a z", "toggle-zoom"),
-        ("ctrl+a f", "toggle-float"),
-        ("ctrl+a c", "new-tab"),
-        ("ctrl+a n", "next-tab"),
-        ("ctrl+a p", "prev-tab"),
-        ("ctrl+a &", "close-tab"),
-        ("ctrl+a ,", "rename-tab"),
-        ("ctrl+a [", "scroll-up 10"),
-        ("ctrl+a ?", "help"),
-        ("ctrl+a s", "settings"),
-        ("ctrl+a r", "reload-config"),
-        ("ctrl+a q", "quit"),
+        // Prefixed. Leader is ctrl+t; the pane keys follow vim's window
+        // commands, and the tmux spellings are kept as aliases so the old
+        // muscle memory still lands.
+        ("ctrl+t s", "split down"),
+        ("ctrl+t v", "split right"),
+        ("ctrl+t \"", "split down"),
+        ("ctrl+t %", "split right"),
+        ("ctrl+t h", "focus left"),
+        ("ctrl+t j", "focus down"),
+        ("ctrl+t k", "focus up"),
+        ("ctrl+t l", "focus right"),
+        ("ctrl+t shift+h", "resize left 2"),
+        ("ctrl+t shift+j", "resize down 1"),
+        ("ctrl+t shift+k", "resize up 1"),
+        ("ctrl+t shift+l", "resize right 2"),
+        ("ctrl+t w", "focus-next"),
+        ("ctrl+t o", "toggle-zoom"),
+        ("ctrl+t z", "toggle-zoom"),
+        ("ctrl+t x", "close-pane"),
+        ("ctrl+t q", "close-pane"),
+        ("ctrl+t space", "next-preset"),
+        ("ctrl+t f", "toggle-float"),
+        ("ctrl+t t", "new-tab"),
+        ("ctrl+t c", "new-tab"),
+        ("ctrl+t n", "next-tab"),
+        ("ctrl+t p", "prev-tab"),
+        ("ctrl+t &", "close-tab"),
+        ("ctrl+t shift+a", "rename-tab"),
+        ("ctrl+t [", "scroll-up 10"),
+        ("ctrl+t ?", "help"),
+        ("ctrl+t ,", "settings"),
+        ("ctrl+t r", "reload-config"),
+        ("ctrl+t shift+q", "quit"),
     ];
     pairs
         .iter()
@@ -627,7 +638,7 @@ mod tests {
         assert_eq!(map.len(), Config::default().keys.len());
         assert_eq!(
             Config::default().prefixes(),
-            vec!["ctrl+a".parse().unwrap()]
+            vec!["ctrl+t".parse().unwrap()]
         );
     }
 

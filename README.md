@@ -16,7 +16,7 @@ that work (prefix keys, splits, tabs) and drops the parts that don't:
 
 | | tmux | ttmux |
 |---|---|---|
-| Config | `.tmux.conf` DSL, reload by hand | TOML, edited in-app with <kbd>ctrl+a</kbd> <kbd>s</kbd> |
+| Config | `.tmux.conf` DSL, reload by hand | TOML, edited in-app with <kbd>ctrl+t</kbd> <kbd>,</kbd> |
 | Layout | tiling only | tiling **or** free-floating, drag and drop |
 | Borders | single-line ASCII | curved, square, heavy, double, dashed |
 | Mouse | bolted on | first class: click, drag, resize, wheel |
@@ -24,21 +24,22 @@ that work (prefix keys, splits, tabs) and drops the parts that don't:
 
 ## Keys
 
-Prefix is <kbd>ctrl+a</kbd>. Everything below is rebindable.
+Prefix is <kbd>ctrl+t</kbd>, and the pane keys follow vim's window commands. Everything below is rebindable.
 
 | Key | Does |
 |---|---|
-| <kbd>ctrl+a</kbd> <kbd>%</kbd> / <kbd>"</kbd> | split right / down |
-| <kbd>alt</kbd>+arrows | move focus |
-| <kbd>alt+shift</kbd>+arrows | resize the focused pane |
+| <kbd>ctrl+t</kbd> <kbd>v</kbd> / <kbd>s</kbd> | split right / down (<kbd>%</kbd> and <kbd>"</kbd> also work) |
+| <kbd>ctrl+t</kbd> <kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> | move focus (<kbd>alt</kbd>+arrows too) |
+| <kbd>ctrl+t</kbd> <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> | resize (<kbd>alt+shift</kbd>+arrows too) |
 | <kbd>ctrl+alt+f</kbd> | toggle tiling ↔ free mode |
-| <kbd>ctrl+a</kbd> <kbd>f</kbd> | float just this pane |
-| <kbd>ctrl+a</kbd> <kbd>space</kbd> | cycle tiling presets |
-| <kbd>ctrl+a</kbd> <kbd>z</kbd> | zoom the focused pane |
-| <kbd>ctrl+a</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | new / next / previous tab |
+| <kbd>ctrl+t</kbd> <kbd>f</kbd> | float just this pane |
+| <kbd>ctrl+t</kbd> <kbd>space</kbd> | cycle tiling presets |
+| <kbd>ctrl+t</kbd> <kbd>z</kbd> | zoom the focused pane |
+| <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | new / next / previous tab |
 | <kbd>ctrl+alt+n</kbd> | jump to the next pane wanting attention |
-| <kbd>ctrl+a</kbd> <kbd>s</kbd> | settings |
-| <kbd>ctrl+a</kbd> <kbd>?</kbd> | help |
+| <kbd>ctrl+t</kbd> <kbd>,</kbd> | settings |
+| <kbd>ctrl+t</kbd> <kbd>?</kbd> | help |
+| <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | close the pane / quit ttmux |
 
 ## Free mode
 
@@ -75,7 +76,7 @@ enabled = true
 bell-on-attention = true
 
 [keys]
-"ctrl+a %" = "split right"
+"ctrl+t v" = "split right"
 "alt+left" = "focus left"
 ```
 

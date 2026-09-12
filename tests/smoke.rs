@@ -115,7 +115,7 @@ fn prefix_percent_splits_the_window() {
     h.wait_for("the first pane", |s| s.contains('╭'));
     let before = h.screen().matches('╭').count();
 
-    h.send(b"\x01%"); // ctrl+a %
+    h.send(b"\x14v"); // ctrl+t v, vim vsplit
     h.wait_for("a second pane", |s| s.matches('╭').count() > before);
 
     // Both panes are live shells, and typing goes to the new one.
@@ -128,7 +128,7 @@ fn the_help_overlay_opens_and_closes() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
 
-    h.send(b"\x01?"); // ctrl+a ?
+    h.send(b"\x14?"); // ctrl+t ?
     h.wait_for("the help overlay", |s| {
         s.contains("help") && s.contains("split")
     });
@@ -142,7 +142,7 @@ fn the_settings_overlay_opens() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
 
-    h.send(b"\x01s"); // ctrl+a s
+    h.send(b"\x14,"); // ctrl+t ,
     h.wait_for("the settings panel", |s| {
         s.contains("Appearance") && s.contains("General")
     });
@@ -153,7 +153,7 @@ fn quitting_exits_cleanly() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
 
-    h.send(b"\x01q"); // ctrl+a q
+    h.send(b"\x14Q"); // ctrl+t shift+q
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if let Ok(Some(status)) = h._child.try_wait() {
@@ -162,7 +162,7 @@ fn quitting_exits_cleanly() {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("ttmux did not exit after ctrl+a q");
+    panic!("ttmux did not exit after ctrl+t shift+q");
 }
 
 /// Print a real session. `cargo test --test smoke -- --ignored --nocapture`.
@@ -171,9 +171,9 @@ fn quitting_exits_cleanly() {
 fn snapshot() {
     let mut h = Harness::start(100, 28);
     h.wait_for("the first pane", |s| s.contains('╭'));
-    h.send(b"\x01%");
+    h.send(b"\x14%");
     h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
-    h.send(b"\x01\"");
+    h.send(b"\x14s"); // ctrl+t s, vim split
     h.wait_for("a third pane", |s| s.matches('╭').count() > 2);
     h.send(b"echo hello from t''tmux\r");
     h.wait_for("output", |s| s.contains("hello from ttmux"));
@@ -196,7 +196,7 @@ fn mouse(button: u8, col: u16, row: u16, release: bool) -> Vec<u8> {
 fn clicking_a_pane_moves_focus_and_dragging_a_divider_resizes() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
-    h.send(b"\x01%"); // split right; focus moves to the right-hand pane
+    h.send(b"\x14%"); // split right; focus moves to the right-hand pane
     h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
 
     // The divider between the two panes sits at column 39/40. Grab it and drag
@@ -228,10 +228,10 @@ fn clicking_a_pane_moves_focus_and_dragging_a_divider_resizes() {
 fn free_mode_lets_a_pane_be_dragged_around() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
-    h.send(b"\x01%");
+    h.send(b"\x14%");
     h.wait_for("a second pane", |s| s.matches('╭').count() > 1);
 
-    h.send(b"\x01f"); // float the focused pane
+    h.send(b"\x14f"); // float the focused pane
     h.wait_for("free/floating layout", |s| s.matches('╭').count() > 1);
 
     // Grab the floating pane's top border and drag it down two rows.
@@ -271,7 +271,7 @@ fn the_cli_answers_without_a_terminal() {
     assert!(ok && out.starts_with("ttmux 0."), "{out:?}");
 
     let (ok, out) = run(&["--help"]);
-    assert!(ok && out.contains("ctrl+a s"), "{out:?}");
+    assert!(ok && out.contains("ctrl+t ,"), "{out:?}");
 
     let (ok, out) = run(&["--where"]);
     assert!(ok && out.trim() == "/tmp/ttmux-cli-test.toml", "{out:?}");
@@ -298,12 +298,12 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
         s.contains(&format!("{marker}-up"))
     });
 
-    h.send(b"\x01q");
+    h.send(b"\x14Q");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(
             Instant::now() < deadline,
-            "ttmux did not exit after ctrl+a q"
+            "ttmux did not exit after ctrl+t shift+q"
         );
         if matches!(h._child.try_wait(), Ok(Some(_))) {
             break;
