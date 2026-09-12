@@ -61,6 +61,17 @@ pub trait Callbacks {
         _c: char,
     ) {
     }
+    /// This callback is called when a DCS sequence (`\eP`) ends, with its
+    /// intermediates, final character and body (XTGETTCAP is `+`, `q`).
+    /// Bodies over 4096 bytes are dropped without a call.
+    fn unhandled_dcs(
+        &mut self,
+        _: &mut crate::Screen,
+        _intermediates: &[u8],
+        _c: char,
+        _data: &[u8],
+    ) {
+    }
     /// This callback is called when the terminal receives a OSC sequence
     /// (`\e]`) which is otherwise not implemented. `bel_terminated` says
     /// whether it ended with BEL rather than ST, so a reply can match.

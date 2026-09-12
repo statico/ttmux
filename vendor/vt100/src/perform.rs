@@ -2,9 +2,16 @@ const BASE64: &[u8] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
 const CLIPBOARD_SELECTOR: &[u8] = b"cpqs01234567";
 
+/// Longest DCS body collected for `Callbacks::unhandled_dcs`; queries are a
+/// few names, and anything bigger (sixel) is not for the callback.
+const DCS_MAX: usize = 4096;
+
 pub struct WrappedScreen<CB: crate::callbacks::Callbacks = ()> {
     pub screen: crate::screen::Screen,
     pub callbacks: CB,
+    /// The DCS being read: intermediates, final character and body, or
+    /// `None` once it outgrew `DCS_MAX`.
+    dcs: Option<(Vec<u8>, char, Vec<u8>)>,
 }
 
 impl WrappedScreen<()> {
@@ -26,6 +33,7 @@ impl<CB: crate::callbacks::Callbacks> WrappedScreen<CB> {
                 scrollback_len,
             ),
             callbacks,
+            dcs: None,
         }
     }
 }
@@ -194,6 +202,37 @@ impl<CB: crate::callbacks::Callbacks> vte::Perform for WrappedScreen<CB> {
                     c,
                 );
             }
+        }
+    }
+
+    fn hook(
+        &mut self,
+        _params: &vte::Params,
+        intermediates: &[u8],
+        _ignore: bool,
+        c: char,
+    ) {
+        self.dcs = Some((intermediates.to_vec(), c, vec![]));
+    }
+
+    fn put(&mut self, b: u8) {
+        if let Some((_, _, body)) = &mut self.dcs {
+            if body.len() == DCS_MAX {
+                self.dcs = None;
+            } else {
+                body.push(b);
+            }
+        }
+    }
+
+    fn unhook(&mut self) {
+        if let Some((intermediates, c, body)) = self.dcs.take() {
+            self.callbacks.unhandled_dcs(
+                &mut self.screen,
+                &intermediates,
+                c,
+                &body,
+            );
         }
     }
 

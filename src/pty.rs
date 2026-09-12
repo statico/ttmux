@@ -47,6 +47,69 @@ struct Sink {
     /// OSC 10 and 11 answers, `rgb:rrrr/gggg/bbbb`, when the outer terminal
     /// told us its colours.
     pub colours: Option<(String, String)>,
+    /// Kitty keyboard flag stacks, main screen then alternate, as the spec
+    /// keeps one per screen.
+    kitty: [Vec<u8>; 2],
+    /// xterm modifyOtherKeys level.
+    modify_other_keys: u8,
+    /// DECSET 2031: the child wants `CSI ? 997 ; n n` when the theme flips.
+    theme_reports: bool,
+}
+
+/// The kitty keyboard flags ttmux honours: disambiguate (1) and report all
+/// keys as escapes (8). Event types, alternates and text need the outer
+/// terminal to report them, and a query answers with what is really on.
+// ponytail: add 2, 4 and 16 when something needs key releases.
+const KITTY_FLAGS: u8 = 1 | 8;
+
+impl Sink {
+    fn kitty_stack(&mut self, screen: &vt100::Screen) -> &mut Vec<u8> {
+        &mut self.kitty[usize::from(screen.alternate_screen())]
+    }
+}
+
+/// `CSI ? 997 ; n n`'s n for a background `rgb:rrrr/gggg/bbbb`: 1 dark, 2 light.
+fn theme_of(colours: &Option<(String, String)>) -> Option<u8> {
+    let bg = colours.as_ref()?.1.strip_prefix("rgb:")?;
+    let mut parts = bg
+        .split('/')
+        .map(|h| u8::from_str_radix(h.get(..2)?, 16).ok());
+    let (r, g, b) = (parts.next()??, parts.next()??, parts.next()??);
+    let luma = 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b);
+    Some(if luma < 128_000 { 1 } else { 2 })
+}
+
+/// The terminfo capabilities XTGETTCAP answers, `""` for a boolean.
+fn termcap(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "TN" => "ttmux",
+        "Co" | "colors" => "256",
+        "RGB" => "8/8/8",
+        "Tc" => "",
+        "Smulx" => "\\E[4:%p1%dm",
+        "Setulc" => "\\E[58:2::%p1%{65536}%/%d:%p1%{256}%/%{255}%&%d:%p1%{255}%&%d%;m",
+        "Ss" => "\\E[%p1%d q",
+        "Se" => "\\E[2 q",
+        "Ms" => "\\E]52;%p1%s;%p2%s\\007",
+        "Sync" => "\\E[?2026%?%p1%{1}%-%tl%eh%;",
+        _ => return None,
+    })
+}
+
+fn unhex(hex: &[u8]) -> Option<String> {
+    let bytes = hex
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).ok()?, 16).ok())
+        .collect::<Option<Vec<u8>>>()?;
+    String::from_utf8(bytes).ok()
+}
+
+fn to_hex(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02X}")).collect()
+}
+
+fn as_str(b: &[u8]) -> &str {
+    std::str::from_utf8(b).unwrap_or_default()
 }
 
 /// Longest a synchronized update may hold the pane's frame, as tmux does,
@@ -69,6 +132,7 @@ fn mode_status(sink: &Sink, screen: &vt100::Screen, mode: u16) -> u8 {
         1004 => sink.focus_events,
         2004 => screen.bracketed_paste(),
         2026 => sink.synced.is_some(),
+        2031 => sink.theme_reports,
         _ => return 0,
     };
     if on {
@@ -93,8 +157,6 @@ impl vt100::Callbacks for Sink {
     /// The queries a program blocks on, and the modes vt100 does not keep.
     /// fzf, for one, asks where the cursor is and draws nothing until it
     /// hears back; neovim and fish send a batch ending in DA1 and wait.
-    // ponytail: no XTGETTCAP or kitty keyboard replies; a program that asks
-    // falls back when DA1 answers first.
     fn unhandled_csi(
         &mut self,
         screen: &mut vt100::Screen,
@@ -137,12 +199,75 @@ impl vt100::Callbacks for Sink {
                     match mode {
                         1004 => self.focus_events = on,
                         2026 => self.synced = on.then(Instant::now),
+                        2031 => self.theme_reports = on,
                         _ => {}
                     }
                 }
             }
             (Some(b' '), None, 'q') => self.cursor_shape = first,
+            // Kitty keyboard protocol: query, push, pop and set.
+            (Some(b'?'), None, 'u') => {
+                let flags = self.kitty_stack(screen).last().copied().unwrap_or(0);
+                self.replies
+                    .extend_from_slice(format!("\x1b[?{flags}u").as_bytes());
+            }
+            (Some(b'>'), None, 'u') => {
+                let stack = self.kitty_stack(screen);
+                // The spec lets a full stack forget its oldest entry.
+                if stack.len() == 16 {
+                    stack.remove(0);
+                }
+                stack.push(first as u8 & KITTY_FLAGS);
+            }
+            (Some(b'<'), None, 'u') => {
+                let stack = self.kitty_stack(screen);
+                stack.truncate(stack.len().saturating_sub(usize::from(first.max(1))));
+            }
+            (Some(b'='), None, 'u') => {
+                let flags = first as u8 & KITTY_FLAGS;
+                let mode = params.get(1).and_then(|p| p.first()).copied().unwrap_or(1);
+                let stack = self.kitty_stack(screen);
+                if stack.is_empty() {
+                    stack.push(0);
+                }
+                let top = stack.last_mut().unwrap();
+                *top = match mode {
+                    1 => flags,
+                    2 => *top | flags,
+                    3 => *top & !flags,
+                    _ => *top,
+                };
+            }
+            (Some(b'>'), None, 'm') if first == 4 => {
+                self.modify_other_keys = params
+                    .get(1)
+                    .and_then(|p| p.first())
+                    .map_or(0, |n| *n as u8);
+            }
+            (Some(b'?'), None, 'n') if first == 996 => {
+                if let Some(theme) = theme_of(&self.colours) {
+                    self.replies
+                        .extend_from_slice(format!("\x1b[?997;{theme}n").as_bytes());
+                }
+            }
             _ => {}
+        }
+    }
+
+    /// XTGETTCAP: neovim asks for `Smulx` and `Setulc` before it draws
+    /// undercurls, and for `Ms` before it trusts OSC 52.
+    fn unhandled_dcs(&mut self, _: &mut vt100::Screen, i: &[u8], c: char, data: &[u8]) {
+        if (i, c) != (b"+", 'q') {
+            return;
+        }
+        for hex in data.split(|b| *b == b';') {
+            let name = unhex(hex).unwrap_or_default();
+            let reply = match termcap(&name) {
+                Some("") => format!("\x1bP1+r{}\x1b\\", as_str(hex)),
+                Some(v) => format!("\x1bP1+r{}={}\x1b\\", as_str(hex), to_hex(v)),
+                None => format!("\x1bP0+r{}\x1b\\", as_str(hex)),
+            };
+            self.replies.extend_from_slice(reply.as_bytes());
         }
     }
 
@@ -419,8 +544,29 @@ impl Pane {
     }
 
     /// The outer terminal's foreground and background, for OSC 10 and 11.
+    /// A child that set DECSET 2031 hears when that flips it light or dark.
     pub fn set_colours(&mut self, colours: Option<(String, String)>) {
-        self.parser.callbacks_mut().colours = colours;
+        let sink = self.parser.callbacks_mut();
+        let was = theme_of(&sink.colours);
+        sink.colours = colours;
+        let now = theme_of(&sink.colours);
+        if sink.theme_reports && now.is_some() && now != was {
+            let report = format!("\x1b[?997;{}n", now.unwrap());
+            self.send(report.as_bytes());
+        }
+    }
+
+    /// How the child asked keys to be encoded, for the screen it is on.
+    pub fn keyboard(&self) -> crate::input::Keyboard {
+        let sink = self.parser.callbacks();
+        let screen = self.parser.screen();
+        crate::input::Keyboard {
+            kitty: sink.kitty[usize::from(screen.alternate_screen())]
+                .last()
+                .copied()
+                .unwrap_or(0),
+            modify_other_keys: sink.modify_other_keys,
+        }
     }
 
     /// Graphics sequences captured since the last call, oldest first; the
@@ -858,6 +1004,56 @@ mod tests {
         let r = String::from_utf8_lossy(&p.callbacks().replies).to_string();
         assert!(r.starts_with("\x1b[>1;10;0c\x1bP>|ttmux "), "{r:?}");
         assert!(r.ends_with("\x1b\\\x1b[8;10;20t"), "{r:?}");
+    }
+
+    #[test]
+    fn kitty_keyboard_stacks_are_per_screen_and_queries_see_them() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        // Push 1, then 31 of which only 1|8 is honoured; query; pop one.
+        p.process(b"\x1b[>1u\x1b[>31u\x1b[?u\x1b[<u\x1b[?u");
+        assert_eq!(p.callbacks().replies, b"\x1b[?9u\x1b[?1u");
+        p.callbacks_mut().replies.clear();
+        // The alternate screen starts clean; `=` sets, ORs and clears there.
+        p.process(b"\x1b[?1049h\x1b[?u\x1b[=8u\x1b[=1;2u\x1b[=8;3u\x1b[?u");
+        assert_eq!(p.callbacks().replies, b"\x1b[?0u\x1b[?1u");
+        p.callbacks_mut().replies.clear();
+        // Leaving it finds the main screen's stack as it was.
+        p.process(b"\x1b[?1049l\x1b[?u\x1b[<5u\x1b[?u\x1b[>4;2m");
+        assert_eq!(p.callbacks().replies, b"\x1b[?1u\x1b[?0u");
+        assert_eq!(p.callbacks().modify_other_keys, 2);
+        p.process(b"\x1b[>4m");
+        assert_eq!(p.callbacks().modify_other_keys, 0);
+    }
+
+    #[test]
+    fn xtgettcap_answers_known_names_and_refuses_the_rest() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        // "Tc", "Co" and "xx", hex encoded.
+        p.process(b"\x1bP+q5463;436F;7878\x1b\\");
+        assert_eq!(
+            String::from_utf8_lossy(&p.callbacks().replies),
+            "\x1bP1+r5463\x1b\\\x1bP1+r436F=323536\x1b\\\x1bP0+r7878\x1b\\"
+        );
+        assert_eq!(termcap("Se"), Some("\\E[2 q"));
+    }
+
+    #[test]
+    fn theme_queries_answer_from_the_background() {
+        assert_eq!(
+            theme_of(&Some(("".into(), "rgb:1a1a/1b1b/2626".into()))),
+            Some(1)
+        );
+        assert_eq!(
+            theme_of(&Some(("".into(), "rgb:fafa/f8f8/f0f0".into()))),
+            Some(2)
+        );
+        assert_eq!(theme_of(&None), None);
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b[?996n");
+        assert!(p.callbacks().replies.is_empty(), "unknown until told");
+        p.callbacks_mut().colours = Some(("rgb:0/0/0".into(), "rgb:ffff/ffff/ffff".into()));
+        p.process(b"\x1b[?996n\x1b[?2031h\x1b[?2031$p");
+        assert_eq!(p.callbacks().replies, b"\x1b[?997;2n\x1b[?2031;1$y");
     }
 
     #[test]

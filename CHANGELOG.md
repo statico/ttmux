@@ -16,6 +16,20 @@
 - OSC 52 copies reach your clipboard, and notifications (OSC 9, 99, 777)
   reach your terminal.
 - A paste can no longer end its own bracket early.
+- Emoji with skin tones, flags, ZWJ sequences and VS16 take one wide
+  cell instead of breaking the line up.
+- Scrollback keeps the lines a program scrolls away under a fixed footer,
+  as Codex and Claude Code draw, and `CSI 3J` clears it.
+- Undercurls and dotted, dashed and double underlines keep their style
+  and colour, and blink, hidden and strikethrough are kept too.
+- Programs that ask for the kitty keyboard protocol or modifyOtherKeys get
+  it, so shift+enter, ctrl+enter and ctrl+i reach them as distinct keys.
+- Panes can ask whether the theme is dark or light (`CSI ?996n`, mode
+  2031), and XTGETTCAP answers for truecolor, undercurl, cursor shape,
+  OSC 52 and synchronized output.
+- Colour replies end the way the question did, BEL or ST.
+- A performance test guards parsing, drawing and redraw size; `make
+  bench` prints the numbers.
 
 ## 0.3.1 — 2026-09-12
 
