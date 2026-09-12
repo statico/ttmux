@@ -1,83 +1,107 @@
-# ttmux
+<h1 align="center">ttmux</h1>
 
-A modern terminal multiplexer in Rust. Tiling *and* free-floating panes, real
-mouse support, curved borders, coding-agent alerts, and a config you edit from
-inside the app instead of from a man page.
+<p align="center"><em>A modern multiplexer alternative.</em></p>
+
+<p align="center">
+  <a href="https://github.com/statico/ttmux/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/statico/ttmux/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/statico/ttmux/releases"><img alt="Release" src="https://img.shields.io/github/v/release/statico/ttmux?include_prereleases&sort=semver"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Rust 1.82+" src="https://img.shields.io/badge/rust-1.82%2B-orange.svg">
+  <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg">
+</p>
+
+> [!WARNING]
+> **Beta software.** ttmux is still under test. Expect bugs, and expect the
+> config format to change before 1.0.
+
+> [!NOTE]
+> **Made entirely with [Claude Code](https://claude.com/claude-code).** Every
+> line of this project was written by Claude.
+
+ttmux runs many terminals in one window, like tmux or screen. It adds
+floating panes, real mouse support, curved borders, and a settings screen
+that you open inside the app.
 
 ```
-cargo install --path .
+cargo install --git https://github.com/statico/ttmux
 ttmux
 ```
 
 ## Why
 
-tmux is excellent and thirty years of muscle memory deep. ttmux keeps the parts
-that work (prefix keys, splits, tabs) and drops the parts that don't:
+tmux works well and has thirty years of muscle memory behind it. ttmux keeps
+the parts that work and replaces the parts that do not.
 
 | | tmux | ttmux |
 |---|---|---|
-| Config | `.tmux.conf` DSL, reload by hand | TOML, edited in-app with <kbd>ctrl+t</kbd> <kbd>,</kbd> |
+| Config | `.tmux.conf`, reload by hand | TOML, edited in the app with <kbd>ctrl+t</kbd> <kbd>,</kbd> |
 | Layout | tiling only | tiling **or** free-floating, drag and drop |
 | Borders | single-line ASCII | curved, square, heavy, double, dashed |
-| Mouse | bolted on | first class: click, drag, resize, wheel |
-| Agents | — | per-pane busy / needs-you / done indicators |
+| Mouse | bolted on | click, drag, resize, and wheel |
+| Agents | — | a per-pane busy, needs-you, or done mark |
 
 ## Keys
 
-Prefix is <kbd>ctrl+t</kbd>, and the pane keys follow vim's window commands. Everything below is rebindable.
+The prefix is <kbd>ctrl+t</kbd>. The pane keys follow the window commands of
+vim. You can rebind all of them.
 
-| Key | Does |
+| Key | Action |
 |---|---|
-| <kbd>ctrl+t</kbd> <kbd>v</kbd> / <kbd>s</kbd> | split right / down (<kbd>%</kbd> and <kbd>"</kbd> also work) |
-| <kbd>ctrl+t</kbd> <kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> | move focus (<kbd>alt</kbd>+arrows too) |
-| <kbd>ctrl+t</kbd> <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> | resize (<kbd>alt+shift</kbd>+arrows too) |
-| <kbd>ctrl+alt+f</kbd> | toggle tiling ↔ free mode |
-| <kbd>ctrl+t</kbd> <kbd>f</kbd> | float just this pane |
-| <kbd>ctrl+t</kbd> <kbd>space</kbd> | cycle tiling presets |
-| <kbd>ctrl+t</kbd> <kbd>z</kbd> | zoom the focused pane |
-| <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | new / next / previous tab |
-| <kbd>ctrl+alt+n</kbd> | jump to the next pane wanting attention |
-| <kbd>ctrl+t</kbd> <kbd>ctrl+t</kbd> / <kbd>t</kbd> | last tab / send the prefix to the pane |
-| <kbd>ctrl+t</kbd> <kbd>=</kbd> | even out the tiling |
-| <kbd>ctrl+t</kbd> <kbd>,</kbd> | settings |
-| <kbd>ctrl+t</kbd> <kbd>?</kbd> | help |
-| <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | close the pane / quit ttmux |
+| <kbd>ctrl+t</kbd> <kbd>v</kbd> / <kbd>s</kbd> | Split right or down |
+| <kbd>ctrl+t</kbd> <kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> | Move the focus |
+| <kbd>ctrl+t</kbd> <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> | Resize the pane |
+| <kbd>ctrl+alt+f</kbd> | Switch between tiling and free mode |
+| <kbd>ctrl+t</kbd> <kbd>f</kbd> | Float one pane |
+| <kbd>ctrl+t</kbd> <kbd>z</kbd> | Zoom the focused pane |
+| <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | New, next, or previous tab |
+| <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
+| <kbd>ctrl+t</kbd> <kbd>,</kbd> | Settings |
+| <kbd>ctrl+t</kbd> <kbd>?</kbd> | Help |
+| <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | Close the pane, or quit ttmux |
+
+Press <kbd>ctrl+t</kbd> <kbd>?</kbd> in the app for the full list.
 
 ## Free mode
 
-<kbd>ctrl+alt+f</kbd> turns the pane grid into a window manager. Drag a title
-bar to move a pane, drag its bottom-right corner to resize, click to raise.
-Tiling mode gets the same mouse handling for dividers: grab the line between
-two panes and drag.
+<kbd>ctrl+alt+f</kbd> turns the grid of panes into a window manager. Drag a
+title bar to move a pane. Drag any corner to resize it. Click to raise it.
+Tiling mode gets the same mouse support for dividers. Grab the line between
+two panes and drag it.
+
+## Sessions
+
+ttmux works like tmux. The server keeps your panes alive after you detach.
+
+```
+ttmux                       # attach to the default session, or start it
+ttmux new -d -s work        # start a session in the background
+ttmux attach -t work        # attach to a named session
+ttmux ls                    # list the sessions
+ttmux kill-session -t work  # stop one
+```
+
+<kbd>ctrl+t</kbd> <kbd>d</kbd> detaches. A new binary starts a new server, so
+an upgrade never kills a running session. Detach, install, then attach again
+with the old binary until you are ready to move.
 
 ## Config
 
-`~/.config/ttmux/ttmux.toml`, written for you on first save. Everything in it
-is reachable from the settings UI, so the file is for version control and the
-UI is for fiddling.
+The file is `~/.config/ttmux/ttmux.toml`. ttmux writes it for you on the
+first save. Every key in it is also in the settings screen, so the file is
+for version control and the screen is for changes.
 
 ```toml
 [general]
-mouse = true                 # set false to turn mouse support off entirely
+mouse = true
 scrollback = 10000
 free-mode = false
 keys-preset = "vim"          # vim | tmux | screen
-passthrough-images = true    # kitty / iTerm2 / sixel inline images
+passthrough-images = true    # kitty, iTerm2, and sixel inline images
 
 [appearance]
 border-style = "curved"      # curved | square | heavy | double | dashed | none
 border-focused = "#7aa2f7"
 gap = 0
-
-# Header and footer are independent; enable either, both or neither.
-[status]
-effect = "flat"              # flat | starfield | gradient
-
-[status.header]
-enabled = false
-left = ["host"]
-center = ["tabs"]
-right = ["session"]
 
 [status.footer]
 enabled = true
@@ -89,30 +113,28 @@ right = ["agents", "time"]
 enabled = true
 bell-on-attention = true
 
-# `keys` are overrides on top of the preset. "none" unbinds.
+# Overrides on top of the preset. "none" unbinds a key.
 [keys]
 "ctrl+t v" = "split right"
-"alt+left" = "focus left"
 "ctrl+t &" = "none"
 ```
 
 ## Coding-agent alerts
 
-Panes running a coding agent get a status glyph: `◐` busy, `●` wants you, `✓`
-done. The status bar counts the panes waiting on you and <kbd>ctrl+alt+n</kbd>
-jumps to the next one. Detection is pattern-based and configurable under
-`[agents]`, so it works with whatever agent you run.
+A pane that runs a coding agent gets a mark: `◐` for busy, `●` for wants
+you, and `✓` for done. The status bar counts the panes that wait on you, and
+<kbd>ctrl+alt+n</kbd> goes to the next one. The patterns live under
+`[agents]`, so this works with any agent.
 
 ## Terminals
 
-Developed against Ghostty and iTerm2; anything with 24-bit colour and SGR mouse
-reporting works, including Alacritty, kitty, WezTerm and Terminal.app (which
-falls back to 256 colours).
+ttmux is built against Ghostty and iTerm2. Any terminal with 24-bit color
+and SGR mouse reporting works, including Alacritty, kitty, WezTerm, and
+Terminal.app.
 
-On Ghostty the default `alt+left` and `alt+right` never arrive: Ghostty binds
-them to the readline word motions and rewrites them before any encoding
-happens, so ttmux cannot see them. Unbind them in Ghostty's config to get
-horizontal focus movement back:
+Ghostty never sends `alt+left` and `alt+right` to ttmux, because it binds
+them to the word motions of readline. To get horizontal focus movement back,
+unbind them in the config of Ghostty:
 
 ```
 keybind = alt+left=unbind
@@ -121,15 +143,14 @@ keybind = alt+right=unbind
 
 ## Platforms
 
-macOS on Apple silicon and Intel, and Linux (x86_64 and aarch64). CI builds and
-tests all three.
+macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64. CI builds
+and tests all three.
 
 ## Development
 
 ```
-cargo test           # unit + integration tests
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+make check      # format, lint, and test, the same as CI
+make help       # all the targets
 ```
 
 MIT licensed.
