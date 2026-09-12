@@ -576,6 +576,14 @@ mod tests {
     }
 
     #[test]
+    fn a_manual_name_outlives_the_title_the_program_sets() {
+        let mut p = pane("printf '\\033]0;vim\\007'", 40, 10);
+        assert!(pump_until(&mut p, |p| p.title() == "vim"));
+        p.title_override = Some("logs".into());
+        assert_eq!(p.title(), "logs");
+    }
+
+    #[test]
     fn osc_title_drops_control_characters() {
         // C0 never survives the OSC parser; a C1 (here U+0085) does.
         let mut p = pane("printf '\\033]0;a\\302\\205b\\007'", 40, 10);

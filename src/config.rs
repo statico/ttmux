@@ -624,6 +624,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             // even-horizontal is the nearest "make it all equal".
             ("ctrl+t =", "set-preset even-horizontal"),
             ("ctrl+t shift+a", "rename-tab"),
+            ("ctrl+t a", "rename-pane"),
             ("ctrl+t [", "scroll-up 10"),
             // tmux's choose-tree / choose-window; the palette is the nearest
             // chooser ttmux has.
@@ -655,6 +656,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b p", "prev-tab"),
             ("ctrl+b &", "close-tab"),
             ("ctrl+b ,", "rename-tab"),
+            ("ctrl+b .", "rename-pane"),
             ("ctrl+b ?", "help"),
             ("ctrl+b space", "next-preset"),
             ("ctrl+b [", "scroll-up 10"),
@@ -668,6 +670,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a n", "next-tab"),
             ("ctrl+a p", "prev-tab"),
             ("ctrl+a shift+a", "rename-tab"),
+            ("ctrl+a a", "rename-pane"),
             ("ctrl+a shift+k", "close-pane"),
             ("ctrl+a ?", "help"),
             ("ctrl+a esc", "scroll-up 10"),
