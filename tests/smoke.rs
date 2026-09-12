@@ -342,7 +342,10 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
     let marker = "ttmux-orphan-probe-4311";
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));
-    h.send(format!("sleep 300 & echo {marker}-up\n").as_bytes());
+    // `set -m` is what a shell with job control does, and it is the hard
+    // case: the background job gets a process group of its own, so killing
+    // the shell's group never reaches it. Linux shells do this on a tty.
+    h.send(format!("set -m; sleep 300 & echo {marker}-up\n").as_bytes());
     h.wait_for("the backgrounded child", |s| {
         s.contains(&format!("{marker}-up"))
     });
