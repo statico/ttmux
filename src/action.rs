@@ -73,6 +73,9 @@ pub enum Action {
     /// Back to the tab you were on before this one (tmux's `last-window`).
     LastTab,
     RenameTab,
+    /// Name the focused pane. A name set here outlives anything the program
+    /// in it sets with an escape sequence.
+    RenamePane,
     /// Scrollback.
     ScrollUp(usize),
     ScrollDown(usize),
@@ -120,6 +123,7 @@ impl fmt::Display for Action {
             SelectTab(i) => write!(f, "select-tab {i}"),
             LastTab => write!(f, "last-tab"),
             RenameTab => write!(f, "rename-tab"),
+            RenamePane => write!(f, "rename-pane"),
             ScrollUp(n) => write!(f, "scroll-up {n}"),
             ScrollDown(n) => write!(f, "scroll-down {n}"),
             ScrollTop => write!(f, "scroll-top"),
@@ -178,6 +182,7 @@ impl FromStr for Action {
             "select-tab" => SelectTab(arg.and_then(|a| a.parse().ok()).unwrap_or(1)),
             "last-tab" => LastTab,
             "rename-tab" => RenameTab,
+            "rename-pane" => RenamePane,
             "scroll-up" => ScrollUp(num(1) as usize),
             "scroll-down" => ScrollDown(num(1) as usize),
             "scroll-top" => ScrollTop,
@@ -222,6 +227,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::PrevTab,
     Action::LastTab,
     Action::RenameTab,
+    Action::RenamePane,
     Action::ScrollTop,
     Action::ScrollBottom,
     Action::ToggleSettings,

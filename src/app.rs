@@ -102,9 +102,23 @@ enum Overlay {
     None,
     Help,
     Settings(Settings),
-    Palette { query: LineEdit, sel: usize },
-    Prompt { label: String, input: LineEdit },
+    Palette {
+        query: LineEdit,
+        sel: usize,
+    },
+    Prompt {
+        label: String,
+        input: LineEdit,
+        target: Rename,
+    },
     Welcome(crate::onboarding::Welcome),
+}
+
+/// What a rename prompt is about to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rename {
+    Tab,
+    Pane(PaneId),
 }
 
 pub struct App {
@@ -590,6 +604,20 @@ impl App {
                 self.overlay = Overlay::Prompt {
                     label: "Rename tab".into(),
                     input: LineEdit::new(self.tabs[self.tab].name.clone()),
+                    target: Rename::Tab,
+                }
+            }
+            RenamePane => {
+                let id = self.focus();
+                let now = self
+                    .slots
+                    .get(&id)
+                    .map(|s| s.pane.title())
+                    .unwrap_or_default();
+                self.overlay = Overlay::Prompt {
+                    label: "Rename pane".into(),
+                    input: LineEdit::new(now),
+                    target: Rename::Pane(id),
                 }
             }
             ScrollUp(n) => self.scroll(-(n as isize)),
@@ -857,7 +885,7 @@ impl App {
     }
 
     fn prompt_key(&mut self, ev: KeyEvent) -> Result<()> {
-        let Overlay::Prompt { input, .. } = &mut self.overlay else {
+        let Overlay::Prompt { input, target, .. } = &mut self.overlay else {
             return Ok(());
         };
         if input.key(ev) {
@@ -867,11 +895,24 @@ impl App {
             KeyCode::Esc => self.overlay = Overlay::None,
             KeyCode::Enter => {
                 let name = input.text().to_string();
+                let target = *target;
                 self.overlay = Overlay::None;
-                if !name.is_empty() {
-                    let t = self.tab_mut();
-                    t.name = name;
-                    t.renamed = true;
+                if name.is_empty() {
+                    return Ok(());
+                }
+                match target {
+                    Rename::Tab => {
+                        let t = self.tab_mut();
+                        t.name = name;
+                        // Sticky: an escape sequence from a program must not
+                        // take a name back off the user.
+                        t.renamed = true;
+                    }
+                    Rename::Pane(id) => {
+                        if let Some(s) = self.slots.get_mut(&id) {
+                            s.pane.title_override = Some(name);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1272,7 +1313,7 @@ impl App {
                     let inner = modal(buf, rect, w.title(), w.hint(), &self.cfg);
                     w.draw(buf, inner, &self.cfg);
                 }
-                Overlay::Prompt { label, input } => {
+                Overlay::Prompt { label, input, .. } => {
                     draw_prompt(buf, self.area, label, input, &self.cfg);
                     cursor = None;
                 }
@@ -1354,15 +1395,21 @@ impl App {
         Ok(())
     }
 
+    /// A tab shows the program's own title only while it has one pane: with
+    /// a split, that title belongs to a pane, and the tab keeps its number.
+    /// A tab the user named keeps that name either way.
     fn tab_label(&self, i: usize, t: &Tab) -> String {
         if t.renamed {
             return t.name.clone();
         }
-        let title = self
-            .slots
-            .get(&t.focus)
-            .map(|s| s.pane.title())
-            .unwrap_or_default();
+        let title = if t.layout.ids().len() == 1 {
+            self.slots
+                .get(&t.focus)
+                .map(|s| s.pane.title())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         if title.is_empty() {
             format!("{}", i + 1)
         } else {
@@ -1748,6 +1795,37 @@ mod tests {
         a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert_eq!(a.tabs[a.tab].name, "new");
+    }
+
+    #[test]
+    fn the_rename_pane_prompt_names_the_pane_not_the_tab() {
+        let mut a = app();
+        a.dispatch(Action::RenamePane).unwrap();
+        // The prompt starts on the current title, so clear it first.
+        a.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL))
+            .unwrap();
+        for c in "logs".chars() {
+            a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        let id = a.focus();
+        // An override is what outlasts an escape sequence from the program.
+        assert_eq!(a.slots[&id].pane.title_override.as_deref(), Some("logs"));
+        assert!(!a.tabs[0].renamed);
+    }
+
+    #[test]
+    fn a_pane_title_names_the_tab_only_while_the_tab_has_one_pane() {
+        let mut a = app();
+        let id = a.focus();
+        a.slots.get_mut(&id).unwrap().pane.title_override = Some("vim".into());
+        assert_eq!(a.tab_label(0, &a.tabs[0]), "1:vim");
+
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        // The title belongs to a pane now, so the tab keeps its number.
+        assert_eq!(a.tab_label(0, &a.tabs[0]), "1");
     }
 
     #[test]
