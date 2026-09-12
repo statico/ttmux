@@ -435,6 +435,11 @@ fn a_script_types_into_a_pane_and_lists_what_it_finds() {
     assert!(ok);
     let (ok, _) = run(&h, &["select-window", "-t", "nope"]);
     assert!(!ok);
+    let (ok, out) = run(
+        &h,
+        &["list-windows", "-F", "#{window_index}:#{window_name}"],
+    );
+    assert!(ok && out == "1:scripted", "{out:?}");
 
     // A target that is not there is an error, not a silent hit on another
     // pane.

@@ -137,6 +137,13 @@ enum Overlay {
 
 /// Pretty JSON with a trailing newline, so a script can pipe it straight
 /// into `jq` and a human reading it gets a line break.
+/// One `-F` line per row.
+fn formatted(format: &str, rows: &[serde_json::Value]) -> String {
+    rows.iter()
+        .map(|r| crate::script::format_row(format, r) + "\n")
+        .collect()
+}
+
 fn json_line(v: &serde_json::Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default() + "\n"
 }
@@ -718,7 +725,7 @@ impl App {
                 self.close_pane(id);
                 Ok(String::new())
             }
-            Cmd::ListPanes { all, json } => Ok(self.list_panes(all, json)),
+            Cmd::ListPanes { all, json, format } => Ok(self.list_panes(all, json, format)),
             Cmd::NewWindow { name, command } => {
                 self.new_tab(command.as_deref())?;
                 let i = self.tab;
@@ -794,7 +801,7 @@ impl App {
                 self.close_tab_at(i);
                 Ok(String::new())
             }
-            Cmd::ListWindows { json } => Ok(self.list_windows(json)),
+            Cmd::ListWindows { json, format } => Ok(self.list_windows(json, format)),
             Cmd::ListSessions { json } => Ok(self.list_sessions(json)),
             Cmd::Display(text) => {
                 self.note(text);
@@ -816,7 +823,7 @@ impl App {
 
     // ------------------------------------------------- scripted listings
 
-    fn list_panes(&self, all: bool, json: bool) -> String {
+    fn list_panes(&self, all: bool, json: bool, format: Option<String>) -> String {
         let tabs: Vec<usize> = if all {
             (0..self.tabs.len()).collect()
         } else {
@@ -834,7 +841,7 @@ impl App {
                 rows.push((ti + 1, id, rect, title, t.focus == id && ti == self.tab));
             }
         }
-        if json {
+        if json || format.is_some() {
             let panes: Vec<serde_json::Value> = rows
                 .iter()
                 .map(|(w, id, r, title, active)| {
@@ -848,7 +855,10 @@ impl App {
                     })
                 })
                 .collect();
-            return json_line(&serde_json::json!({ "panes": panes }));
+            return match format {
+                Some(f) => formatted(&f, &panes),
+                None => json_line(&serde_json::json!({ "panes": panes })),
+            };
         }
         let mut out = String::new();
         for (w, id, r, title, active) in rows {
@@ -859,8 +869,8 @@ impl App {
         out
     }
 
-    fn list_windows(&self, json: bool) -> String {
-        if json {
+    fn list_windows(&self, json: bool, format: Option<String>) -> String {
+        if json || format.is_some() {
             let windows: Vec<serde_json::Value> = self
                 .tabs
                 .iter()
@@ -875,7 +885,10 @@ impl App {
                     })
                 })
                 .collect();
-            return json_line(&serde_json::json!({ "windows": windows }));
+            return match format {
+                Some(f) => formatted(&f, &windows),
+                None => json_line(&serde_json::json!({ "windows": windows })),
+            };
         }
         let mut out = String::new();
         for (i, t) in self.tabs.iter().enumerate() {
