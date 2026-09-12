@@ -1,4 +1,5 @@
-//! One line of editable text, with the readline keys a shell teaches.
+//! One line of editable text, with the readline keys a shell teaches:
+//! ctrl+a/e/b/f/h/d/k/u/w/y/t, alt+b/f/d/u/l/c and alt+backspace.
 //!
 //! Every text field in ttmux -- the rename prompt, the command palette, a
 //! settings value -- routes its keys through [`LineEdit::key`] so they all
@@ -14,6 +15,10 @@ pub struct LineEdit {
     text: String,
     /// Byte index into `text`, always on a char boundary.
     cursor: usize,
+    /// The last thing ctrl+k, ctrl+u, ctrl+w, alt+d or alt+backspace cut,
+    /// for ctrl+y to put back.
+    // ponytail: one slot, no kill ring or appending runs of kills.
+    killed: String,
 }
 
 impl LineEdit {
@@ -21,7 +26,11 @@ impl LineEdit {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         let cursor = text.len();
-        Self { text, cursor }
+        Self {
+            text,
+            cursor,
+            killed: String::new(),
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -51,16 +60,14 @@ impl LineEdit {
                 'f' => self.cursor = self.next(),
                 'h' => self.delete_back(),
                 'd' => self.delete_forward(),
-                'k' => self.text.truncate(self.cursor),
-                'u' => {
-                    self.text.drain(..self.cursor);
-                    self.cursor = 0;
+                'k' => self.kill(self.cursor, self.text.len()),
+                'u' => self.kill(0, self.cursor),
+                'w' => self.kill(self.word_left(), self.cursor),
+                'y' => {
+                    self.text.insert_str(self.cursor, &self.killed);
+                    self.cursor += self.killed.len();
                 }
-                'w' => {
-                    let to = self.word_left();
-                    self.text.drain(to..self.cursor);
-                    self.cursor = to;
-                }
+                't' => self.transpose(),
                 _ => return false,
             },
             // A terminal sends alt as either a modifier or an ESC prefix;
@@ -68,16 +75,22 @@ impl LineEdit {
             KeyCode::Char(c) if alt => match c {
                 'b' => self.cursor = self.word_left(),
                 'f' => self.cursor = self.word_right(),
-                'd' => {
-                    let to = self.word_right();
-                    self.text.drain(self.cursor..to);
-                }
+                'd' => self.kill(self.cursor, self.word_right()),
+                'u' => self.recase(|w| w.to_uppercase()),
+                'l' => self.recase(|w| w.to_lowercase()),
+                'c' => self.recase(|w| {
+                    let mut cs = w.chars();
+                    cs.next().map_or(String::new(), |f| {
+                        f.to_uppercase().chain(cs.flat_map(char::to_lowercase)).collect()
+                    })
+                }),
                 _ => return false,
             },
             KeyCode::Char(c) => {
                 self.text.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
             }
+            KeyCode::Backspace if alt || ctrl => self.kill(self.word_left(), self.cursor),
             KeyCode::Backspace => self.delete_back(),
             KeyCode::Delete => self.delete_forward(),
             KeyCode::Left if alt => self.cursor = self.word_left(),
@@ -89,6 +102,39 @@ impl LineEdit {
             _ => return false,
         }
         true
+    }
+
+    /// Cut `from..to` into the kill buffer and leave the cursor at `from`.
+    fn kill(&mut self, from: usize, to: usize) {
+        self.killed = self.text.drain(from..to).collect();
+        self.cursor = from;
+    }
+
+    /// Swap the two characters around the cursor and step past them; at the
+    /// end of the line, the last two, as readline does.
+    fn transpose(&mut self) {
+        if self.cursor == self.text.len() {
+            self.cursor = self.prev();
+        }
+        let (a, b) = (self.prev(), self.next());
+        if a == self.cursor || b == self.cursor {
+            return;
+        }
+        let pair: String = self.text[a..b].chars().rev().collect();
+        self.text.replace_range(a..b, &pair);
+        self.cursor = b;
+    }
+
+    /// Rewrite the word after the cursor with `f` and move past it.
+    fn recase(&mut self, f: impl Fn(&str) -> String) {
+        let to = self.word_right();
+        let start = self.cursor
+            + self.text[self.cursor..to]
+                .find(char::is_alphanumeric)
+                .unwrap_or(to - self.cursor);
+        let word = f(&self.text[start..to]);
+        self.text.replace_range(start..to, &word);
+        self.cursor = start + word.len();
     }
 
     fn delete_back(&mut self) {
@@ -245,6 +291,46 @@ mod tests {
         e.key(ctrl('a'));
         e.key(alt('d'));
         assert_eq!(e.text(), " beta");
+    }
+
+    #[test]
+    fn ctrl_y_yanks_back_what_was_last_killed() {
+        let mut e = typed("alpha beta");
+        e.key(ctrl('w'));
+        e.key(ctrl('a'));
+        e.key(ctrl('y'));
+        assert_eq!(e.with_caret("|"), "beta|alpha ");
+        e.key(ctrl('e'));
+        e.key(key(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(e.text(), "", "betaalpha is one word");
+        e.key(ctrl('y'));
+        assert_eq!(e.text(), "betaalpha ");
+    }
+
+    #[test]
+    fn ctrl_t_transposes_like_readline() {
+        let mut e = typed("abcd");
+        e.key(ctrl('t'));
+        assert_eq!(e.with_caret("|"), "abdc|");
+        e.key(ctrl('a'));
+        e.key(ctrl('t'));
+        assert_eq!(e.text(), "abdc", "nothing before the cursor to swap");
+        e.key(ctrl('f'));
+        e.key(ctrl('t'));
+        assert_eq!(e.with_caret("|"), "ba|dc");
+    }
+
+    #[test]
+    fn alt_u_l_c_recase_the_next_word() {
+        let mut e = typed("hello wORLD é");
+        e.key(ctrl('a'));
+        e.key(alt('u'));
+        assert_eq!(e.with_caret("|"), "HELLO| wORLD é");
+        e.key(alt('c'));
+        assert_eq!(e.with_caret("|"), "HELLO World| é");
+        e.key(ctrl('a'));
+        e.key(alt('l'));
+        assert_eq!(e.text(), "hello World é");
     }
 
     #[test]
