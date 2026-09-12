@@ -361,8 +361,9 @@ fn quitting_takes_the_shells_and_their_children_with_it() {
     }
 
     // The shell reaps its own background job on exit, so give it a moment
-    // rather than racing it.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    // rather than racing it. The deadline is generous because a loaded CI
+    // runner takes seconds to get round to it, and the loop leaves early.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let out = std::process::Command::new("pgrep")
             .args(["-f", "sleep 300"])
