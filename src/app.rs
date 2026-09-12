@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -126,7 +126,7 @@ pub struct App {
     cfg_path: PathBuf,
     /// The config file's mtime as of the last load, so an edit on disk can be
     /// noticed without polling the contents.
-    cfg_seen: Option<SystemTime>,
+    cfg_text: String,
     widgets: widget::Runner,
     keys: Keys,
     tabs: Vec<Tab>,
@@ -155,7 +155,8 @@ pub struct App {
 
 pub fn run() -> Result<()> {
     let path = crate::config::config_path();
-    let cfg = Config::load(&path).unwrap_or_else(|e| {
+    let (loaded, cfg_seen) = Config::load_stamped(&path);
+    let cfg = loaded.unwrap_or_else(|e| {
         eprintln!("ttmux: {}: {e}; using defaults", path.display());
         Config::default()
     });
@@ -171,7 +172,12 @@ pub fn run() -> Result<()> {
 
     let result = (|| {
         let size = term.size()?;
-        let mut app = App::new(cfg, path, Rect::new(0, 0, size.width, size.height))?;
+        let mut app = App::new(
+            cfg,
+            path,
+            Rect::new(0, 0, size.width, size.height),
+            cfg_seen,
+        )?;
         app.main_loop(&mut term, &mut LocalHost)?;
         Ok(())
     })();
@@ -212,7 +218,10 @@ fn restore() -> Result<()> {
 // ------------------------------------------------------------------- app
 
 impl App {
-    pub fn new(cfg: Config, cfg_path: PathBuf, area: Rect) -> Result<App> {
+    /// `cfg_text` is the text the config was parsed from, from
+    /// [`Config::load_stamped`]. Reading the file here instead would miss an
+    /// edit made between the caller's read and this call, and never reload.
+    pub fn new(cfg: Config, cfg_path: PathBuf, area: Rect, cfg_text: String) -> Result<App> {
         let keys = Keys::new(&cfg);
         // No config file means nobody has chosen a keymap yet, so offer the
         // choice before the first keystroke lands on a default they did not
@@ -220,7 +229,7 @@ impl App {
         let first_run = !cfg_path.exists();
         let mut app = App {
             keys,
-            cfg_seen: mtime(&cfg_path),
+            cfg_text,
             widgets: widget::Runner::default(),
             cfg,
             cfg_path,
@@ -713,7 +722,7 @@ impl App {
         self.cfg = cfg;
         self.keys.reload(&self.cfg);
         self.widgets.reload(&self.cfg.status.widgets);
-        self.cfg_seen = mtime(&self.cfg_path);
+        self.cfg_text = std::fs::read_to_string(&self.cfg_path).unwrap_or_default();
         self.relayout();
     }
 
@@ -732,17 +741,19 @@ impl App {
 
     /// Reload the config if something else wrote the file.
     ///
+    /// The text is what is compared, not the mtime: the file is small, and a
+    /// stamp misses an edit that lands in the same clock tick as the read.
     /// Saving from the settings UI goes through `apply_config`, which records
-    /// the new mtime, so this only fires for an edit made outside ttmux.
+    /// the new text, so this only fires for an edit made outside ttmux.
     fn reload_if_changed(&mut self) {
-        let now = mtime(&self.cfg_path);
-        if now == self.cfg_seen {
+        let now = std::fs::read_to_string(&self.cfg_path).unwrap_or_default();
+        if now == self.cfg_text {
             return;
         }
         // Recorded either way: a config that does not parse must not be
         // retried every tick, filling the bar with the same error.
-        self.cfg_seen = now;
-        match Config::load(&self.cfg_path.clone()) {
+        self.cfg_text = now.clone();
+        match toml::from_str::<Config>(&now) {
             Ok(c) => {
                 self.apply_config(c);
                 self.note("config reloaded");
@@ -1531,12 +1542,6 @@ pub fn modal_content(rect: Rect) -> Rect {
     inner
 }
 
-/// The file's mtime, or `None` if it cannot be read. A missing file and an
-/// unreadable one are the same answer on purpose: neither is worth a reload.
-fn mtime(path: &Path) -> Option<SystemTime> {
-    std::fs::metadata(path).ok()?.modified().ok()
-}
-
 /// Everything inside the border, hint row included.
 ///
 /// Text flush against the border is hard to read, so this is inset one cell
@@ -1762,7 +1767,13 @@ mod tests {
             },
             ..Default::default()
         };
-        App::new(cfg, PathBuf::from("/dev/null"), Rect::new(0, 0, 80, 24)).expect("spawn app")
+        App::new(
+            cfg,
+            PathBuf::from("/dev/null"),
+            Rect::new(0, 0, 80, 24),
+            String::new(),
+        )
+        .expect("spawn app")
     }
 
     fn img(row: u16, col: u16, tag: u8) -> Image {
@@ -1798,7 +1809,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let mut a = App::new(cfg, path.clone(), Rect::new(0, 0, 80, 24)).unwrap();
+        let mut a = App::new(cfg, path.clone(), Rect::new(0, 0, 80, 24), String::new()).unwrap();
         assert!(matches!(a.overlay, Overlay::Welcome(_)));
 
         // Pick the tmux preset, then dismiss the closing screen.
@@ -1811,7 +1822,13 @@ mod tests {
         assert!(matches!(a.overlay, Overlay::None));
 
         // The written file is what suppresses the picker next launch.
-        let again = App::new(Config::load(&path).unwrap(), path, Rect::new(0, 0, 80, 24)).unwrap();
+        let again = App::new(
+            Config::load(&path).unwrap(),
+            path,
+            Rect::new(0, 0, 80, 24),
+            String::new(),
+        )
+        .unwrap();
         assert!(matches!(again.overlay, Overlay::None));
     }
 
@@ -1921,6 +1938,22 @@ mod tests {
         assert_eq!(a.inner(left, rect(left)), rect(left));
         let r = rect(right);
         assert_eq!(a.inner(right, r), Rect::new(r.x + 1, r.y, r.w - 1, r.h));
+    }
+
+    #[test]
+    fn a_config_written_while_it_was_being_read_still_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ttmux.toml");
+        std::fs::write(&path, "").unwrap();
+
+        let (cfg, text) = Config::load_stamped(&path);
+        // The edit lands after the read, which on a loaded machine can share
+        // an mtime with it. The text is what makes it visible.
+        std::fs::write(&path, "[general]\nscrollback = 4242\n").unwrap();
+
+        let mut a = App::new(cfg.unwrap(), path, Rect::new(0, 0, 80, 24), text).unwrap();
+        a.reload_if_changed();
+        assert_eq!(a.cfg.general.scrollback, 4242);
     }
 
     #[test]
@@ -2169,7 +2202,13 @@ mod tests {
             },
             ..Default::default()
         };
-        App::new(cfg, PathBuf::from("/dev/null"), Rect::new(0, 0, 80, 24)).expect("spawn app")
+        App::new(
+            cfg,
+            PathBuf::from("/dev/null"),
+            Rect::new(0, 0, 80, 24),
+            String::new(),
+        )
+        .expect("spawn app")
     }
 
     /// Pump the focused pane until `f` holds, or give up after a second.
