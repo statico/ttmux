@@ -21,14 +21,13 @@ pub struct Frame {
     pub v: char,
 }
 
-/// Glyphs for a border style. `None` yields spaces so callers never get junk.
-/// Write a cell from scratch.
+/// Write a cell from scratch, clipping silently outside the buffer.
 ///
-/// `Cell::set_style` *merges* modifiers into whatever the cell already holds
-/// and leaves its underline colour alone, so painting a pane over another one
-/// inherits its underline, bold or inverse. Resetting first is what makes a
-/// float opaque.
-fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+/// The reset is the point. `Cell::set_style` *merges* modifiers into whatever
+/// the cell already holds and leaves its underline colour untouched, so a
+/// float painted over an underlined, bold or inverse pane inherits those
+/// attributes. Resetting first is what makes anything drawn on top opaque.
+pub(crate) fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
     if let Some(cell) = buf.cell_mut((x, y)) {
         cell.reset();
         cell.set_symbol(symbol);
@@ -36,6 +35,8 @@ fn put_cell(buf: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
     }
 }
 
+/// Glyphs for a border style. `None` yields spaces, so a caller that paints
+/// them anyway gets blanks rather than junk.
 pub fn frame_chars(style: BorderStyle) -> Frame {
     let (tl, tr, bl, br, h, v) = match style {
         BorderStyle::Curved => ('╭', '╮', '╰', '╯', '─', '│'),
@@ -55,7 +56,6 @@ pub fn frame_chars(style: BorderStyle) -> Frame {
     }
 }
 
-/// Marker drawn on a zoomed pane's border.
 const ZOOM: &str = " ⛶ ";
 
 fn put(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
@@ -112,7 +112,13 @@ pub fn draw_border(
     zoomed: bool,
     cfg: &Appearance,
 ) {
-    if cfg.border_style == BorderStyle::None || rect.w < 2 || rect.h < 2 {
+    // Against `right()`/`bottom()` rather than `w`/`h`: both saturate, so a
+    // rect starting near u16::MAX has less usable width than it claims, and
+    // the corner arithmetic below would wrap.
+    if cfg.border_style == BorderStyle::None
+        || rect.right() - rect.x < 2
+        || rect.bottom() - rect.y < 2
+    {
         return;
     }
     let f = frame_chars(cfg.border_style);
@@ -150,7 +156,9 @@ pub fn draw_border(
         TitlePosition::Hidden => None,
     };
 
-    // Title sits two cells in from the left corner, as ` title `.
+    // ` title ` starts two cells in from the left corner. The 6 it costs is
+    // that offset, its two spaces, the right corner and one edge cell before
+    // it, so the title never touches the corner.
     let mut title_end = x0 + 2;
     if let Some(ey) = edge {
         if !title.is_empty() && rect.w > 6 {
@@ -203,11 +211,11 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
 
             let text = vc.contents();
             let w = text.width().max(1) as u16;
-            let (x, y) = (rect.x + col, rect.y + row);
+            let (x, y) = (rect.x.saturating_add(col), rect.y.saturating_add(row));
             put_cell(buf, x, y, if text.is_empty() { " " } else { text }, style);
             if w == 2 {
                 if col + 1 < rect.w {
-                    put_cell(buf, x + 1, y, "", style);
+                    put_cell(buf, x.saturating_add(1), y, "", style);
                 }
                 col += 2;
             } else {
@@ -217,10 +225,12 @@ pub fn draw_screen(buf: &mut Buffer, rect: Rect, screen: &vt100::Screen, dim: bo
     }
 }
 
-/// Blank a rect and give it a style. An overlay is drawn on top of panes that
-/// are already in the buffer, and `Buffer::set_style` restyles cells without
-/// replacing their symbols, so anything that does not clear first shows the
-/// pane's text bleeding through its own gaps.
+/// Blank a rect and give it a style.
+///
+/// An overlay lands on panes already in the buffer, and `Buffer::set_style`
+/// restyles cells without replacing their symbols; anything that does not
+/// blank first shows the pane's text bleeding through its own gaps. See
+/// [`put_cell`] for the attributes that survive otherwise.
 pub fn clear(buf: &mut Buffer, rect: Rect, style: Style) {
     for y in rect.y..rect.bottom() {
         for x in rect.x..rect.right() {
@@ -243,7 +253,13 @@ pub fn draw_snap_preview(buf: &mut Buffer, rect: Rect, accent: Color) {
     }
 }
 
-/// Darken the L-shaped band one cell right of and below `rect`.
+/// Darken the L-shaped band one cell right of and below `rect`, so a float
+/// reads as lifted off the panes behind it.
+///
+/// Unlike [`clear`] and [`put_cell`], this deliberately does **not** reset the
+/// cell: a shadow tints whatever is already underneath it, which is what makes
+/// the pane behind still readable through the band. Resetting here would gouge
+/// a blank L out of the panes below — do not "fix" it to match `clear`.
 pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
     if rect.w == 0 || rect.h == 0 {
         return;
@@ -252,24 +268,29 @@ pub fn draw_shadow(buf: &mut Buffer, rect: Rect) {
         .fg(Color::Rgb(60, 60, 70))
         .bg(Color::Rgb(10, 10, 14))
         .add_modifier(Modifier::DIM);
-    let shade = |buf: &mut Buffer, x: u16, y: u16| {
+    let tint = |buf: &mut Buffer, x: u16, y: u16| {
         if let Some(cell) = buf.cell_mut((x, y)) {
-            cell.set_style(style); // keeps whatever symbol is already there
+            cell.set_style(style);
         }
     };
-    for y in rect.y + 1..=rect.bottom() {
-        shade(buf, rect.right(), y);
+    for y in rect.y.saturating_add(1)..=rect.bottom() {
+        tint(buf, rect.right(), y);
     }
-    for x in rect.x + 1..=rect.right() {
-        shade(buf, x, rect.bottom());
+    for x in rect.x.saturating_add(1)..=rect.right() {
+        tint(buf, x, rect.bottom());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
-    /// Every cell in `rect`, with `X` under a full house of attributes: what a
-    /// pane running `ls` with an underlined filename leaves in the buffer.
+    fn buffer(w: u16, h: u16) -> Buffer {
+        Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h))
+    }
+
+    /// Every cell filled with `X` under a full house of attributes: what a pane
+    /// running `ls` with an underlined filename leaves in the buffer.
     fn dirty(w: u16, h: u16) -> Buffer {
         let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h));
         let loud = Style::new()
@@ -288,9 +309,8 @@ mod tests {
 
     #[test]
     fn painting_over_a_pane_does_not_inherit_its_attributes() {
-        // `Cell::set_style` merges modifiers rather than replacing them, so a
-        // float drawn over an underlined `ls` listing used to keep the
-        // underline. Anything that paints a cell has to reset it first.
+        // The bug: a float drawn over an underlined `ls` listing kept the
+        // underline, because `Cell::set_style` merges modifiers. See `put_cell`.
         let mut buf = dirty(20, 6);
         let rect = Rect::new(4, 1, 12, 4);
         let cfg = Appearance::default();
@@ -327,11 +347,6 @@ mod tests {
                 assert_eq!(cell.symbol(), " ");
             }
         }
-    }
-    use super::*;
-
-    fn buffer(w: u16, h: u16) -> Buffer {
-        Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h))
     }
 
     fn sym(buf: &Buffer, x: u16, y: u16) -> String {
@@ -597,6 +612,18 @@ mod tests {
             false,
             &cfg,
         );
+        // `right()` saturates, so this rect is one usable column wide however
+        // wide it claims to be: the corner arithmetic must not wrap.
+        draw_border(
+            &mut buf,
+            Rect::new(u16::MAX, u16::MAX, 40, 40),
+            "t",
+            false,
+            false,
+            true,
+            &cfg,
+        );
+        draw_shadow(&mut buf, Rect::new(u16::MAX, u16::MAX, 40, 40));
         assert_eq!(sym(&buf, 6, 3), "╭");
     }
 
