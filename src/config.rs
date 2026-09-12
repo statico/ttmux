@@ -441,6 +441,31 @@ fn de_footer<'de, D: Deserializer<'de>>(d: D) -> Result<Bar, D::Error> {
     patch(d, default_footer())
 }
 
+/// A status widget that runs a shell command and shows what it prints.
+///
+/// Name it in a row's `left`, `center` or `right` to place it. The output is
+/// one line; tmux's `#[fg=red,bold]` markup in it is honoured, so a script
+/// written for tmux's `status-right` works unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case")]
+pub struct CustomWidget {
+    /// Run with `sh -c`, so pipes, globs and `~` all work.
+    pub command: String,
+    /// Seconds between runs. 0 runs it once, at startup and at every reload.
+    pub interval: u64,
+}
+
+impl Default for CustomWidget {
+    fn default() -> Self {
+        // The same default as tmux's `status-interval`: high enough that a
+        // heavy script is not a problem for someone who forgets to set it.
+        Self {
+            command: String::new(),
+            interval: 15,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct StatusBar {
@@ -458,6 +483,8 @@ pub struct StatusBar {
     /// `strftime`-ish format for the `time` widget (%H %M %S %d %m %Y %a %b).
     pub time_format: String,
     pub effect: BarEffect,
+    /// Widgets of your own, keyed by the name you put in a row.
+    pub widgets: BTreeMap<String, CustomWidget>,
 }
 
 impl Default for StatusBar {
@@ -471,6 +498,7 @@ impl Default for StatusBar {
             separator: " │ ".into(),
             time_format: "%H:%M".into(),
             effect: BarEffect::Flat,
+            widgets: BTreeMap::new(),
         }
     }
 }
@@ -735,6 +763,35 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_widgets_round_trip_through_toml() {
+        let mut cfg = Config::default();
+        cfg.status.widgets.insert(
+            "checks".into(),
+            CustomWidget {
+                command: "test -x ~/bin/checks-tmux && ~/bin/checks-tmux".into(),
+                interval: 60,
+            },
+        );
+        cfg.status.footer.right = vec!["checks".into(), "time".into()];
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn a_widget_with_only_a_command_gets_the_default_interval() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [status.widgets.now]
+            command = "date"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(cfg.status.widgets["now"].command, "date");
+        assert_eq!(cfg.status.widgets["now"].interval, 15);
+    }
 
     #[test]
     fn chords_round_trip() {

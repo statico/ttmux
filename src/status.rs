@@ -6,6 +6,7 @@
 //! one row and returns the on-screen column range of each tab it rendered, so
 //! the app can turn a click into a tab index.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +30,8 @@ pub struct Ctx<'a> {
     pub alerts: usize,
     pub message: Option<&'a str>,
     pub pending_prefix: bool,
+    /// What each custom widget last printed, by name. See [`crate::widget`].
+    pub custom: &'a BTreeMap<String, String>,
 }
 
 /// Every name [`widget`] knows. Any other name in a [`Bar`] renders as
@@ -443,8 +446,146 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
             expand: true,
         }],
         "alerts" | "zoom" | "prefix" => Vec::new(),
-        other => vec![Span::new(format!("?{other}"), base.fg(WARN))],
+        // Checked after the built-ins, so a custom widget can never shadow
+        // one and change what an existing config means.
+        other => match ctx.custom.get(other) {
+            Some(text) => markup(text, base),
+            None => vec![Span::new(format!("?{other}"), base.fg(WARN))],
+        },
     }
+}
+
+// ---------------------------------------------------------------- markup
+
+/// Splits tmux's `#[fg=red,bold]` markup out of a widget's output.
+///
+/// This exists so a script written for tmux's `status-right` can be dropped
+/// in unchanged. Anything that is not understood is left as literal text
+/// rather than swallowed: a typo should be visible, not invisible.
+fn markup(text: &str, base: Style) -> Vec<Span> {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut style = base;
+    let mut rest = text;
+    let mut plain = String::new();
+
+    while let Some(at) = rest.find("#[") {
+        // `##[` is tmux's escape for a literal `#[`.
+        if at > 0 && rest.as_bytes()[at - 1] == b'#' {
+            plain.push_str(&rest[..at - 1]);
+            plain.push_str("#[");
+            rest = &rest[at + 2..];
+            continue;
+        }
+        let Some(end) = rest[at..].find(']') else {
+            break;
+        };
+        plain.push_str(&rest[..at]);
+        if !plain.is_empty() {
+            spans.push(Span::new(std::mem::take(&mut plain), style));
+        }
+        style = restyle(style, base, &rest[at + 2..at + end]);
+        rest = &rest[at + end + 1..];
+    }
+    plain.push_str(rest);
+    if !plain.is_empty() {
+        spans.push(Span::new(plain, style));
+    }
+    spans
+}
+
+/// Applies one comma-separated `#[...]` list to `style`.
+fn restyle(mut style: Style, base: Style, attrs: &str) -> Style {
+    for attr in attrs.split(',').map(str::trim).filter(|a| !a.is_empty()) {
+        let (key, value) = attr.split_once('=').unwrap_or((attr, ""));
+        match key {
+            "fg" => style = set_fg(style, base, value),
+            "bg" => style = set_bg(style, base, value),
+            // tmux spells it "default"; "none" clears attributes only.
+            "default" => style = base,
+            "none" => {
+                style = Style::default().fg(style.fg.unwrap_or(base.fg.unwrap_or(Color::Reset)))
+            }
+            _ => match modifier(key.trim_start_matches("no")) {
+                Some(m) if key.starts_with("no") => style = style.remove_modifier(m),
+                Some(m) => style = style.add_modifier(m),
+                // Unknown attribute: leave the style alone rather than guess.
+                None => {}
+            },
+        }
+    }
+    style
+}
+
+fn set_fg(style: Style, base: Style, value: &str) -> Style {
+    match color(value) {
+        Some(c) => style.fg(c),
+        None => match base.fg {
+            Some(c) => style.fg(c),
+            None => style,
+        },
+    }
+}
+
+fn set_bg(style: Style, base: Style, value: &str) -> Style {
+    match color(value) {
+        Some(c) => style.bg(c),
+        None => match base.bg {
+            Some(c) => style.bg(c),
+            None => style,
+        },
+    }
+}
+
+fn modifier(name: &str) -> Option<Modifier> {
+    Some(match name {
+        "bold" => Modifier::BOLD,
+        "dim" => Modifier::DIM,
+        // tmux's spellings, not ANSI's.
+        "italics" | "italic" => Modifier::ITALIC,
+        "underscore" | "underline" => Modifier::UNDERLINED,
+        "blink" => Modifier::SLOW_BLINK,
+        "reverse" => Modifier::REVERSED,
+        "hidden" => Modifier::HIDDEN,
+        "strikethrough" => Modifier::CROSSED_OUT,
+        _ => return None,
+    })
+}
+
+/// `red`, `brightred`, `colour240`, `#7aa2f7`. `default` gives `None`, which
+/// the caller reads as "back to the bar's own colour".
+fn color(value: &str) -> Option<Color> {
+    if let Some(hex) = value.strip_prefix('#') {
+        let n = u32::from_str_radix(hex, 16).ok()?;
+        if hex.len() != 6 {
+            return None;
+        }
+        return Some(Color::Rgb((n >> 16) as u8, (n >> 8) as u8, n as u8));
+    }
+    // Both spellings: tmux writes "colour", everyone else writes "color".
+    for prefix in ["colour", "color"] {
+        if let Some(n) = value.strip_prefix(prefix) {
+            return n.parse().ok().map(Color::Indexed);
+        }
+    }
+    Some(match value {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "white" => Color::Gray,
+        "brightblack" | "gray" | "grey" => Color::DarkGray,
+        "brightred" => Color::LightRed,
+        "brightgreen" => Color::LightGreen,
+        "brightyellow" => Color::LightYellow,
+        "brightblue" => Color::LightBlue,
+        "brightmagenta" => Color::LightMagenta,
+        "brightcyan" => Color::LightCyan,
+        "brightwhite" => Color::White,
+        _ => return None,
+    })
 }
 
 // ------------------------------------------------------------------ time
@@ -624,6 +765,13 @@ mod tests {
         StatusBar::default()
     }
 
+    /// A shared empty map, so a test that does not care about custom widgets
+    /// does not have to own one.
+    fn no_custom() -> &'static BTreeMap<String, String> {
+        static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+        EMPTY.get_or_init(BTreeMap::new)
+    }
+
     fn make_ctx<'a>(tabs: &'a [(String, bool)], panes: &'a [(String, AgentState)]) -> Ctx<'a> {
         Ctx {
             session: "main",
@@ -634,7 +782,104 @@ mod tests {
             alerts: 0,
             message: None,
             pending_prefix: false,
+            custom: no_custom(),
         }
+    }
+
+    /// The (text, fg) of each span, which is what markup tests care about.
+    fn runs(text: &str) -> Vec<(String, Option<Color>)> {
+        markup(text, Style::default().fg(Color::Gray))
+            .into_iter()
+            .map(|s| (s.text, s.style.fg))
+            .collect()
+    }
+
+    #[test]
+    fn text_with_no_markup_is_one_span_in_the_bars_own_style() {
+        assert_eq!(runs("hello"), vec![("hello".into(), Some(Color::Gray))]);
+    }
+
+    #[test]
+    fn a_colour_tag_starts_a_new_span() {
+        assert_eq!(
+            runs("ok #[fg=red]bad"),
+            vec![
+                ("ok ".into(), Some(Color::Gray)),
+                ("bad".into(), Some(Color::Red)),
+            ]
+        );
+    }
+
+    #[test]
+    fn default_goes_back_to_the_bars_own_style() {
+        let spans = markup(
+            "#[fg=red,bold]hot#[default] cold",
+            Style::default().fg(Color::Gray),
+        );
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].style.fg, Some(Color::Red));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[1].style.fg, Some(Color::Gray));
+        assert!(!spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tmux_spells_colours_three_different_ways() {
+        assert_eq!(color("colour240"), Some(Color::Indexed(240)));
+        assert_eq!(color("color240"), Some(Color::Indexed(240)));
+        assert_eq!(color("#7aa2f7"), Some(Color::Rgb(0x7a, 0xa2, 0xf7)));
+        assert_eq!(color("brightred"), Some(Color::LightRed));
+        assert_eq!(color("default"), None);
+        assert_eq!(color("mauve"), None);
+    }
+
+    #[test]
+    fn a_no_prefix_removes_the_attribute_it_names() {
+        let spans = markup("#[bold]a#[nobold]b", Style::default());
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_hash_that_is_not_markup_stays_in_the_text() {
+        assert_eq!(runs("2 ##[1]")[0].0, "2 #[1]");
+        assert_eq!(runs("100# done")[0].0, "100# done");
+        // Unterminated: there is no tag here, only text.
+        assert_eq!(runs("a #[fg=red")[0].0, "a #[fg=red");
+    }
+
+    #[test]
+    fn an_unknown_attribute_is_ignored_rather_than_fatal() {
+        let spans = markup("#[fg=red,wobble]x", Style::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn a_custom_widget_renders_its_output_with_its_markup() {
+        let custom = BTreeMap::from([("checks".to_string(), "#[fg=green]ok".to_string())]);
+        let mut ctx = make_ctx(&[], &[]);
+        ctx.custom = &custom;
+        let spans = widget("checks", &cfg(), &ctx, Style::default());
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "ok");
+        assert_eq!(spans[0].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn a_name_that_is_neither_built_in_nor_custom_is_visibly_wrong() {
+        let ctx = make_ctx(&[], &[]);
+        let spans = widget("nope", &cfg(), &ctx, Style::default());
+        assert_eq!(spans[0].text, "?nope");
+    }
+
+    #[test]
+    fn a_custom_widget_cannot_take_over_a_built_in_name() {
+        let custom = BTreeMap::from([("session".to_string(), "hijacked".to_string())]);
+        let mut ctx = make_ctx(&[], &[]);
+        ctx.custom = &custom;
+        let spans = widget("session", &cfg(), &ctx, Style::default());
+        assert_eq!(spans[0].text.trim(), "main");
     }
 
     fn tabs(names: &[&str], active: usize) -> Vec<(String, bool)> {

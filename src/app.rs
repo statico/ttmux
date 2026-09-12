@@ -1,9 +1,9 @@
 //! The application: terminal setup, the event loop, and action dispatch.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{self, Write};
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use crossterm::event::{
@@ -26,6 +26,7 @@ use crate::pty::Pane;
 use crate::render;
 use crate::settings_ui::{Outcome, Settings};
 use crate::status;
+use crate::widget;
 
 /// How long a transient status message stays up.
 const MESSAGE_TTL: Duration = Duration::from_secs(4);
@@ -102,6 +103,10 @@ enum Overlay {
 pub struct App {
     cfg: Config,
     cfg_path: PathBuf,
+    /// The config file's mtime as of the last load, so an edit on disk can be
+    /// noticed without polling the contents.
+    cfg_seen: Option<SystemTime>,
+    widgets: widget::Runner,
     keys: Keys,
     tabs: Vec<Tab>,
     tab: usize,
@@ -194,6 +199,8 @@ impl App {
         let first_run = !cfg_path.exists();
         let mut app = App {
             keys,
+            cfg_seen: mtime(&cfg_path),
+            widgets: widget::Runner::default(),
             cfg,
             cfg_path,
             tabs: vec![],
@@ -210,6 +217,9 @@ impl App {
             quit: false,
             detached: false,
         };
+        // Not just on reload: a widget that is in the config at startup has
+        // to run too.
+        app.widgets.reload(&app.cfg.status.widgets);
         app.new_tab()?;
         if first_run {
             app.overlay = Overlay::Welcome(crate::onboarding::Welcome::new());
@@ -650,7 +660,43 @@ impl App {
         }
         self.cfg = cfg;
         self.keys.reload(&self.cfg);
+        self.widgets.reload(&self.cfg.status.widgets);
+        self.cfg_seen = mtime(&self.cfg_path);
         self.relayout();
+    }
+
+    /// What every named custom widget last printed.
+    ///
+    /// Only the names a row actually lists are collected: a widget defined
+    /// but not placed still runs, and this keeps it out of the frame.
+    fn widget_output(&self) -> BTreeMap<String, String> {
+        self.cfg
+            .status
+            .widgets
+            .keys()
+            .filter_map(|n| self.widgets.output(n).map(|out| (n.clone(), out)))
+            .collect()
+    }
+
+    /// Reload the config if something else wrote the file.
+    ///
+    /// Saving from the settings UI goes through `apply_config`, which records
+    /// the new mtime, so this only fires for an edit made outside ttmux.
+    fn reload_if_changed(&mut self) {
+        let now = mtime(&self.cfg_path);
+        if now == self.cfg_seen {
+            return;
+        }
+        // Recorded either way: a config that does not parse must not be
+        // retried every tick, filling the bar with the same error.
+        self.cfg_seen = now;
+        match Config::load(&self.cfg_path.clone()) {
+            Ok(c) => {
+                self.apply_config(c);
+                self.note("config reloaded");
+            }
+            Err(e) => self.note(format!("config: {e}")),
+        }
     }
 
     fn scroll(&mut self, delta: isize) {
@@ -1002,6 +1048,10 @@ impl App {
             if output || tick {
                 self.update_agents(host)?;
             }
+            if tick {
+                self.reload_if_changed();
+                self.widgets.tick();
+            }
             self.reap();
             if let Some(e) = self.exit() {
                 return Ok(e);
@@ -1158,6 +1208,7 @@ impl App {
                     .filter_map(|id| self.slots.get(id).map(|s| (s.pane.title(), s.state)))
                     .collect();
                 let alerts = self.slots.values().filter(|s| s.state.is_alert()).count();
+                let custom = self.widget_output();
                 let ctx = status::Ctx {
                     session: &self.session,
                     mode: match self.tabs[self.tab].layout.mode {
@@ -1170,6 +1221,7 @@ impl App {
                     alerts,
                     message: self.message.as_ref().map(|(m, _)| m.as_str()),
                     pending_prefix: self.keys.pending(),
+                    custom: &custom,
                 };
                 for (r, bar) in rows {
                     hits.extend(
@@ -1372,6 +1424,12 @@ pub fn modal_content(rect: Rect) -> Rect {
         inner.h -= 1;
     }
     inner
+}
+
+/// The file's mtime, or `None` if it cannot be read. A missing file and an
+/// unreadable one are the same answer on purpose: neither is worth a reload.
+fn mtime(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
 }
 
 /// Everything inside the border, hint row included.

@@ -108,6 +108,9 @@ The file is `~/.config/ttmux/ttmux.toml`. ttmux writes it for you on the
 first save. Every key in it is also in the settings screen, so the file is
 for version control and the screen is for changes.
 
+ttmux watches the file. When you save it, ttmux reloads it. A restart is not
+necessary.
+
 ```toml
 [general]
 mouse = true
@@ -136,6 +139,28 @@ bell-on-attention = true
 "ctrl+t v" = "split right"
 "ctrl+t &" = "none"
 ```
+
+## Custom widgets
+
+A widget runs a shell command and shows what it prints. Give it a name under
+`[status.widgets]`, then put that name in a row.
+
+```toml
+[status.footer]
+enabled = true
+right = ["disk", "time"]
+
+[status.widgets.disk]
+command = "df -h / | awk 'NR==2 {print $5}'"
+interval = 60               # seconds between runs, 0 runs it once
+```
+
+The command runs with `sh -c`, so pipes, globs and `~` work. ttmux uses the
+first line of the output. tmux markup such as `#[fg=red,bold]` is honored, so
+a script written for tmux `status-right` works without a change.
+
+A slow command does not block the screen. It runs in its own thread, and ttmux
+does not start a second copy while the first one runs.
 
 ## Coding-agent alerts
 
