@@ -147,6 +147,9 @@ pub enum DragKind {
     },
     /// Move the divider of the n-th split node (pre-order index).
     Divider(usize),
+    /// Where two perpendicular dividers cross: dragging moves both, which is
+    /// what makes a tiled pane resizable by its corner and not only its edges.
+    Corner { across: usize, down: usize },
     /// Drag a tiled pane by its title, to snap it into a half of another pane.
     Grab,
 }
@@ -721,9 +724,10 @@ impl Layout {
             }) {
                 return Some((id, DragKind::Grab));
             }
-            // Pre-order, so the outermost divider under the pointer wins. Only
-            // the splits on the chain of rects containing (x, y) can match, and
-            // pre-order visits that chain outermost first.
+            // Pre-order, so the outermost divider under the pointer comes
+            // first. Only the splits on the chain of rects containing (x, y)
+            // can match, and pre-order visits that chain outermost first.
+            let mut hits: Vec<(usize, Axis, PaneId)> = vec![];
             for (i, (rect, axis, path)) in self.splits().into_iter().enumerate() {
                 if !rect.contains(x, y) {
                     continue;
@@ -743,8 +747,22 @@ impl Layout {
                 if on_edge {
                     let mut leaves = Vec::new();
                     collect_leaves(self.node_at(&path)?, &mut leaves);
-                    return leaves.first().map(|id| (*id, DragKind::Divider(i)));
+                    if let Some(id) = leaves.first() {
+                        hits.push((i, axis, *id));
+                    }
                 }
+            }
+            // A point on both a vertical and a horizontal divider is a corner,
+            // and dragging it moves both — otherwise a tiled pane can only be
+            // resized one axis at a time, which is not what a corner looks
+            // like it does.
+            let across = hits.iter().find(|(_, a, _)| *a == Axis::Horizontal);
+            let down = hits.iter().find(|(_, a, _)| *a == Axis::Vertical);
+            if let (Some(&(across, _, id)), Some(&(down, ..))) = (across, down) {
+                return Some((id, DragKind::Corner { across, down }));
+            }
+            if let Some(&(i, _, id)) = hits.first() {
+                return Some((id, DragKind::Divider(i)));
             }
         }
         None
@@ -796,13 +814,19 @@ impl Layout {
             DragKind::Move | DragKind::Resize { .. } | DragKind::Grab => {
                 (x as i32 - start.x as i32, y as i32 - start.y as i32)
             }
-            DragKind::Divider(i) => {
-                let (rect, axis, path) = self.splits()[i].clone();
-                let first = part(axis.len_of(rect), self.ratio_at(&path));
-                match axis {
-                    Axis::Horizontal => (x as i32 - (rect.x + first) as i32, 0),
-                    Axis::Vertical => (0, y as i32 - (rect.y + first) as i32),
-                }
+            DragKind::Divider(i) => match self.split_boundary(i) {
+                Some((rect, Axis::Horizontal, _, first)) => (x as i32 - (rect.x + first) as i32, 0),
+                Some((rect, Axis::Vertical, _, first)) => (0, y as i32 - (rect.y + first) as i32),
+                None => (0, 0),
+            },
+            DragKind::Corner { across, down } => {
+                let dx = self
+                    .split_boundary(across)
+                    .map_or(0, |(rect, _, _, first)| x as i32 - (rect.x + first) as i32);
+                let dy = self
+                    .split_boundary(down)
+                    .map_or(0, |(rect, _, _, first)| y as i32 - (rect.y + first) as i32);
+                (dx, dy)
             }
         };
         if matches!(kind, DragKind::Move | DragKind::Resize { .. }) {
@@ -864,23 +888,20 @@ impl Layout {
             // Nothing moves until the drop; `snap_target` follows the pointer.
             DragKind::Grab => {}
             DragKind::Divider(i) => {
-                let splits = self.splits();
-                let Some(&(rect, axis, ref path)) = splits.get(i) else {
+                let Some((_, axis, _, _)) = self.split_boundary(i) else {
                     return;
                 };
-                let path = path.clone();
-                let len = axis.len_of(rect);
-                if len < 2 * MIN {
-                    return;
-                }
-                let boundary = if axis == Axis::Horizontal {
-                    x as i32 - d.grab.0 - rect.x as i32
-                } else {
-                    y as i32 - d.grab.1 - rect.y as i32
+                let to = match axis {
+                    Axis::Horizontal => x as i32 - d.grab.0,
+                    Axis::Vertical => y as i32 - d.grab.1,
                 };
-                let first = boundary.clamp(MIN as i32, (len - MIN) as i32) as u16;
-                self.set_ratio_at(&path, first as f32 / len as f32);
-                self.preset = Preset::Tree;
+                self.move_divider(i, to);
+            }
+            // Both axes at once. Moving `across` only changes ratios, never
+            // the tree's shape, so `down` is still the same split afterwards.
+            DragKind::Corner { across, down } => {
+                self.move_divider(across, x as i32 - d.grab.0);
+                self.move_divider(down, y as i32 - d.grab.1);
             }
         }
     }
@@ -1010,6 +1031,34 @@ impl Layout {
 
     /// Place a float, and remember where the user put it as a fraction of the
     /// area so `set_area` can reproduce it instead of rescaling a rounded rect.
+    /// Split `i`'s rect, axis, path, and where its boundary currently sits
+    /// measured from the rect's own origin.
+    fn split_boundary(&self, i: usize) -> Option<(Rect, Axis, Vec<bool>, u16)> {
+        let (rect, axis, path) = self.splits().get(i).cloned()?;
+        let first = part(axis.len_of(rect), self.ratio_at(&path));
+        Some((rect, axis, path, first))
+    }
+
+    /// Put split `i`'s boundary at absolute coordinate `to` on its own axis,
+    /// keeping both children at least `MIN`.
+    fn move_divider(&mut self, i: usize, to: i32) {
+        let Some((rect, axis, path, _)) = self.split_boundary(i) else {
+            return;
+        };
+        let len = axis.len_of(rect);
+        if len < 2 * MIN {
+            return;
+        }
+        let origin = if axis == Axis::Horizontal {
+            rect.x
+        } else {
+            rect.y
+        };
+        let first = (to - origin as i32).clamp(MIN as i32, (len - MIN) as i32) as u16;
+        self.set_ratio_at(&path, first as f32 / len as f32);
+        self.preset = Preset::Tree;
+    }
+
     fn put_rect(&mut self, id: PaneId, r: Rect) {
         let r = self.clamp_rect(r);
         let a = self.area;
@@ -1805,6 +1854,51 @@ mod tests {
         let got = l.rect_of(2).unwrap();
         assert_eq!(got.h, MIN, "inside out: {got:?}");
         assert_eq!(got.bottom(), r.bottom(), "bottom edge moved");
+    }
+
+    #[test]
+    fn a_tiled_corner_moves_both_dividers_at_once() {
+        // Two columns, the right one split in two rows, so the inner
+        // horizontal divider meets the outer vertical one at a crossing.
+        let mut l = Layout::new(Rect::new(0, 0, 80, 24));
+        l.insert(1, None, None);
+        l.insert(2, Some(1), Some(Dir::Right));
+        l.insert(3, Some(2), Some(Dir::Down));
+
+        let a = l.rect_of(1).unwrap();
+        let b = l.rect_of(2).unwrap();
+        let (cx, cy) = (a.right(), b.bottom());
+        assert!(
+            matches!(l.hit_test(cx, cy), Some((_, DragKind::Corner { .. }))),
+            "no corner where the dividers cross: {:?}",
+            l.hit_test(cx, cy)
+        );
+
+        assert!(l.drag_start(cx, cy));
+        l.drag_to(cx - 10, cy - 4);
+        l.drag_end();
+
+        let a2 = l.rect_of(1).unwrap();
+        let b2 = l.rect_of(2).unwrap();
+        assert_eq!(a2.w, a.w - 10, "the vertical divider did not move");
+        assert_eq!(b2.h, b.h - 4, "the horizontal divider did not move");
+        // Still an exact tiling afterwards.
+        assert_eq!(
+            l.geometry()
+                .iter()
+                .map(|(_, r)| r.w as u32 * r.h as u32)
+                .sum::<u32>(),
+            80 * 24
+        );
+    }
+
+    #[test]
+    fn a_point_on_only_one_divider_is_still_a_plain_divider_drag() {
+        let mut l = Layout::new(Rect::new(0, 0, 80, 24));
+        l.insert(1, None, None);
+        l.insert(2, Some(1), Some(Dir::Right));
+        let x = l.rect_of(1).unwrap().right();
+        assert!(matches!(l.hit_test(x, 10), Some((_, DragKind::Divider(_)))));
     }
 
     #[test]
