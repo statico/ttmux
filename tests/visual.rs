@@ -180,6 +180,30 @@ fn dragging_a_divider_keeps_the_tiling_exact() {
 }
 
 #[test]
+fn the_snap_preview_tints_the_half_without_erasing_it() {
+    let cfg = Config::default();
+    let l = two_panes();
+    let mut buf = scene(&cfg, &l, 1, 40, 10);
+    let half = Rect::new(0, 5, 20, 4);
+    render::draw_snap_preview(&mut buf, half, cfg.status.accent.into());
+
+    for y in half.y..half.bottom() {
+        assert_eq!(
+            buf.cell((half.x, y)).unwrap().style().bg,
+            Some(cfg.status.accent.into()),
+            "row {y} of the preview is not tinted"
+        );
+    }
+    // The pane's own border is still legible through it, and the other half is
+    // untouched.
+    assert_eq!(buf.cell((0u16, 8u16)).unwrap().symbol(), "╰");
+    assert_ne!(
+        buf.cell((0u16, 1u16)).unwrap().style().bg,
+        Some(cfg.status.accent.into())
+    );
+}
+
+#[test]
 fn a_floated_pane_can_be_grabbed_by_its_top_border() {
     let mut l = Layout::new(Rect::new(0, 0, 80, 24));
     l.insert(1, None, None);

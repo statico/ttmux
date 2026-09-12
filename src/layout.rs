@@ -92,15 +92,30 @@ pub enum Preset {
     Tree,
 }
 
+/// How wide the move grab on a tile's top border is.
+///
+/// `render::draw_border` writes the title at `x + 2` as ` title `, but layout
+/// knows nothing about titles, so this is a fixed run instead of the real
+/// width: big enough to be an easy target, small enough that most of the
+/// border still drags the divider it doubles as.
+const GRAB: u16 = 12;
+
 /// What a mouse press grabbed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragKind {
     /// Move a floating pane.
     Move,
-    /// Resize a floating pane by its right (`Dir::Right`) or bottom edge.
-    ResizeEdge(Dir),
+    /// Resize a floating pane by the named sides. Corners set two of them.
+    Resize {
+        left: bool,
+        right: bool,
+        top: bool,
+        bottom: bool,
+    },
     /// Move the divider of the n-th split node (pre-order index).
     Divider(usize),
+    /// Drag a tiled pane by its title, to snap it into a half of another pane.
+    Grab,
 }
 
 /// Split orientation. `Horizontal` puts the children side by side.
@@ -138,8 +153,8 @@ struct Drag {
     grab: (i32, i32),
     /// Rect of the float at press time (unused for dividers).
     start: Rect,
-    /// Bottom-right corner grab: resize both axes.
-    corner: bool,
+    /// Where the pointer is now, for `snap_target`.
+    at: (u16, u16),
 }
 
 /// The layout of one tab: a tiling tree plus floating panes.
@@ -668,11 +683,18 @@ impl Layout {
             if !r.contains(x, y) {
                 continue;
             }
-            let kind = if x + 1 == r.right() {
-                Some(DragKind::ResizeEdge(Dir::Right))
-            } else if y + 1 == r.bottom() {
-                Some(DragKind::ResizeEdge(Dir::Down))
-            } else if y == r.y {
+            let (left, right) = (x == r.x, x + 1 == r.right());
+            let (top, bottom) = (y == r.y, y + 1 == r.bottom());
+            // The top row is the title bar, so it moves — except at the two
+            // corners, where resizing wins.
+            let kind = if left || right || bottom {
+                Some(DragKind::Resize {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                })
+            } else if top {
                 Some(DragKind::Move)
             } else {
                 None
@@ -680,12 +702,51 @@ impl Layout {
             return kind.map(|k| (*id, k));
         }
         if self.mode == Mode::Tiling {
+            if let Some((id, _)) = self.tiled_geometry().into_iter().find(|(_, r)| {
+                y == r.y && x > r.x && x < r.right().saturating_sub(1).min(r.x + 1 + GRAB)
+            }) {
+                return Some((id, DragKind::Grab));
+            }
             if let Some(root) = self.root.as_ref() {
                 let mut idx = 0;
                 return hit_divider(root, self.area, x, y, &mut idx);
             }
         }
         None
+    }
+
+    /// While a tiled pane is being dragged: the pane it would land in, which
+    /// side of it, and the half it would take (what the app previews).
+    pub fn snap_target(&self) -> Option<(PaneId, Dir, Rect)> {
+        let d = self.drag?;
+        if d.kind != DragKind::Grab || self.mode != Mode::Tiling {
+            return None;
+        }
+        let (x, y) = d.at;
+        let target = self.pane_at(x, y)?;
+        if target == d.id || !self.leaves().contains(&target) {
+            return None;
+        }
+        let r = self.rect_of(target)?;
+        // Nearest edge, as a fraction of the rect so a wide pane's left edge
+        // does not always beat its top one.
+        let (w, h) = (r.w.max(1) as f32, r.h.max(1) as f32);
+        let dir = [
+            (Dir::Left, (x - r.x) as f32 / w),
+            (Dir::Right, (r.right() - 1 - x) as f32 / w),
+            (Dir::Up, (y - r.y) as f32 / h),
+            (Dir::Down, (r.bottom() - 1 - y) as f32 / h),
+        ]
+        .into_iter()
+        .reduce(|a, b| if b.1 < a.1 { b } else { a })?
+        .0;
+        let (first, second) = split_rect(r, Axis::of(dir), 0.5);
+        let half = if matches!(dir, Dir::Left | Dir::Up) {
+            first
+        } else {
+            second
+        };
+        Some((target, dir, half))
     }
 
     /// Begin a drag. Returns false if nothing draggable is under the pointer.
@@ -695,18 +756,11 @@ impl Layout {
             return false;
         };
         let start = self.rects.get(&id).copied().unwrap_or_default();
-        let (grab, corner) = match kind {
-            DragKind::Move => (
-                (x as i32 - start.x as i32, y as i32 - start.y as i32),
-                false,
-            ),
-            DragKind::ResizeEdge(_) => (
-                (
-                    x as i32 - start.right() as i32 + 1,
-                    y as i32 - start.bottom() as i32 + 1,
-                ),
-                x + 1 == start.right() && y + 1 == start.bottom(),
-            ),
+        let grab = match kind {
+            // Offset from the float's origin; `drag_to` turns it into a delta.
+            DragKind::Move | DragKind::Resize { .. } | DragKind::Grab => {
+                (x as i32 - start.x as i32, y as i32 - start.y as i32)
+            }
             DragKind::Divider(i) => {
                 let (rect, axis, _) = self.splits()[i];
                 let len = if axis == Axis::Horizontal {
@@ -720,15 +774,14 @@ impl Layout {
                 } else {
                     rect.y + first
                 };
-                let g = if axis == Axis::Horizontal {
+                if axis == Axis::Horizontal {
                     (x as i32 - boundary as i32, 0)
                 } else {
                     (0, y as i32 - boundary as i32)
-                };
-                (g, false)
+                }
             }
         };
-        if matches!(kind, DragKind::Move | DragKind::ResizeEdge(_)) {
+        if matches!(kind, DragKind::Move | DragKind::Resize { .. }) {
             self.raise(id);
         }
         self.drag = Some(Drag {
@@ -736,32 +789,52 @@ impl Layout {
             kind,
             grab,
             start,
-            corner,
+            at: (x, y),
         });
         true
     }
 
     /// Continue a drag. Absolute coordinates; idempotent w.r.t. the press point.
     pub fn drag_to(&mut self, x: u16, y: u16) {
-        let Some(d) = self.drag else { return };
+        let Some(d) = self.drag.as_mut() else { return };
+        d.at = (x, y);
+        let d = *d;
         match d.kind {
             DragKind::Move => {
                 let nx = (x as i32 - d.grab.0).max(0) as u16;
                 let ny = (y as i32 - d.grab.1).max(0) as u16;
                 self.put_rect(d.id, Rect::new(nx, ny, d.start.w, d.start.h));
             }
-            DragKind::ResizeEdge(dir) => {
-                let mut r = d.start;
-                if d.corner || dir == Dir::Right {
-                    let right = (x as i32 - d.grab.0 + 1).max(0) as u16;
-                    r.w = right.saturating_sub(r.x).max(MIN);
+            DragKind::Resize {
+                left,
+                right,
+                top,
+                bottom,
+            } => {
+                let s = d.start;
+                let dx = x as i32 - (s.x as i32 + d.grab.0);
+                let dy = y as i32 - (s.y as i32 + d.grab.1);
+                let mut r = s;
+                // Each side moves on its own; the clamps are what stop a window
+                // turning inside out when dragged past the opposite side.
+                if right {
+                    r.w = (s.w as i32 + dx).max(MIN as i32) as u16;
                 }
-                if d.corner || dir == Dir::Down {
-                    let bottom = (y as i32 - d.grab.1 + 1).max(0) as u16;
-                    r.h = bottom.saturating_sub(r.y).max(MIN);
+                if left {
+                    r.x = (s.x as i32 + dx).clamp(0, s.right() as i32 - MIN as i32) as u16;
+                    r.w = s.right() - r.x;
+                }
+                if bottom {
+                    r.h = (s.h as i32 + dy).max(MIN as i32) as u16;
+                }
+                if top {
+                    r.y = (s.y as i32 + dy).clamp(0, s.bottom() as i32 - MIN as i32) as u16;
+                    r.h = s.bottom() - r.y;
                 }
                 self.put_rect(d.id, r);
             }
+            // Nothing moves until the drop; `snap_target` follows the pointer.
+            DragKind::Grab => {}
             DragKind::Divider(i) => {
                 let splits = self.splits();
                 let Some(&(rect, axis, ref path)) = splits.get(i) else {
@@ -788,7 +861,21 @@ impl Layout {
         }
     }
 
+    /// Finish a drag. A tiled pane dropped on a half of another one is
+    /// re-parented there; everything else just stops.
     pub fn drag_end(&mut self) {
+        if let (Some((target, dir, _)), Some(d)) = (self.snap_target(), self.drag) {
+            // Re-parenting is remove + insert, and `insert` refuses a split
+            // that would leave an unusable tile — so keep the old tree to put
+            // back rather than dropping the pane on the floor.
+            let before = self.root.clone();
+            if let Some(root) = self.root.take() {
+                self.root = remove_leaf(root, d.id);
+            }
+            if !self.insert(d.id, Some(target), Some(dir)) {
+                self.root = before;
+            }
+        }
         self.drag = None;
     }
 
@@ -1615,16 +1702,84 @@ mod tests {
         let mut l = grid();
         l.toggle_float(2);
         let r = l.rect_of(2).unwrap();
+        let sides = |left, right, top, bottom| {
+            Some((
+                2,
+                DragKind::Resize {
+                    left,
+                    right,
+                    top,
+                    bottom,
+                },
+            ))
+        };
+        // Middle of the top row still moves; everything else on the rim resizes.
         assert_eq!(l.hit_test(r.x + 2, r.y), Some((2, DragKind::Move)));
+        assert_eq!(l.hit_test(r.x, r.y + 2), sides(true, false, false, false));
         assert_eq!(
             l.hit_test(r.right() - 1, r.y + 2),
-            Some((2, DragKind::ResizeEdge(Dir::Right)))
+            sides(false, true, false, false)
         );
         assert_eq!(
             l.hit_test(r.x + 2, r.bottom() - 1),
-            Some((2, DragKind::ResizeEdge(Dir::Down)))
+            sides(false, false, false, true)
+        );
+        assert_eq!(l.hit_test(r.x + 2, r.y), Some((2, DragKind::Move)));
+        // All four corners, the top two winning over the title row.
+        assert_eq!(l.hit_test(r.x, r.y), sides(true, false, true, false));
+        assert_eq!(
+            l.hit_test(r.right() - 1, r.y),
+            sides(false, true, true, false)
+        );
+        assert_eq!(
+            l.hit_test(r.x, r.bottom() - 1),
+            sides(true, false, false, true)
+        );
+        assert_eq!(
+            l.hit_test(r.right() - 1, r.bottom() - 1),
+            sides(false, true, false, true)
         );
         assert_eq!(l.hit_test(r.x + 2, r.y + 2), None);
+    }
+
+    #[test]
+    fn resize_from_top_left_moves_the_origin() {
+        let mut l = grid();
+        l.toggle_float(2);
+        let r = l.rect_of(2).unwrap();
+        assert!(l.drag_start(r.x, r.y));
+        l.drag_to(r.x + 4, r.y + 2);
+        let moved = l.rect_of(2).unwrap();
+        // The far corner is anchored: the pane shrinks by exactly the delta.
+        assert_eq!((moved.x, moved.y), (r.x + 4, r.y + 2));
+        assert_eq!((moved.right(), moved.bottom()), (r.right(), r.bottom()));
+        // Back to the press point restores the rect.
+        l.drag_to(r.x, r.y);
+        assert_eq!(l.rect_of(2), Some(r));
+    }
+
+    #[test]
+    fn resize_past_the_opposite_side_stops_at_min() {
+        let mut l = grid();
+        l.toggle_float(2);
+        let r = l.rect_of(2).unwrap();
+        // Left edge dragged far past the right edge.
+        assert!(l.drag_start(r.x, r.y + 2));
+        l.drag_to(r.right() + 30, r.y + 2);
+        let got = l.rect_of(2).unwrap();
+        assert_eq!(got.w, MIN, "inside out: {got:?}");
+        assert_eq!(got.right(), r.right(), "right edge moved");
+        l.drag_end();
+
+        // Top-left corner dragged far past the bottom edge.
+        let mut l = grid();
+        l.toggle_float(2);
+        let r = l.rect_of(2).unwrap();
+        assert!(l.drag_start(r.x, r.y));
+        l.drag_to(r.x, r.bottom() + 30);
+        let got = l.rect_of(2).unwrap();
+        assert_eq!(got.h, MIN, "inside out: {got:?}");
+        assert_eq!(got.bottom(), r.bottom(), "bottom edge moved");
     }
 
     #[test]
@@ -1688,6 +1843,92 @@ mod tests {
         l.drag_to(r.x + 20, r.y + 2);
         assert_eq!(l.rect_of(2).unwrap().w, 21);
         assert!(l.rect_of(2).unwrap().right() <= AREA.right());
+    }
+
+    #[test]
+    fn hit_test_finds_the_tile_title_grab() {
+        let l = grid();
+        let r = l.rect_of(2).unwrap(); // top-right tile
+        assert_eq!(l.hit_test(r.x + 1, r.y), Some((2, DragKind::Grab)));
+        assert_eq!(l.hit_test(r.x + GRAB, r.y), Some((2, DragKind::Grab)));
+        // The left corner is the vertical divider, and the rest of the top
+        // border past the title run stays free for the divider too.
+        assert!(matches!(
+            l.hit_test(r.x, r.y),
+            Some((_, DragKind::Divider(_)))
+        ));
+        assert_eq!(l.hit_test(r.x + GRAB + 1, r.y), None);
+        // Nothing to grab in the middle of a tile.
+        assert_eq!(l.hit_test(r.x + 5, r.y + 5), None);
+    }
+
+    #[test]
+    fn snap_target_picks_the_nearest_edge() {
+        // Drag pane 4 (bottom-right) over pane 1 (top-left, 40x12).
+        for (x, y, want) in [
+            (1, 6, Dir::Left),
+            (38, 6, Dir::Right),
+            (20, 0, Dir::Up),
+            (20, 11, Dir::Down),
+        ] {
+            let mut l = grid();
+            let r = l.rect_of(4).unwrap();
+            assert!(l.drag_start(r.x + 1, r.y), "no grab on pane 4");
+            l.drag_to(x, y);
+            let (target, dir, half) = l.snap_target().expect("a drop target");
+            assert_eq!((target, dir), (1, want), "pointer at {x},{y}");
+            let one = l.rect_of(1).unwrap();
+            assert!(one.intersects(&half) && half.w <= one.w && half.h <= one.h);
+        }
+
+        // On itself, or on nothing, there is no target.
+        let mut l = grid();
+        let r = l.rect_of(4).unwrap();
+        assert!(l.drag_start(r.x + 1, r.y));
+        l.drag_to(r.x + 5, r.y + 5);
+        assert_eq!(l.snap_target(), None);
+        l.drag_to(AREA.right() + 5, 5);
+        assert_eq!(l.snap_target(), None);
+    }
+
+    #[test]
+    fn dropping_a_tile_on_a_half_reparents_it() {
+        let mut l = grid();
+        let r = l.rect_of(4).unwrap();
+        assert!(l.drag_start(r.x + 1, r.y));
+        l.drag_to(20, 11); // bottom half of pane 1
+        let (_, _, half) = l.snap_target().unwrap();
+        l.drag_end();
+
+        // Pane 2 took the whole right column when 4 left; 1 and 4 now share
+        // the left one, 4 underneath, exactly where the preview was.
+        assert_eq!(l.rect_of(4), Some(half));
+        assert_eq!(l.rect_of(1), Some(Rect::new(0, 0, 40, 6)));
+        assert_eq!(l.rect_of(4), Some(Rect::new(0, 6, 40, 6)));
+        assert_eq!(l.rect_of(2), Some(Rect::new(40, 0, 40, 24)));
+        let mut ids = l.ids();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![1, 2, 3, 4], "a pane went missing");
+        assert_exact(&l);
+    }
+
+    #[test]
+    fn a_refused_drop_leaves_the_tree_untouched() {
+        // Two panes side by side in an area only 5 rows tall: wide enough to
+        // split again, nowhere near tall enough.
+        let mut l = Layout::new(Rect::new(0, 0, 8, 5));
+        l.insert(1, None, None);
+        l.insert(2, Some(1), Some(Dir::Right));
+        let before = l.geometry();
+
+        let r = l.rect_of(2).unwrap();
+        assert!(l.drag_start(r.x + 1, r.y));
+        l.drag_to(2, 0); // top half of pane 1
+        assert_eq!(l.snap_target().map(|(t, d, _)| (t, d)), Some((1, Dir::Up)));
+        l.drag_end();
+
+        assert_eq!(l.geometry(), before, "a refused drop moved things");
+        assert_exact(&l);
     }
 
     #[test]
