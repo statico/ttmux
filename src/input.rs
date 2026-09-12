@@ -11,6 +11,8 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 
+use vt100::{MouseProtocolEncoding, MouseProtocolMode};
+
 use crate::action::Action;
 use crate::config::{Binding, Chord, Config};
 
@@ -205,10 +207,25 @@ pub fn encode_key(ev: KeyEvent, app_cursor_keys: bool) -> Vec<u8> {
 
 // --------------------------------------------------------------------- mouse
 
-/// Encode a mouse event as SGR (1006) for panes that asked for mouse
-/// reporting. `col`/`row` are zero-based within the pane; the wire format is
-/// one-based. Returns `None` for events with no button meaning.
-pub fn encode_mouse(ev: MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
+/// Encode a mouse event the way the guest asked to receive it.
+///
+/// `col`/`row` are zero-based within the pane; every wire format is
+/// one-based. Returns `None` when the guest's mode does not report this
+/// event at all, or when the coordinates do not fit the encoding.
+pub fn encode_mouse(
+    ev: MouseEvent,
+    col: u16,
+    row: u16,
+    mode: MouseProtocolMode,
+    encoding: MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    if mode == MouseProtocolMode::None {
+        return None;
+    }
+    let motion = matches!(
+        mode,
+        MouseProtocolMode::ButtonMotion | MouseProtocolMode::AnyMotion
+    );
     let button = |b: MouseButton| match b {
         MouseButton::Left => 0,
         MouseButton::Middle => 1,
@@ -216,13 +233,25 @@ pub fn encode_mouse(ev: MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
     };
     let (mut code, release) = match ev.kind {
         MouseEventKind::Down(b) => (button(b), false),
+        // Press-only guests parse no release report, so one is noise at best
+        // and a stray character at worst.
+        MouseEventKind::Up(_) if mode == MouseProtocolMode::Press => return None,
         MouseEventKind::Up(b) => (button(b), true),
+        MouseEventKind::Drag(_) if !motion => return None,
         MouseEventKind::Drag(b) => (button(b) + 32, false),
+        MouseEventKind::Moved if mode != MouseProtocolMode::AnyMotion => return None,
+        // No button held: button bits are the 3 that also means release.
+        MouseEventKind::Moved => (35, false),
         MouseEventKind::ScrollUp => (64, false),
         MouseEventKind::ScrollDown => (65, false),
+        // From tuios: a trackpad leaks sideways drift into nearly every
+        // vertical scroll, and forwarding that unasked walks the guest
+        // sideways, so horizontal wheel counts only when modified.
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight if ev.modifiers.is_empty() => {
+            return None
+        }
         MouseEventKind::ScrollLeft => (66, false),
         MouseEventKind::ScrollRight => (67, false),
-        MouseEventKind::Moved => return None,
     };
     if ev.modifiers.contains(KeyModifiers::SHIFT) {
         code += 4;
@@ -233,8 +262,39 @@ pub fn encode_mouse(ev: MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
     if ev.modifiers.contains(KeyModifiers::CONTROL) {
         code += 16;
     }
-    let end = if release { 'm' } else { 'M' };
-    Some(format!("\x1b[<{code};{};{}{end}", col + 1, row + 1).into_bytes())
+    let (col, row) = (col as u32 + 1, row as u32 + 1);
+    match encoding {
+        MouseProtocolEncoding::Sgr => {
+            let end = if release { 'm' } else { 'M' };
+            Some(format!("\x1b[<{code};{col};{row}{end}").into_bytes())
+        }
+        // The older encodings have no release code: button bits 3 is it.
+        MouseProtocolEncoding::Utf8 => {
+            let mut out = b"\x1b[M".to_vec();
+            for n in [
+                32 + u32::from(code | if release { 3 } else { 0 }),
+                32 + col,
+                32 + row,
+            ] {
+                out.extend_from_slice(char::from_u32(n)?.to_string().as_bytes());
+            }
+            Some(out)
+        }
+        MouseProtocolEncoding::Default => {
+            // One byte per field, so a click past column 223 is unreportable.
+            if col > 223 || row > 223 {
+                return None;
+            }
+            Some(vec![
+                0x1b,
+                b'[',
+                b'M',
+                32 + (code | if release { 3 } else { 0 }),
+                32 + col as u8,
+                32 + row as u8,
+            ])
+        }
+    }
 }
 
 #[cfg(test)]
@@ -486,15 +546,26 @@ mod tests {
 
     // ----------------------------------------------------------------- mouse
 
+    /// The common case: a guest on SGR with button motion.
+    fn sgr(ev: MouseEvent, col: u16, row: u16) -> Option<Vec<u8>> {
+        encode_mouse(
+            ev,
+            col,
+            row,
+            MouseProtocolMode::ButtonMotion,
+            MouseProtocolEncoding::Sgr,
+        )
+    }
+
     #[test]
     fn mouse_left_press_and_release() {
         let n = KeyModifiers::NONE;
         assert_eq!(
-            encode_mouse(mouse(MouseEventKind::Down(MouseButton::Left), n), 4, 9).unwrap(),
+            sgr(mouse(MouseEventKind::Down(MouseButton::Left), n), 4, 9).unwrap(),
             b"\x1b[<0;5;10M"
         );
         assert_eq!(
-            encode_mouse(mouse(MouseEventKind::Up(MouseButton::Left), n), 0, 0).unwrap(),
+            sgr(mouse(MouseEventKind::Up(MouseButton::Left), n), 0, 0).unwrap(),
             b"\x1b[<0;1;1m"
         );
     }
@@ -503,11 +574,11 @@ mod tests {
     fn mouse_wheel_and_modifiers() {
         let n = KeyModifiers::NONE;
         assert_eq!(
-            encode_mouse(mouse(MouseEventKind::ScrollUp, n), 2, 3).unwrap(),
+            sgr(mouse(MouseEventKind::ScrollUp, n), 2, 3).unwrap(),
             b"\x1b[<64;3;4M"
         );
         assert_eq!(
-            encode_mouse(
+            sgr(
                 mouse(MouseEventKind::ScrollDown, KeyModifiers::CONTROL),
                 2,
                 3
@@ -521,9 +592,115 @@ mod tests {
     fn mouse_drag_and_plain_motion() {
         let n = KeyModifiers::NONE;
         assert_eq!(
-            encode_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), n), 7, 1).unwrap(),
+            sgr(mouse(MouseEventKind::Drag(MouseButton::Left), n), 7, 1).unwrap(),
             b"\x1b[<32;8;2M"
         );
-        assert_eq!(encode_mouse(mouse(MouseEventKind::Moved, n), 7, 1), None);
+        assert_eq!(sgr(mouse(MouseEventKind::Moved, n), 7, 1), None);
+    }
+
+    #[test]
+    fn mouse_encoding_follows_what_the_guest_declared() {
+        let ev = mouse(MouseEventKind::Down(MouseButton::Left), KeyModifiers::NONE);
+        assert_eq!(
+            encode_mouse(
+                ev,
+                4,
+                9,
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Default
+            )
+            .unwrap(),
+            vec![0x1b, b'[', b'M', 32, 32 + 5, 32 + 10]
+        );
+        assert_eq!(
+            encode_mouse(
+                ev,
+                4,
+                9,
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Utf8
+            )
+            .unwrap(),
+            "\x1b[M\u{20}\u{25}\u{2a}".as_bytes()
+        );
+        // Past 223 columns the one-byte encoding has nothing to say.
+        assert_eq!(
+            encode_mouse(
+                ev,
+                300,
+                0,
+                MouseProtocolMode::Press,
+                MouseProtocolEncoding::Default
+            ),
+            None
+        );
+        // Utf8 reaches further, and a release is button 3 there.
+        let up = mouse(MouseEventKind::Up(MouseButton::Left), KeyModifiers::NONE);
+        assert_eq!(
+            encode_mouse(
+                up,
+                0,
+                0,
+                MouseProtocolMode::PressRelease,
+                MouseProtocolEncoding::Utf8
+            )
+            .unwrap(),
+            "\x1b[M\u{23}\u{21}\u{21}".as_bytes()
+        );
+    }
+
+    #[test]
+    fn motion_and_release_are_dropped_in_press_only_mode() {
+        let n = KeyModifiers::NONE;
+        let each = [
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Moved,
+        ];
+        for kind in each {
+            assert_eq!(
+                encode_mouse(
+                    mouse(kind, n),
+                    0,
+                    0,
+                    MouseProtocolMode::Press,
+                    MouseProtocolEncoding::Sgr
+                ),
+                None,
+                "{kind:?} should not be reported to a press-only guest"
+            );
+        }
+        // Drag needs a motion mode; bare motion needs any-motion.
+        assert!(sgr(mouse(MouseEventKind::Drag(MouseButton::Left), n), 0, 0).is_some());
+        assert!(encode_mouse(
+            mouse(MouseEventKind::Moved, n),
+            0,
+            0,
+            MouseProtocolMode::AnyMotion,
+            MouseProtocolEncoding::Sgr
+        )
+        .is_some());
+        // A guest that asked for nothing gets nothing.
+        assert_eq!(
+            encode_mouse(
+                mouse(MouseEventKind::Down(MouseButton::Left), n),
+                0,
+                0,
+                MouseProtocolMode::None,
+                MouseProtocolEncoding::Sgr
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn horizontal_wheel_needs_a_modifier() {
+        let n = KeyModifiers::NONE;
+        assert_eq!(sgr(mouse(MouseEventKind::ScrollLeft, n), 0, 0), None);
+        assert_eq!(sgr(mouse(MouseEventKind::ScrollRight, n), 0, 0), None);
+        assert_eq!(
+            sgr(mouse(MouseEventKind::ScrollLeft, KeyModifiers::SHIFT), 0, 0).unwrap(),
+            b"\x1b[<70;1;1M"
+        );
     }
 }
