@@ -56,8 +56,11 @@ fn setup(cfg: &Config) -> Result<()> {
         if libc::tcgetattr(0, &mut t) == 0 {
             let _ = ORIG_TERMIOS.set(t);
         }
+        // Through a fn pointer, not straight from the fn item: casting the
+        // item to an integer is its own clippy lint.
+        let handler: extern "C" fn(i32) = on_signal;
         for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
-            libc::signal(sig, on_signal as libc::sighandler_t);
+            libc::signal(sig, handler as libc::sighandler_t);
         }
     }
     terminal::enable_raw_mode()?;
