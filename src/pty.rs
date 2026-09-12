@@ -12,6 +12,7 @@ use anyhow::Context;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::config::Config;
+use crate::graphics::{Image, Piece, Scanner};
 use crate::layout::PaneId;
 
 /// Read buffer for the reader thread.
@@ -19,6 +20,9 @@ const READ_BUF: usize = 64 * 1024;
 /// Most bytes one `pump()` will feed the emulator, so a noisy pane can't
 /// starve the UI.
 const PUMP_BUDGET: usize = 4 * 1024 * 1024;
+/// Images kept for the app to collect. The app takes them every frame; this
+/// only bounds a pane that draws while nobody is looking.
+const MAX_PENDING_IMAGES: usize = 32;
 
 /// Emulator callbacks: everything vt100 reports outside the screen grid.
 #[derive(Default)]
@@ -53,6 +57,9 @@ pub struct Pane {
     pub title_override: Option<String>,
 
     parser: vt100::Parser<Sink>,
+    scanner: Scanner,
+    /// Graphics sequences captured since the app last took them.
+    images: RefCell<Vec<Image>>,
     rx: Receiver<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -149,6 +156,8 @@ impl Pane {
             bell: false,
             title_override: None,
             parser: vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default()),
+            scanner: Scanner::new(),
+            images: RefCell::new(Vec::new()),
             rx,
             master: pair.master,
             writer,
@@ -196,7 +205,21 @@ impl Pane {
                 Err(_) => break,
                 Ok(chunk) => {
                     got += chunk.len();
-                    self.parser.process(&chunk);
+                    for piece in self.scanner.feed(&chunk) {
+                        match piece {
+                            Piece::Plain(bytes) => self.parser.process(&bytes),
+                            // The cursor is wherever the preceding plain bytes
+                            // left it, which is where the image belongs.
+                            Piece::Image(bytes) => {
+                                let (row, col) = self.parser.screen().cursor_position();
+                                let mut pending = self.images.borrow_mut();
+                                if pending.len() == MAX_PENDING_IMAGES {
+                                    pending.remove(0);
+                                }
+                                pending.push(Image { row, col, bytes });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -209,6 +232,12 @@ impl Pane {
         // New output only reaches the live view; keep the scrollback offset put.
         self.parser.screen_mut().set_scrollback(self.scroll);
         true
+    }
+
+    /// Graphics sequences captured since the last call, oldest first. The
+    /// app replays them over the pane after drawing the frame.
+    pub fn take_images(&self) -> Vec<Image> {
+        std::mem::take(&mut self.images.borrow_mut())
     }
 
     pub fn screen(&self) -> &vt100::Screen {
@@ -462,6 +491,25 @@ mod tests {
         // C0 never survives the OSC parser; a C1 (here U+0085) does.
         let mut p = pane("printf '\\033]0;a\\302\\205b\\007'", 40, 10);
         assert!(pump_until(&mut p, |p| p.title() == "ab"));
+    }
+
+    #[test]
+    fn a_graphics_sequence_is_captured_at_the_cursor_it_started_on() {
+        // "ab" on row 1, then a kitty APC, then "cd" where the APC was: the
+        // sequence never reaches vt100, and its cell is where "cd" begins.
+        let mut p = pane("printf 'x\\nab\\033_Ga=T;PAYLOAD\\033\\\\cd'", 40, 10);
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("abcd")));
+        let imgs = p.take_images();
+        assert_eq!(imgs.len(), 1);
+        assert_eq!((imgs[0].row, imgs[0].col), (1, 2));
+        assert_eq!(imgs[0].bytes, b"\x1b_Ga=T;PAYLOAD\x1b\\");
+        // Taking clears them.
+        assert!(p.take_images().is_empty());
+        // And no part of the payload landed on the screen.
+        assert!(!p.screen().contents().contains("PAYLOAD"));
     }
 
     #[test]
