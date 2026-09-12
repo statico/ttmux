@@ -61,3 +61,14 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: ttmux-*.tar.gz*
+
+  # Needs a token that can push to the tap, which the default GITHUB_TOKEN
+  # cannot: it is scoped to this repository alone.
+  tap:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/update-tap.sh ${{ inputs.tag || github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}

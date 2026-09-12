@@ -22,10 +22,28 @@ ttmux runs many terminals in one window, like tmux or screen. It adds
 floating panes, real mouse support, curved borders, and a settings screen
 that you open inside the app.
 
+## Install
+
+With Homebrew, on macOS or Linux:
+
+```
+brew install statico/tap/ttmux
+```
+
+Or build it from source, which needs Rust 1.82 or later:
+
 ```
 cargo install --git https://github.com/statico/ttmux
+```
+
+Then start it:
+
+```
 ttmux
 ```
+
+Prebuilt binaries for macOS and Linux are also on the
+[releases page](https://github.com/statico/ttmux/releases).
 
 ## Why
 

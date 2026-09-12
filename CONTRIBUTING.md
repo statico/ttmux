@@ -64,5 +64,21 @@ Bump `version` in `Cargo.toml`, add a section to `CHANGELOG.md`, then:
 make tag        # runs the checks, tags v<version>, and pushes it
 ```
 
-The tag starts `.github/workflows/release.yml`, which builds the four supported
-targets and attaches the tarballs to the release.
+The tag starts `.github/workflows/release.yml`. The workflow builds the four
+supported targets, attaches the tarballs to the release, and then updates the
+Homebrew formula in [statico/homebrew-tap](https://github.com/statico/homebrew-tap).
+
+The formula installs those same tarballs, so it needs no build step. To update
+the tap by hand, or after a release that failed part way:
+
+```bash
+scripts/update-tap.sh v0.1.0
+```
+
+The workflow needs a `TAP_GITHUB_TOKEN` secret, because the token that GitHub
+gives a workflow can only write to its own repository. Use a fine-grained
+personal access token with contents write permission on the tap repository:
+
+```bash
+gh secret set TAP_GITHUB_TOKEN --repo statico/ttmux
+```
