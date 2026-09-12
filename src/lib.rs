@@ -2,6 +2,7 @@
 pub mod action;
 pub mod agent;
 pub mod app;
+pub mod client;
 pub mod color_picker;
 pub mod config;
 pub mod graphics;
@@ -11,5 +12,6 @@ pub mod onboarding;
 pub mod proto;
 pub mod pty;
 pub mod render;
+pub mod server;
 pub mod settings_ui;
 pub mod status;
