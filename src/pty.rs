@@ -15,13 +15,15 @@ use crate::config::Config;
 use crate::graphics::{Image, Piece, Scanner};
 use crate::layout::PaneId;
 
-/// Read buffer for the reader thread.
 const READ_BUF: usize = 64 * 1024;
 /// Most bytes one `pump()` will feed the emulator, so a noisy pane can't
 /// starve the UI.
 const PUMP_BUDGET: usize = 4 * 1024 * 1024;
-/// Images kept for the app to collect. The app takes them every frame; this
-/// only bounds a pane that draws while nobody is looking.
+/// Images kept for the app to collect; past this the oldest is dropped. The
+/// app takes them every frame, so this only bounds a pane that draws while
+/// nobody is looking.
+// ponytail: counted, not sized, so the worst case is this many times
+// `graphics::MAX_SEQ`. Bound it by bytes if panes ever hold large images.
 const MAX_PENDING_IMAGES: usize = 32;
 
 /// Emulator callbacks: everything vt100 reports outside the screen grid.
@@ -45,7 +47,7 @@ impl vt100::Callbacks for Sink {
     }
 }
 
-/// A single terminal pane.
+/// One pane: the child, its pty, and the emulator the app draws from.
 pub struct Pane {
     pub id: PaneId,
     pub cols: u16,
@@ -65,7 +67,8 @@ pub struct Pane {
     writer: Box<dyn Write + Send>,
     child: RefCell<Box<dyn Child + Send + Sync>>,
     exit: Cell<Option<u32>>,
-    /// `kill` already waited: signalling the group again could hit a reused pid.
+    /// `kill` already waited: signalling the group again could hit a pid the
+    /// kernel has since handed to someone else.
     reaped: Cell<bool>,
     /// Write side failed; stop writing. Reads still drain.
     disconnected: bool,
@@ -108,16 +111,13 @@ impl Pane {
     ) -> anyhow::Result<Pane> {
         // vt100's grid does `rows - 1`, so a zero size underflows u16.
         let (cols, rows) = (cols.max(1), rows.max(1));
-        let name = cmd
-            .get_argv()
-            .first()
-            .map(|p| {
-                PathBuf::from(p)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
+        let name = cmd.get_argv().first().map_or_else(String::new, |p| {
+            PathBuf::from(p)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
 
         let pair = portable_pty::native_pty_system()
             .openpty(PtySize {
@@ -201,7 +201,9 @@ impl Pane {
         let mut got = 0usize;
         while got < PUMP_BUDGET {
             match self.rx.try_recv() {
-                // Empty or the reader is gone: either way, drain what arrived.
+                // try_recv reports Disconnected only once the queue is empty,
+                // so breaking on any error still hands over every byte the
+                // reader managed to send before it died.
                 Err(_) => break,
                 Ok(chunk) => {
                     got += chunk.len();
@@ -213,7 +215,7 @@ impl Pane {
                             Piece::Image(bytes) => {
                                 let (row, col) = self.parser.screen().cursor_position();
                                 let mut pending = self.images.borrow_mut();
-                                if pending.len() == MAX_PENDING_IMAGES {
+                                if pending.len() >= MAX_PENDING_IMAGES {
                                     pending.remove(0);
                                 }
                                 pending.push(Image { row, col, bytes });
@@ -234,8 +236,11 @@ impl Pane {
         true
     }
 
-    /// Graphics sequences captured since the last call, oldest first. The
-    /// app replays them over the pane after drawing the frame.
+    /// Graphics sequences captured since the last call, oldest first; the
+    /// pane keeps none of them. Cells are the cursor position at capture
+    /// time, so scrolling since then makes them stale. A pane that captured
+    /// more than `MAX_PENDING_IMAGES` between calls has silently lost the
+    /// oldest, so calling every frame is not optional.
     pub fn take_images(&self) -> Vec<Image> {
         std::mem::take(&mut self.images.borrow_mut())
     }
@@ -447,7 +452,6 @@ mod tests {
         p.resize(60, 20);
         assert_eq!(p.screen().size(), (20, 60));
         assert_eq!((p.cols, p.rows), (60, 20));
-        p.pump();
     }
 
     #[test]
@@ -529,6 +533,27 @@ mod tests {
             .contains("hello")));
     }
 
+    #[test]
+    fn pending_images_stop_at_the_cap_by_dropping_the_oldest() {
+        let mut p = pane(
+            "i=0; while [ $i -lt 40 ]; do printf '\\033_Gn=%s;\\033\\\\' $i; \
+             i=$((i+1)); done; printf done",
+            40,
+            10,
+        );
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("done")));
+        let imgs = p.take_images();
+        assert_eq!(imgs.len(), MAX_PENDING_IMAGES);
+        assert_eq!(imgs[0].bytes, b"\x1b_Gn=8;\x1b\\");
+        assert_eq!(imgs[MAX_PENDING_IMAGES - 1].bytes, b"\x1b_Gn=39;\x1b\\");
+    }
+
+    /// Both assertions share one pty on purpose: as two tests they each open
+    /// a pty and roughly 30% of macOS runs failed with "failed to openpty".
+    /// Do not split them apart again.
     #[test]
     fn kill_reaps_the_child_and_its_group() {
         // The shell ignores SIGHUP (so the kill escalates to SIGKILL, the path

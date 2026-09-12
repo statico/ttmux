@@ -44,8 +44,9 @@ enum Kind {
     Dcs,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum State {
+    #[default]
     Ground,
     /// Inside a prefix that may turn out to be one of ours.
     Maybe,
@@ -53,6 +54,7 @@ enum State {
 }
 
 /// Resumable splitter: a sequence may be cut across any number of `feed`s.
+#[derive(Default)]
 pub struct Scanner {
     state: State,
     /// The sequence so far, from its ESC.
@@ -61,17 +63,6 @@ pub struct Scanner {
     esc: bool,
     /// This sequence blew the size cap; swallow it to its terminator.
     dropped: bool,
-}
-
-impl Default for Scanner {
-    fn default() -> Self {
-        Scanner {
-            state: State::Ground,
-            buf: Vec::new(),
-            esc: false,
-            dropped: false,
-        }
-    }
 }
 
 enum Verdict {
@@ -167,15 +158,20 @@ impl Scanner {
                     }
                 }
                 State::Body(k) => {
-                    // ponytail: over the cap we swallow to the terminator
-                    // instead of flushing garbage at vt100; a sequence that
-                    // never terminates therefore eats the pane's output.
-                    if self.dropped {
-                    } else if self.buf.len() >= MAX_SEQ {
-                        self.dropped = true;
-                        self.buf = Vec::new();
-                    } else {
-                        self.buf.push(b);
+                    // ponytail: an unterminated sequence eats the pane's
+                    // output — under the cap it is buffered, over the cap it
+                    // is swallowed, and either way nothing reaches vt100 until
+                    // the ST arrives. Flushing the partial bytes instead would
+                    // paint base64 over the screen, which is worse. Upgrade
+                    // path: a per-sequence byte deadline.
+                    if !self.dropped {
+                        if self.buf.len() >= MAX_SEQ {
+                            self.dropped = true;
+                            // Not `clear()`: release the 4MB, the pane is spewing.
+                            self.buf = Vec::new();
+                        } else {
+                            self.buf.push(b);
+                        }
                     }
                     if b == ESC {
                         self.esc = true;
@@ -187,7 +183,6 @@ impl Scanner {
                         if !std::mem::take(&mut self.dropped) {
                             out.push(Piece::Image(std::mem::take(&mut self.buf)));
                         }
-                        self.buf.clear();
                         self.state = State::Ground;
                         plain = i;
                     }
@@ -244,7 +239,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sequence_survives_being_split() {
+    fn a_sequence_survives_being_split_across_reads() {
         for seq in [KITTY, ITERM, SIXEL] {
             // Three chunks, cut inside the prefix and inside the payload.
             let (a, b) = seq.split_at(2);
@@ -291,5 +286,43 @@ mod tests {
         // And the next, well-sized one still lands.
         let (_, imgs) = run(&[&input, KITTY]);
         assert_eq!(imgs, vec![KITTY.to_vec()]);
+    }
+
+    /// The property the whole module rests on: whatever the scanner emits,
+    /// plain and image pieces concatenated, is the input back byte for byte,
+    /// and anything not yet emitted is still sitting in a bounded `buf`.
+    #[test]
+    fn random_input_is_never_lost_invented_or_buffered_without_bound() {
+        // Alphabet biased to the bytes that steer the scanner; cuts are random
+        // so every split point gets exercised.
+        let alpha = b"\x1b_GP]q1337;\\\x07ab$+0";
+        let mut x: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut rng = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as usize
+        };
+        for trial in 0..4000usize {
+            let mut s = Scanner::new();
+            let input: Vec<u8> = (0..1 + trial % 300)
+                .map(|_| alpha[rng() % alpha.len()])
+                .collect();
+            let mut seen = Vec::new();
+            let mut cut = 0;
+            while cut < input.len() {
+                let end = (cut + 1 + rng() % 7).min(input.len());
+                for p in s.feed(&input[cut..end]) {
+                    match p {
+                        Piece::Plain(b) => seen.extend_from_slice(&b),
+                        Piece::Image(b) => seen.extend_from_slice(&b),
+                    }
+                }
+                assert!(s.buf.len() <= MAX_SEQ, "trial {trial}");
+                cut = end;
+            }
+            assert_eq!(seen, input[..seen.len()], "trial {trial}");
+            assert!(input.len() - seen.len() <= s.buf.len() + 1, "trial {trial}");
+        }
     }
 }
