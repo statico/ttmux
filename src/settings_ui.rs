@@ -30,10 +30,20 @@ pub enum Outcome {
     Save,
 }
 
-pub const SECTIONS: &[&str] = &["General", "Appearance", "Status bar", "Agents", "Keys"];
+pub const SECTIONS: &[&str] = &[
+    "General",
+    "Appearance",
+    "Status bar",
+    "Agents",
+    "Keys",
+    "About",
+];
 
 /// Index of the (dynamic) key-bindings section.
 const KEYS: usize = 4;
+/// Index of the read-only About section. It has no fields, so nothing in it
+/// can be selected or edited; `draw` paints it as text.
+const ABOUT: usize = 5;
 
 const BORDER_STYLES: &[&str] = &[
     "curved", "square", "heavy", "double", "dashed", "divider", "none",
@@ -836,6 +846,19 @@ impl Settings {
                 .map_or(String::new(), |f| f.label.to_string());
             put(buf, g.fields.x, g.fields.y, &label, g.fields.w, base);
             p.draw(buf, picker_rect(g.fields), cfg);
+        } else if self.section == ABOUT {
+            let lines = [
+                format!("ttmux {}", env!("CARGO_PKG_VERSION")),
+                String::new(),
+                env!("CARGO_PKG_REPOSITORY").to_string(),
+            ];
+            for (i, line) in lines.iter().enumerate() {
+                let y = g.fields.y + i as u16;
+                if y >= g.fields.bottom() {
+                    break;
+                }
+                put(buf, g.fields.x, y, line, g.fields.w, base);
+            }
         } else {
             self.draw_fields(buf, g.fields, cfg, base);
         }
@@ -1628,5 +1651,29 @@ mod tests {
         }
         assert!(text.contains("scrollback"));
         assert!(text.contains("Esc to close"));
+    }
+
+    #[test]
+    fn about_shows_the_version_and_the_url_and_edits_nothing() {
+        let mut cfg = Config::default();
+        let mut s = Settings::new();
+        s.section = ABOUT;
+        let mut buf = Buffer::empty(TRect::new(0, 0, 80, 24));
+        s.draw(&mut buf, Rect::new(0, 0, 80, 24), &cfg);
+        let text = text_of(&buf, 80, 24);
+        assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+        assert!(text.contains("github.com/statico/ttmux"), "{text}");
+
+        let before = cfg.clone();
+        for code in [
+            KeyCode::Right,
+            KeyCode::Enter,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Enter,
+        ] {
+            s.on_key(k(code), &mut cfg);
+        }
+        assert_eq!(cfg, before);
     }
 }
