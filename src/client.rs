@@ -251,6 +251,7 @@ fn paint_loop(sock: &mut UnixStream) -> Result<()> {
                     })
                     .collect();
                 back.draw(cells.iter().map(|(x, y, c)| (*x, *y, c)))?;
+                paint_underlines(&mut io::stdout(), &cells)?;
                 Backend::flush(&mut back)?;
             }
             ServerMsg::Clear => back.clear()?,
@@ -276,6 +277,38 @@ fn paint_loop(sock: &mut UnixStream) -> Result<()> {
             ServerMsg::Reply { .. } => {}
         }
     }
+}
+
+/// Repaint the cells whose underline ratatui cannot express (curly, double,
+/// dotted, dashed) over what the backend just drew as a plain underline.
+/// Neovim and helix mark diagnostics this way.
+// ponytail: only the client does this; `--no-daemon` shows a plain underline.
+fn paint_underlines(out: &mut impl Write, cells: &[(u16, u16, Cell)]) -> io::Result<()> {
+    use crossterm::style::{Attribute, PrintStyledContent, StyledContent};
+    use ratatui::backend::IntoCrossterm;
+    for (x, y, cell) in cells {
+        let Some(n) = crate::render::underline_style(cell.modifier) else {
+            continue;
+        };
+        let mut style = ratatui::style::Style::new()
+            .fg(cell.fg)
+            .bg(cell.bg)
+            .underline_color(cell.underline_color)
+            .add_modifier(cell.modifier)
+            .into_crossterm();
+        style.attributes.set(match n {
+            2 => Attribute::DoubleUnderlined,
+            3 => Attribute::Undercurled,
+            4 => Attribute::Underdotted,
+            _ => Attribute::Underdashed,
+        });
+        queue!(
+            out,
+            MoveTo(*x, *y),
+            PrintStyledContent(StyledContent::new(style, cell.symbol()))
+        )?;
+    }
+    Ok(())
 }
 
 /// Run one scripting command against `session` and hand back the exit status
