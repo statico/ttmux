@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-09-12
+
+- The config no longer reloads when the file changes. Press the prefix and
+  r after editing it. Widget commands in it run as you, so a program that
+  writes the file should not get them run unasked; tmux also waits for
+  `source-file`.
+- Only images are replayed to your terminal: kitty images that would make
+  it read a file or shared memory, and iTerm2 sequences other than inline
+  files, are dropped.
+- `general.clipboard` and `general.notifications` turn off OSC 52 copies
+  and desktop notifications from panes. Both stay on by default.
+- The tabs in the middle of the status bar stay put when the agent marks
+  on the right come and go.
+- SECURITY.md compares ttmux with a default tmux.
+
 ## 0.4.1 — 2026-09-12
 
 - `ttmux` refuses to attach from inside a pane, as tmux does: into its own
