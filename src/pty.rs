@@ -13,7 +13,7 @@ use anyhow::Context;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 
 use crate::config::Config;
-use crate::graphics::{Image, Piece, Scanner};
+use crate::graphics::{self, Image, Piece, Scanner};
 use crate::layout::PaneId;
 
 const READ_BUF: usize = 64 * 1024;
@@ -34,8 +34,10 @@ struct Sink {
     bell: bool,
     /// Answers to the child's terminal queries, written back after each pump.
     replies: Vec<u8>,
-    /// Bytes meant for the outer terminal: clipboard copies and notifications.
-    host: Vec<u8>,
+    /// OSC 52 copies meant for the outer terminal.
+    copies: Vec<u8>,
+    /// Desktop notifications meant for the outer terminal.
+    notices: Vec<u8>,
     /// DECSET 1004: the child wants `CSI I` and `CSI O` on focus changes.
     focus_events: bool,
     /// DECSCUSR shape, 0 being the terminal's default.
@@ -273,11 +275,11 @@ impl vt100::Callbacks for Sink {
 
     fn copy_to_clipboard(&mut self, _: &mut vt100::Screen, ty: &[u8], data: &[u8]) {
         self.clipboard = data.to_vec();
-        self.host.extend_from_slice(b"\x1b]52;");
-        self.host.extend_from_slice(ty);
-        self.host.push(b';');
-        self.host.extend_from_slice(data);
-        self.host.extend_from_slice(b"\x1b\\");
+        self.copies.extend_from_slice(b"\x1b]52;");
+        self.copies.extend_from_slice(ty);
+        self.copies.push(b';');
+        self.copies.extend_from_slice(data);
+        self.copies.extend_from_slice(b"\x1b\\");
     }
 
     /// Answered from the last copy rather than the real clipboard: reading
@@ -305,9 +307,9 @@ impl vt100::Callbacks for Sink {
             }
             // Desktop notifications go to the terminal that can show them.
             [b"9" | b"99" | b"777", ..] => {
-                self.host.extend_from_slice(b"\x1b]");
-                self.host.extend_from_slice(&params.join(&b';'));
-                self.host.extend_from_slice(b"\x1b\\");
+                self.notices.extend_from_slice(b"\x1b]");
+                self.notices.extend_from_slice(&params.join(&b';'));
+                self.notices.extend_from_slice(b"\x1b\\");
             }
             _ => {}
         }
@@ -494,6 +496,8 @@ impl Pane {
                             }
                             // The cursor is wherever the preceding plain bytes
                             // left it, which is where the image belongs.
+                            // Anything but drawing is dropped, not replayed.
+                            Piece::Image(bytes) if !graphics::is_safe(&bytes) => {}
                             Piece::Image(bytes) => {
                                 let (row, col) = self.parser.screen().cursor_position();
                                 let mut pending = self.images.borrow_mut();
@@ -533,9 +537,16 @@ impl Pane {
     }
 
     /// Bytes for the outer terminal since the last call: OSC 52 copies and
-    /// desktop notifications.
-    pub fn take_host_bytes(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.parser.callbacks_mut().host)
+    /// desktop notifications, each only when allowed. The rest is discarded.
+    pub fn take_host_bytes(&mut self, clipboard: bool, notifications: bool) -> Vec<u8> {
+        let sink = self.parser.callbacks_mut();
+        let copies = std::mem::take(&mut sink.copies);
+        let notices = std::mem::take(&mut sink.notices);
+        let mut out = if clipboard { copies } else { vec![] };
+        if notifications {
+            out.extend(notices);
+        }
+        out
     }
 
     /// The DECSCUSR cursor shape the child asked for, 0 for the default.
@@ -1069,10 +1080,8 @@ mod tests {
     fn clipboard_notifications_and_colours_reach_the_right_side() {
         let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
         p.process(b"\x1b]52;c;aGk=\x07\x1b]777;notify;done;ok\x07\x1b]11;?\x07");
-        assert_eq!(
-            p.callbacks().host,
-            b"\x1b]52;c;aGk=\x1b\\\x1b]777;notify;done;ok\x1b\\"
-        );
+        assert_eq!(p.callbacks().copies, b"\x1b]52;c;aGk=\x1b\\");
+        assert_eq!(p.callbacks().notices, b"\x1b]777;notify;done;ok\x1b\\");
         assert!(p.callbacks().replies.is_empty(), "no colours known yet");
         p.callbacks_mut().colours =
             Some(("rgb:ffff/ffff/ffff".into(), "rgb:0000/0000/0000".into()));

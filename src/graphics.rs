@@ -103,6 +103,35 @@ fn more_chunks(seq: &[u8]) -> bool {
         .any(|kv| kv == b"m=1")
 }
 
+/// Whether a captured sequence only draws. Kitty can also make the host
+/// read a file or shared memory (`t=f`, `t=t`, `t=s`), and OSC 1337 carries
+/// far more than images (downloads, user vars, focus stealing), so only
+/// direct kitty data, inline iTerm2 files and sixel pass. tmux blocks all of
+/// it by default.
+// ponytail: iTerm2 multipart transfers (`MultipartFile`) are dropped too;
+// allow them with `inline=1` if a real tool needs them.
+pub fn is_safe(seq: &[u8]) -> bool {
+    if seq.starts_with(b"\x1b_G") {
+        // A joined chunked image is several APCs; each one's keys count.
+        return seq.split(|b| *b == ESC).all(|apc| {
+            let Some(keys) = apc.strip_prefix(b"_G") else {
+                return true;
+            };
+            let end = keys.iter().position(|b| *b == b';').unwrap_or(keys.len());
+            keys[..end]
+                .split(|b| *b == b',')
+                .all(|kv| !kv.starts_with(b"t=") || kv == b"t=d")
+        });
+    }
+    if let Some(rest) = seq.strip_prefix(b"\x1b]1337;File=") {
+        let end = rest.iter().position(|b| *b == b':').unwrap_or(rest.len());
+        return rest[..end]
+            .split(|b| *b == b';')
+            .any(|kv| kv == b"inline=1");
+    }
+    seq.starts_with(b"\x1bP")
+}
+
 enum Verdict {
     /// Not enough bytes yet to tell.
     Need,
@@ -340,6 +369,20 @@ mod tests {
     const KITTY: &[u8] = b"\x1b_Ga=T,f=100;iVBORw0\x1b\\";
     const ITERM: &[u8] = b"\x1b]1337;File=inline=1:AAAA\x07";
     const SIXEL: &[u8] = b"\x1bP0;1;0q#0;2;0;0;0#0~~@@vv@@~~$\x1b\\";
+
+    #[test]
+    fn only_sequences_that_draw_are_safe() {
+        assert!(is_safe(
+            b"\x1b_Ga=T,f=100,m=1;AAAA\x1b\\\x1b_Gm=0;AAAA\x1b\\"
+        ));
+        assert!(is_safe(b"\x1b_Ga=T,t=d;AAAA\x1b\\"));
+        assert!(!is_safe(b"\x1b_Ga=T,t=f;L2V0Yy9wYXNzd2Q=\x1b\\"));
+        assert!(!is_safe(b"\x1b_Ga=T,m=1;AA\x1b\\\x1b_Gt=s,m=0;AA\x1b\\"));
+        assert!(is_safe(b"\x1b]1337;File=name=eA==;inline=1:AAAA\x07"));
+        assert!(!is_safe(b"\x1b]1337;File=name=eA==:AAAA\x07"));
+        assert!(!is_safe(b"\x1b]1337;StealFocus\x07"));
+        assert!(is_safe(b"\x1bPq#0;2;0;0;0#0~~\x1b\\"));
+    }
 
     #[test]
     fn each_protocol_is_captured_whole() {

@@ -729,12 +729,17 @@ fn a_custom_widget_honours_tmux_colour_markup() {
 }
 
 #[test]
-fn editing_the_config_on_disk_reloads_it_without_a_keypress() {
+fn a_config_changed_on_disk_waits_for_a_reload() {
     let mut h = Harness::start_with_config(80, 24, &widget_config("echo be''fore", 60));
     h.wait_for("the first version", |s| s.contains("before"));
 
+    // The file can run commands, so whatever wrote it must not get them run
+    // behind the user's back; tmux also waits for `source-file`.
     h.write_config(&widget_config("echo af''ter", 60));
-    // No input is sent: noticing this is the whole assertion.
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert!(h.screen().contains("before"), "reloaded on its own");
+
+    h.send(b"\x14r"); // ctrl+t r
     h.wait_for("the reloaded version", |s| s.contains("after"));
 }
 

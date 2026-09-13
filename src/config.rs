@@ -329,6 +329,10 @@ pub struct General {
     /// Let panes draw inline images (kitty, iTerm2, sixel) through to the
     /// host terminal.
     pub passthrough_images: bool,
+    /// Let panes copy to the system clipboard with OSC 52.
+    pub clipboard: bool,
+    /// Let panes send desktop notifications (OSC 9, 99, 777).
+    pub notifications: bool,
     /// Milliseconds to wait for a second chord after the prefix.
     pub prefix_timeout_ms: u64,
     /// Stock keymap that `keys` overrides sit on top of.
@@ -347,6 +351,8 @@ impl Default for General {
             free_mode: false,
             focus_follows_mouse: false,
             passthrough_images: true,
+            clipboard: true,
+            notifications: true,
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
             which_key: true,
@@ -740,19 +746,6 @@ pub fn config_path() -> PathBuf {
 
 impl Config {
     /// Load from `path`, falling back to defaults when it does not exist.
-    /// Load, and hand back the exact text that was parsed. The hot reload
-    /// compares against that text rather than an mtime, so an edit written
-    /// while ttmux was starting is still noticed.
-    pub fn load_stamped(path: &Path) -> (anyhow::Result<Config>, String) {
-        match std::fs::read_to_string(path) {
-            Ok(text) => (toml::from_str(&text).map_err(anyhow::Error::from), text),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                (Ok(Config::default()), String::new())
-            }
-            Err(e) => (Err(e.into()), String::new()),
-        }
-    }
-
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         match std::fs::read_to_string(path) {
             Ok(text) => Ok(toml::from_str(&text)?),

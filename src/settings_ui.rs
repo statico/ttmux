@@ -169,6 +169,8 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 int_f("prefix-timeout-ms", g.prefix_timeout_ms, 0, 10_000),
                 choice_f("keys-preset", KEYS_PRESETS, keys_preset_name(g.keys_preset)),
                 bool_f("which-key", g.which_key),
+                bool_f("clipboard", g.clipboard),
+                bool_f("notifications", g.notifications),
             ]
         }
         1 => {
@@ -298,6 +300,8 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
             }
         }
         (0, 9) => cfg.general.which_key = parse_bool(value),
+        (0, 10) => cfg.general.clipboard = parse_bool(value),
+        (0, 11) => cfg.general.notifications = parse_bool(value),
 
         (1, 0) => {
             cfg.appearance.border_style = match value {
