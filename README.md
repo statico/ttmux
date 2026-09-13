@@ -235,6 +235,25 @@ keybind = alt+left=unbind
 keybind = alt+right=unbind
 ```
 
+## Compatibility
+
+What programs inside a pane can count on:
+
+- Truecolor, and undercurl, dotted, dashed and double underlines in color
+- Emoji with skin tones, flags and ZWJ sequences as one wide cell
+- Kitty keyboard protocol and modifyOtherKeys, so shift+enter works
+- Kitty, iTerm2 and sixel images, including `mpv --vo=kitty` video
+- Synchronized output, so redraws do not tear
+- Focus events, and a cursor shape per pane
+- OSC 52 copy to your clipboard, and OSC 9, 99 and 777 notifications
+- Answers to cursor position, device attributes, window size, mode, color
+  and XTGETTCAP queries, so fzf, neovim and fish do not stall
+- Dark or light theme reports (`CSI ?996n`, mode 2031)
+- Scrollback that keeps output scrolled under a fixed footer, as Claude
+  Code and Codex draw, and `CSI 3J` to clear it
+- Pastes that cannot close their own bracket early
+- No accidental nesting: attaching from inside a pane is refused, as in tmux
+
 ## Platforms
 
 macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64. CI builds
