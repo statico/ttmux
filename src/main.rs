@@ -106,11 +106,13 @@ fn run() -> Result<ExitCode> {
             if rest.iter().any(|a| a == "-d") {
                 ttmux::server::spawn(&name)?;
             } else {
+                check_nesting(&name)?;
                 ttmux::client::attach(&name, true)?;
             }
         }
         "attach" | "attach-session" | "a" | "at" => {
             let name = target(&rest, &["-t", "-s"])?.unwrap_or_else(default_session);
+            check_nesting(&name)?;
             ttmux::client::attach(&name, create)?;
         }
         "kill-session" => {
@@ -141,6 +143,19 @@ fn run() -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// tmux's rule: no attaching from inside a pane. Into its own session the
+/// view shows itself in a pane, and as the smallest client it shrinks the
+/// session it is drawing, for ever; `unset TTMUX` does not excuse that one.
+fn check_nesting(session: &str) -> Result<()> {
+    let Some(inside) = std::env::var_os("TTMUX").filter(|v| !v.is_empty()) else {
+        return Ok(());
+    };
+    if std::path::Path::new(&inside) == ttmux::proto::socket_path(session)? {
+        bail!("already inside session {session}; attaching would draw it inside itself");
+    }
+    bail!("sessions should be nested with care, unset TTMUX to force");
 }
 
 /// Run one scripting command and print the answer. Two of them never need a

@@ -372,7 +372,11 @@ impl Pane {
         // say so: without it a program downgrades to the 16 ANSI colours and
         // paints, say, a badge as reverse video.
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TTMUX", "1");
+        // The server sets `TTMUX` to its socket and panes inherit it; only
+        // `--no-daemon` has no socket to name.
+        if std::env::var_os("TTMUX").is_none() {
+            cmd.env("TTMUX", "1");
+        }
         cmd.env("TTMUX_PANE", id.to_string());
         Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)
     }

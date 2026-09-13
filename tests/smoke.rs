@@ -66,6 +66,8 @@ impl Harness {
         }
         cmd.env("TTMUX_CONFIG", &cfg_path);
         cmd.env("TTMUX_SESSION", "test");
+        // `make check` run from inside ttmux must not look nested.
+        cmd.env_remove("TTMUX");
         // Its own server, in its own directory: without this every test in
         // this file would attach to the same session and to the developer's.
         let sock = dir.path().join("ttmux.sock");
@@ -445,6 +447,30 @@ fn a_script_types_into_a_pane_and_lists_what_it_finds() {
     // pane.
     let (ok, _) = run(&h, &["send-keys", "-t", "%99", "x"]);
     assert!(!ok);
+}
+
+#[test]
+fn attaching_from_inside_a_pane_is_refused() {
+    let sock = "/tmp/ttmux-nest-test.sock";
+    let run = |inside: &str, args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_ttmux"))
+            .args(args)
+            .env("TTMUX_CONFIG", "/tmp/ttmux-cli-test.toml")
+            .env("TTMUX_SOCKET", sock)
+            .env("TTMUX", inside)
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?} from {inside}");
+        String::from_utf8(out.stderr).unwrap()
+    };
+    // Inside the very session: refused, and unsetting TTMUX is not offered.
+    let err = run(sock, &["attach", "-t", "x"]);
+    assert!(err.contains("inside itself"), "{err}");
+    // Inside another one: refused the tmux way.
+    for args in [&["attach", "-t", "x"][..], &["new", "-s", "x"], &[]] {
+        let err = run("/tmp/elsewhere.sock", args);
+        assert!(err.contains("unset TTMUX"), "{args:?}: {err}");
+    }
 }
 
 #[test]
