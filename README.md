@@ -49,15 +49,24 @@ Prebuilt binaries for macOS and Linux are also on the
 
 ## Why
 
-tmux works well and has thirty years of muscle memory behind it. ttmux keeps
-the parts that work and replaces the parts that do not.
+tmux works well and has decades of muscle memory behind it. But a fresh tmux
+needs a `.tmux.conf` and plugins like
+[tmux-sensible](https://github.com/tmux-plugins/tmux-sensible) before it
+stops getting in the way. ttmux ships with those defaults.
 
-| | tmux | ttmux |
+| | tmux, out of the box | ttmux |
 |---|---|---|
-| Config | `.tmux.conf`, reload by hand | TOML, edited in the app with <kbd>ctrl+t</kbd> <kbd>,</kbd> |
-| Layout | tiling only | tiling **or** free-floating, drag and drop |
-| Borders | single-line ASCII | curved, square, heavy, double, dashed, or one tmux-style divider |
-| Mouse | bolted on | click, drag, resize, and wheel |
+| Escape key | a delay after <kbd>esc</kbd> (500ms before 3.5) | no delay, so vim leaves insert mode at once |
+| Scrollback | 2,000 lines | 10,000 lines |
+| Mouse | off | on: click, drag, resize, and wheel |
+| Color | truecolor and undercurl need `terminal-overrides` | truecolor and undercurl |
+| Focus events | off | on |
+| Clipboard | ignores OSC 52 from programs | copies to your clipboard |
+| Modern keys | `extended-keys` off, so shift+enter is lost | kitty keyboard and modifyOtherKeys |
+| Images | sixel if built in, the rest need `allow-passthrough` | kitty, iTerm2, and sixel, even `mpv` video |
+| Config | `.tmux.conf`, `source-file` by hand | TOML, reloaded on save, or a settings screen |
+| Discovering keys | a list behind the prefix and `?` | a which-key popup and a command palette |
+| Layout | tiling | tiling or free-floating, drag and drop |
 | Agents | — | a per-pane busy, needs-you, or done mark |
 
 ## Keys
@@ -65,6 +74,9 @@ the parts that work and replaces the parts that do not.
 On first start ttmux asks which keymap you want: Modern, tmux, or screen.
 Change it later in settings or with `general.keys-preset`, and rebind any
 key under `[keys]`.
+
+<details>
+<summary>Keys for each keymap</summary>
 
 | Action | Modern (`ctrl+t`) | tmux (`ctrl+b`) | screen (`ctrl+a`) |
 |---|---|---|---|
@@ -107,6 +119,8 @@ Every keymap also has these, with no prefix:
 | <kbd>ctrl+alt+,</kbd> | Settings |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
 | <kbd>shift+pageup</kbd> / <kbd>pagedown</kbd> | Scroll back and forward |
+
+</details>
 
 Press the prefix and <kbd>?</kbd> in the app for the full list.
 
@@ -154,6 +168,9 @@ with the old binary until you are ready to move.
 Every pane can drive the session it lives in. The commands are tmux's, so a
 tmux script mostly runs unchanged.
 
+<details>
+<summary>The commands</summary>
+
 ```
 ttmux send-keys -t %2 "make test" Enter   # type into a pane
 ttmux split-window -h                     # split side by side, prints %2
@@ -168,6 +185,8 @@ ttmux join-pane -s %3 -t 2                # move a pane into window 2
 ttmux break-pane                          # and back out into its own
 ttmux run toggle-zoom                     # any key-binding action
 ```
+
+</details>
 
 A target is a pane id from `list-panes`, or a window number counted from 1.
 With no target the command acts on the pane it was run from, or the focused
@@ -186,6 +205,9 @@ for version control and the screen is for changes.
 
 ttmux watches the file. When you save it, ttmux reloads it. A restart is not
 necessary.
+
+<details>
+<summary>An example config</summary>
 
 ```toml
 [general]
@@ -216,10 +238,15 @@ bell-on-attention = true
 "ctrl+t &" = "none"
 ```
 
+</details>
+
 ## Custom widgets
 
 A widget runs a shell command and shows what it prints. Give it a name under
 `[status.widgets]`, then put that name in a row.
+
+<details>
+<summary>How widgets work</summary>
 
 ```toml
 [status.footer]
@@ -238,6 +265,8 @@ a script written for tmux `status-right` works without a change.
 A slow command does not block the screen. It runs in its own thread, and ttmux
 does not start a second copy while the first one runs.
 
+</details>
+
 ## Coding-agent alerts
 
 A pane that runs a coding agent gets a mark: `◐` for busy, `●` for wants
@@ -251,6 +280,9 @@ ttmux is built against Ghostty and iTerm2. Any terminal with 24-bit color
 and SGR mouse reporting works, including Alacritty, kitty, WezTerm, and
 Terminal.app.
 
+<details>
+<summary>Ghostty and alt+arrows</summary>
+
 Ghostty never sends `alt+left` and `alt+right` to ttmux, because it binds
 them to the word motions of readline. To get horizontal focus movement back,
 unbind them in the config of Ghostty:
@@ -259,6 +291,8 @@ unbind them in the config of Ghostty:
 keybind = alt+left=unbind
 keybind = alt+right=unbind
 ```
+
+</details>
 
 ## Compatibility
 
