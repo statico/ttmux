@@ -62,34 +62,58 @@ the parts that work and replaces the parts that do not.
 
 ## Keys
 
-The prefix is <kbd>ctrl+t</kbd>. The pane keys follow the window commands of
-vim. You can rebind all of them.
+On first start ttmux asks which keymap you want: Modern, tmux, or screen.
+Change it later in settings or with `general.keys-preset`, and rebind any
+key under `[keys]`.
+
+| Action | Modern (`ctrl+t`) | tmux (`ctrl+b`) | screen (`ctrl+a`) |
+|---|---|---|---|
+| Split right | `v` or `%` | `%` | `\|` |
+| Split down | `s` | `"` | `S` |
+| Move the focus | `h` `j` `k` `l` | arrows | `tab` |
+| Resize the pane | `H` `J` `K` `L` | | |
+| Zoom the pane | `z` or `o` | `z` | |
+| Float one pane | `f` | | |
+| Next layout | `space` | `space` | |
+| New, next, previous tab | `c` `n` `p` | `c` `n` `p` | `c` `n` `p` |
+| Last tab | `ctrl+t` | | |
+| Move the tab left or right | `<` `>` | | |
+| Break the pane into a tab | `!` | `!` | |
+| Join the pane into a tab | `@` | | |
+| Rename the tab, the pane | `A`, `a` | `,`, `.` | `A`, `.` |
+| Scroll back | `[` or `esc` | `[` | `esc` |
+| Close the pane | `x` or `q` | `x` | `K` |
+| Close the tab | `&` | `&` | |
+| Command line | `:` | `:` | `:` |
+| Command palette | `;` | | |
+| Send the prefix | `t` | `ctrl+b` | `a` |
+| Settings | `,` | | |
+| Help | `?` | `?` | `?` |
+| Detach | `d` | `d` | `d` |
+| Quit ttmux | `Q` | | |
+
+Every keymap also has these, with no prefix:
 
 | Key | Action |
 |---|---|
-| <kbd>ctrl+t</kbd> <kbd>v</kbd> / <kbd>s</kbd> | Split right or down |
-| <kbd>ctrl+t</kbd> <kbd>h</kbd><kbd>j</kbd><kbd>k</kbd><kbd>l</kbd> | Move the focus |
-| <kbd>ctrl+t</kbd> <kbd>H</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd> | Resize the pane |
+| <kbd>alt+arrows</kbd> | Move the focus |
+| <kbd>alt+shift+arrows</kbd> | Resize the pane |
+| <kbd>ctrl+alt+right</kbd> / <kbd>down</kbd> | Split right or down |
+| <kbd>ctrl+alt+w</kbd> | Close the pane |
 | <kbd>ctrl+alt+f</kbd> | Switch between tiling and free mode |
-| <kbd>ctrl+t</kbd> <kbd>f</kbd> | Float one pane |
-| <kbd>ctrl+t</kbd> <kbd>z</kbd> | Zoom the focused pane |
-| <kbd>ctrl+t</kbd> <kbd>c</kbd> / <kbd>n</kbd> / <kbd>p</kbd> | New, next, or previous tab |
-| <kbd>ctrl+t</kbd> <kbd>&lt;</kbd> / <kbd>&gt;</kbd> | Move this tab left or right |
-| <kbd>ctrl+t</kbd> <kbd>!</kbd> | Break the pane out into its own tab |
-| <kbd>ctrl+t</kbd> <kbd>@</kbd> | Join the pane into another tab |
-| <kbd>ctrl+t</kbd> <kbd>:</kbd> | The command line |
+| <kbd>ctrl+alt+z</kbd> | Zoom the pane |
+| <kbd>ctrl+alt+t</kbd> | New tab |
+| <kbd>ctrl+alt+p</kbd> | Command palette |
+| <kbd>ctrl+alt+,</kbd> | Settings |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
-| <kbd>ctrl+t</kbd> <kbd>shift+a</kbd> / <kbd>a</kbd> | Rename the tab, or the pane |
-| <kbd>ctrl+t</kbd> <kbd>,</kbd> | Settings |
-| <kbd>ctrl+t</kbd> <kbd>?</kbd> | Help |
-| <kbd>ctrl+t</kbd> <kbd>q</kbd> / <kbd>Q</kbd> | Close the pane, or quit ttmux |
+| <kbd>shift+pageup</kbd> / <kbd>pagedown</kbd> | Scroll back and forward |
 
-Press <kbd>ctrl+t</kbd> <kbd>?</kbd> in the app for the full list.
+Press the prefix and <kbd>?</kbd> in the app for the full list.
 
 Hold the prefix and a popup lists what can follow it, like which-key in
 neovim. Turn it off with `general.which-key = false`.
 
-<kbd>ctrl+t</kbd> <kbd>:</kbd> opens a command line for the scripting
+The prefix and <kbd>:</kbd> open a command line for the scripting
 commands below. <kbd>Tab</kbd> completes a command or a flag, and the row
 above shows the usage of the command you are typing.
 
@@ -97,9 +121,10 @@ A name you type is yours. A program can set a title with an escape
 sequence, but that title never replaces a name you set, and it names the
 pane, not the tab. The tab takes the title only while it holds one pane.
 
-Every text field takes the readline keys: <kbd>ctrl+a</kbd>,
+Every text field takes the readline keys, including <kbd>ctrl+a</kbd>,
 <kbd>ctrl+e</kbd>, <kbd>ctrl+w</kbd>, <kbd>ctrl+k</kbd>, <kbd>ctrl+u</kbd>,
-<kbd>alt+b</kbd>, and <kbd>alt+f</kbd>.
+<kbd>ctrl+y</kbd>, <kbd>alt+b</kbd>, and <kbd>alt+f</kbd>. Lists move with
+<kbd>ctrl+n</kbd> and <kbd>ctrl+p</kbd>, and <kbd>ctrl+g</kbd> cancels.
 
 ## Free mode
 
