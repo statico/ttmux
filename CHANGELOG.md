@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 — 2026-09-12
+
+- `ttmux` refuses to attach from inside a pane, as tmux does: into its own
+  session it would draw itself inside itself, and for any other session
+  `unset TTMUX` forces it. `$TTMUX` in a pane is now the session's socket.
+- The tmux keymap sends its prefix with ctrl+b ctrl+b, and the screen
+  keymap with ctrl+a a (rename-pane moves to ctrl+a .), for sessions nested
+  over ssh.
+
 ## 0.4.0 — 2026-09-12
 
 - Programs that ask the terminal where the cursor is, like fzf's ctrl+r,

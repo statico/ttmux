@@ -500,8 +500,10 @@ pub fn spawn(session: &str) -> Result<()> {
     // would mean racing it, and a bind error would have nowhere to be printed.
     let listener = UnixListener::bind(&path).with_context(|| format!("bind {}", path.display()))?;
     let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-    // The app reads the session name from the environment.
+    // The app reads the session name from the environment. `TTMUX` is how a
+    // pane knows it is inside this session, as `$TMUX` is for tmux.
     std::env::set_var("TTMUX_SESSION", session);
+    std::env::set_var("TTMUX", &path);
 
     // fork, setsid, fork again: the first fork leaves the shell's job control,
     // setsid drops the controlling terminal (or the shell's SIGHUP on exit

@@ -674,6 +674,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b space", "next-preset"),
             ("ctrl+b [", "scroll-up 10"),
             ("ctrl+b d", "detach"),
+            ("ctrl+b ctrl+b", "send-prefix"),
         ],
         KeysPreset::Screen => &[
             ("ctrl+a |", "split right"),
@@ -683,7 +684,10 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a n", "next-tab"),
             ("ctrl+a p", "prev-tab"),
             ("ctrl+a shift+a", "rename-tab"),
-            ("ctrl+a a", "rename-pane"),
+            // screen's own `C-a a`, which a nested session or readline's
+            // start-of-line needs.
+            ("ctrl+a a", "send-prefix"),
+            ("ctrl+a .", "rename-pane"),
             ("ctrl+a shift+k", "close-pane"),
             ("ctrl+a :", "command-line"),
             ("ctrl+a ?", "help"),
