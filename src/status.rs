@@ -149,7 +149,11 @@ pub fn draw(
         end,
     };
     row.put(rect.x, &left);
-    row.put(rect.x + (lw + (gap - cw) / 2) as u16, &center);
+    // Centred on the whole bar, not on the gap, so the tabs stay put when a
+    // side widget such as the agent marks changes width; pushed aside only
+    // when a side would overlap them.
+    let cx = ((w - cw) / 2).clamp(lw, lw + gap - cw);
+    row.put(rect.x + cx as u16, &center);
     row.put(end - rw.min(w) as u16, &right);
 
     // The effect goes in the cells no widget claimed, so widget text, its
@@ -1086,6 +1090,28 @@ mod tests {
     }
 
     #[test]
+    fn the_centre_stays_put_when_the_right_side_changes_width() {
+        let bar = bar_with(&["session"], &["tabs"], &["agents"]);
+        let t = tabs(&["alpha", "beta"], 0);
+        let at = |panes: &[(String, AgentState)]| {
+            let mut buf = buffer(80);
+            draw(
+                &mut buf,
+                Rect::new(0, 0, 80, 1),
+                &cfg(),
+                &bar,
+                &make_ctx(&t, panes),
+            );
+            row(&buf, 80).find("alpha").unwrap()
+        };
+        let busy = vec![
+            ("a".into(), AgentState::Attention),
+            ("b".into(), AgentState::Attention),
+        ];
+        assert_eq!(at(&[]), at(&busy));
+    }
+
+    #[test]
     fn narrow_bar_drops_the_centre() {
         let bar = cfg().footer.clone();
         let t = tabs(&["alpha", "beta"], 0);
@@ -1293,7 +1319,7 @@ mod tests {
     #[test]
     fn the_flat_effect_leaves_the_row_exactly_as_drawn() {
         let (buf, _) = draw_bar(&cfg(), 40);
-        assert_eq!(row(&buf, 40), " main          one  two          1 panes");
+        assert_eq!(row(&buf, 40), " main           one  two         1 panes");
     }
 
     #[test]
