@@ -87,6 +87,11 @@ pub enum Action {
     ScrollDown(usize),
     ScrollTop,
     ScrollBottom,
+    /// tmux's copy mode, when `general.copy-mode` is on; plain scrollback
+    /// when it is off.
+    CopyMode,
+    /// Type the paste buffer into the focused pane.
+    PasteBuffer,
     /// Overlays.
     ToggleSettings,
     ToggleHelp,
@@ -139,6 +144,8 @@ impl fmt::Display for Action {
             ScrollDown(n) => write!(f, "scroll-down {n}"),
             ScrollTop => write!(f, "scroll-top"),
             ScrollBottom => write!(f, "scroll-bottom"),
+            CopyMode => write!(f, "copy-mode"),
+            PasteBuffer => write!(f, "paste-buffer"),
             ToggleSettings => write!(f, "settings"),
             ToggleHelp => write!(f, "help"),
             CommandPalette => write!(f, "command-palette"),
@@ -202,6 +209,8 @@ impl FromStr for Action {
             "scroll-down" => ScrollDown(num(1) as usize),
             "scroll-top" => ScrollTop,
             "scroll-bottom" => ScrollBottom,
+            "copy-mode" => CopyMode,
+            "paste-buffer" => PasteBuffer,
             "settings" => ToggleSettings,
             "help" => ToggleHelp,
             "command-palette" => CommandPalette,
@@ -250,6 +259,8 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::RenamePane,
     Action::ScrollTop,
     Action::ScrollBottom,
+    Action::CopyMode,
+    Action::PasteBuffer,
     Action::ToggleSettings,
     Action::ToggleHelp,
     Action::CommandPalette,

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Copy mode, as in tmux: select text with the keyboard or a mouse drag,
+  and paste it back with the prefix and ]. It is off by default; set
+  `general.copy-mode = true`. When it is off, the copy mode key scrolls
+  back as before.
+
 ## 0.5.0 — 2026-09-12
 
 - The config no longer reloads when the file changes. Press the prefix and

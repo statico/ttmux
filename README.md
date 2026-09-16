@@ -93,7 +93,8 @@ key under `[keys]`.
 | Break the pane into a tab | `!` | `!` | |
 | Join the pane into a tab | `@` | | |
 | Rename the tab, the pane | `A`, `a` | `,`, `.` | `A`, `.` |
-| Scroll back | `[` or `esc` | `[` | `esc` |
+| Scroll back, or copy mode | `[` or `esc` | `[` | `esc` |
+| Paste what copy mode copied | `]` | `]` | `]` |
 | Close the pane | `x` or `q` | `x` | `K` |
 | Close the tab | `&` | `&` | |
 | Command line | `:` | `:` | `:` |
@@ -123,6 +124,14 @@ Every keymap also has these, with no prefix:
 </details>
 
 Press the prefix and <kbd>?</kbd> in the app for the full list.
+
+tmux's copy mode is off by default, because programs like coding agents
+copy on their own and want the mouse drag. Set `general.copy-mode = true`
+and the scroll back key opens it: move with <kbd>h</kbd> <kbd>j</kbd>
+<kbd>k</kbd> <kbd>l</kbd>, press <kbd>v</kbd> to start a selection and
+<kbd>y</kbd> to copy it, or <kbd>q</kbd> to leave. A mouse drag over a pane
+also copies. The copy goes to your clipboard and to a paste buffer that the
+prefix and <kbd>]</kbd> types back.
 
 Hold the prefix and a popup lists what can follow it, like which-key in
 neovim. Turn it off with `general.which-key = false`.
@@ -219,6 +228,7 @@ keys-preset = "vim"          # vim | tmux | screen
 passthrough-images = true    # kitty, iTerm2, and sixel inline images
 clipboard = true             # programs may copy with OSC 52
 notifications = true         # programs may send OSC 9, 99, and 777
+copy-mode = false            # tmux's copy mode and mouse-drag copy
 
 [appearance]
 border-style = "curved"      # curved | square | heavy | double | dashed | divider | none
