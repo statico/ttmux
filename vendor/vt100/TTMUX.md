@@ -8,6 +8,8 @@ can fix what its panes run into. Changes from upstream:
 - Lines scrolled off a region anchored at the top row go to scrollback,
   as in xterm, so apps that pin a footer with DECSTBM keep their history.
 - `CSI 3 J` clears the scrollback.
+- `Screen::scrolled_off` counts the rows that have left the top of the
+  screen, so copy mode can hold a selection on its text.
 - SGR: underline styles (`4:0`–`4:5`, `21`), underline colour (`58`/`59`),
   strikethrough, blink, hidden, and colon-form colours (`38:2::r:g:b`).
   An unknown `58;…` no longer leaks its arguments as other attributes.

@@ -123,6 +123,16 @@ impl Screen {
         self.grid().scrollback()
     }
 
+    /// Returns how many rows have ever scrolled off the top of the screen.
+    ///
+    /// A row that scrolls off moves every row above it one further back, so a
+    /// caller that remembers a position in the text can add this to it and
+    /// keep pointing at the same row.
+    #[must_use]
+    pub fn scrolled_off(&self) -> usize {
+        self.grid().scrolled_off()
+    }
+
     /// Returns the text contents of the terminal.
     ///
     /// This will not include any formatting information, and will be in plain

@@ -13,6 +13,9 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
+    /// Rows that have ever scrolled off the top of the screen, so a caller
+    /// holding a position in the text can tell how far it has moved.
+    scrolled_off: usize,
 }
 
 impl Grid {
@@ -29,6 +32,7 @@ impl Grid {
             scrollback: std::collections::VecDeque::new(),
             scrollback_len,
             scrollback_offset: 0,
+            scrolled_off: 0,
         }
     }
 
@@ -198,6 +202,10 @@ impl Grid {
 
     pub fn scrollback(&self) -> usize {
         self.scrollback_offset
+    }
+
+    pub fn scrolled_off(&self) -> usize {
+        self.scrolled_off
     }
 
     pub fn set_scrollback(&mut self, rows: usize) {
@@ -568,6 +576,9 @@ impl Grid {
             self.rows
                 .insert(usize::from(self.scroll_bottom) + 1, self.new_row());
             let removed = self.rows.remove(usize::from(self.scroll_top));
+            if self.scroll_top == 0 {
+                self.scrolled_off += 1;
+            }
             // Like xterm: a region pinned to the top row still feeds the
             // scrollback, so a footer held below it costs no history.
             if self.scrollback_len > 0 && self.scroll_top == 0 {

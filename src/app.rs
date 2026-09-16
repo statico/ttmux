@@ -169,6 +169,18 @@ fn parse_scalar(word: &str) -> toml::Value {
     toml::Value::String(word.to_string())
 }
 
+/// tmux's copy mode on one pane. Lines count from the first row the pane ever
+/// scrolled off, so output arriving underneath leaves a position on its text.
+/// `Pane::frozen` holds the view there to match.
+struct Copy {
+    pane: PaneId,
+    cursor: (isize, u16),
+    /// Where the selection began; `None` until one is started.
+    anchor: Option<(isize, u16)>,
+    /// Begun by a drag, so letting go copies and leaves.
+    mouse: bool,
+}
+
 /// What a rename prompt is about to name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Rename {
@@ -214,6 +226,9 @@ pub struct App {
     host_focused: bool,
     /// The outer terminal's colours, for panes that ask with OSC 10 and 11.
     colours: Option<(String, String)>,
+    copy: Option<Copy>,
+    /// What copy mode last copied, for `paste-buffer`.
+    paste_buffer: String,
     /// Set by the `quit` action: tear the session down, panes included.
     pub quit: bool,
     /// Set by the `detach` action: end this view only, panes keep running.
@@ -321,6 +336,8 @@ impl App {
             focus_told: None,
             host_focused: true,
             colours: None,
+            copy: None,
+            paste_buffer: String::new(),
             quit: false,
             detached: false,
         };
@@ -1313,6 +1330,38 @@ impl App {
                     s.pane.scroll_to_bottom();
                 }
             }
+            CopyMode if !self.cfg.general.copy_mode => self.scroll(-10),
+            CopyMode => {
+                let id = self.focus();
+                if let Some(s) = self.slots.get_mut(&id) {
+                    // Scrolled back, the program's cursor is off the view;
+                    // start at the top left of what is on screen instead.
+                    let line = match s.pane.scroll {
+                        0 => s.pane.screen().cursor_position().0 as isize,
+                        back => -(back as isize),
+                    };
+                    let col = if s.pane.scroll == 0 {
+                        s.pane.screen().cursor_position().1
+                    } else {
+                        0
+                    };
+                    s.pane.frozen = true;
+                    self.copy = Some(Copy {
+                        pane: id,
+                        cursor: (s.pane.scrolled_off() as isize + line, col),
+                        anchor: None,
+                        mouse: false,
+                    });
+                    self.note("copy mode: v selects, y copies, q leaves");
+                }
+            }
+            PasteBuffer if !self.cfg.general.copy_mode => {
+                self.note("paste-buffer needs general.copy-mode = true")
+            }
+            PasteBuffer => {
+                let text = self.paste_buffer.clone();
+                self.paste(&text);
+            }
             ToggleSettings => {
                 self.overlay = match self.overlay {
                     Overlay::Settings(_) => Overlay::None,
@@ -1468,9 +1517,114 @@ impl App {
 
         match self.keys.resolve(ev) {
             Resolution::Action(a) => self.dispatch(a).map(|_| true),
+            Resolution::Passthrough
+                if self.copy.as_ref().is_some_and(|c| c.pane == self.focus()) =>
+            {
+                self.copy_key(ev);
+                Ok(true)
+            }
             // The status bar shows that a prefix is held.
             Resolution::Pending => Ok(true),
             Resolution::Passthrough => Ok(self.type_into_pane(ev)),
+        }
+    }
+
+    /// A key in copy mode, with vi's keys as tmux's `mode-keys vi` has them.
+    fn copy_key(&mut self, ev: KeyEvent) {
+        let Some(c) = self.copy.as_mut() else { return };
+        let Some(s) = self.slots.get_mut(&c.pane) else {
+            self.copy = None;
+            return;
+        };
+        let (rows, cols) = s.pane.screen().size();
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let half = (rows / 2).max(1) as isize;
+        let base = s.pane.scrolled_off() as isize;
+        let (mut line, mut col) = (c.cursor.0 - base, c.cursor.1);
+        match ev.code {
+            KeyCode::Char('h') | KeyCode::Left => col = col.saturating_sub(1),
+            KeyCode::Char('l') | KeyCode::Right => col = (col + 1).min(cols.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => line -= 1,
+            KeyCode::Char('j') | KeyCode::Down => line += 1,
+            KeyCode::Char('u') if ctrl => line -= half,
+            KeyCode::Char('d') if ctrl => line += half,
+            KeyCode::PageUp => line -= rows as isize,
+            KeyCode::PageDown => line += rows as isize,
+            KeyCode::Char('0') | KeyCode::Home => col = 0,
+            KeyCode::Char('$') | KeyCode::End => col = cols.saturating_sub(1),
+            KeyCode::Char('g') => line = isize::MIN / 2,
+            KeyCode::Char('G') => line = rows as isize - 1,
+            KeyCode::Char('v') | KeyCode::Char(' ') => {
+                c.anchor = if c.anchor.is_some() {
+                    None
+                } else {
+                    Some(c.cursor)
+                };
+                return;
+            }
+            // Leaving the pane's own key handling out: in copy mode the keys
+            // are copy mode's, as in tmux.
+            KeyCode::Char('y') | KeyCode::Enter => return self.copy_selection(),
+            KeyCode::Char('q') | KeyCode::Esc => return self.leave_copy_mode(),
+            _ => return,
+        }
+        // Moving past the top or bottom of the view scrolls it; vt100 clamps
+        // at the ends of history, and the cursor stops with it.
+        let top = -(s.pane.scroll as isize);
+        if line < top {
+            s.pane.scroll_by(line - top);
+        } else if line > top + rows as isize - 1 {
+            s.pane.scroll_by(line - (top + rows as isize - 1));
+        }
+        let top = -(s.pane.scroll as isize);
+        c.cursor = (base + line.clamp(top, top + rows as isize - 1), col);
+    }
+
+    /// Copy what is selected into the paste buffer and the outer clipboard,
+    /// then leave copy mode.
+    fn copy_selection(&mut self) {
+        if let Some(c) = &self.copy {
+            if let (Some(anchor), Some(s)) = (c.anchor, self.slots.get_mut(&c.pane)) {
+                let base = s.pane.scrolled_off() as isize;
+                let text = s
+                    .pane
+                    .text_between((anchor.0 - base, anchor.1), (c.cursor.0 - base, c.cursor.1));
+                s.pane.copy_to_host(&text);
+                self.paste_buffer = text;
+            }
+        }
+        self.leave_copy_mode();
+    }
+
+    fn leave_copy_mode(&mut self) {
+        if let Some(c) = self.copy.take() {
+            if let Some(s) = self.slots.get_mut(&c.pane) {
+                s.pane.frozen = false;
+                // The keyboard walks into history, so leaving returns to the
+                // live view; a drag never left it.
+                if !c.mouse {
+                    s.pane.scroll_to_bottom();
+                }
+            }
+        }
+    }
+
+    /// Type `text` into the focused pane as a paste.
+    fn paste(&mut self, text: &str) {
+        let id = self.focus();
+        if let Some(s) = self.slots.get_mut(&id) {
+            // Only a guest that set DECSET 2004 parses the
+            // brackets; to anything else they are literal text.
+            let bracket = s.pane.screen().bracketed_paste();
+            if bracket {
+                s.pane.send(b"\x1b[200~");
+            }
+            // A pasted end marker would end the paste early and
+            // run the rest as typed commands.
+            s.pane.send(text.replace("\x1b[201~", "").as_bytes());
+            if bracket {
+                s.pane.send(b"\x1b[201~");
+            }
         }
     }
 
@@ -1672,6 +1826,17 @@ impl App {
                 }
                 if self.tabs[self.tab].layout.drag_start(x, y) {
                     self.sync_sizes();
+                } else if let Some(at) = self.copy_point(x, y, false) {
+                    let pane = self.focus();
+                    if let Some(s) = self.slots.get_mut(&pane) {
+                        s.pane.frozen = true;
+                    }
+                    self.copy = Some(Copy {
+                        pane,
+                        cursor: at,
+                        anchor: Some(at),
+                        mouse: true,
+                    });
                 } else {
                     self.forward_mouse(ev);
                 }
@@ -1680,6 +1845,12 @@ impl App {
                 if self.tabs[self.tab].layout.dragging() {
                     self.tab_mut().layout.drag_to(x, y);
                     self.sync_sizes();
+                } else if self.copy.as_ref().is_some_and(|c| c.mouse) {
+                    if let Some(at) = self.copy_point(x, y, true) {
+                        if let Some(c) = self.copy.as_mut() {
+                            c.cursor = at;
+                        }
+                    }
                 } else {
                     self.forward_mouse(ev);
                 }
@@ -1688,6 +1859,17 @@ impl App {
                 if self.tabs[self.tab].layout.dragging() {
                     self.tab_mut().layout.drag_end();
                     self.sync_sizes();
+                } else if self.copy.as_ref().is_some_and(|c| c.mouse) {
+                    // A click without a drag selects nothing worth copying.
+                    if self
+                        .copy
+                        .as_ref()
+                        .is_some_and(|c| c.anchor != Some(c.cursor))
+                    {
+                        self.copy_selection();
+                    } else {
+                        self.leave_copy_mode();
+                    }
                 } else {
                     self.forward_mouse(ev);
                 }
@@ -1716,6 +1898,28 @@ impl App {
             _ => self.forward_mouse(ev),
         }
         Ok(())
+    }
+
+    /// Where a copy-mode drag at (x, y) lands in the focused pane, when copy
+    /// mode is on and the program there has not taken the mouse. `clamp` keeps
+    /// a drag that leaves the pane on its edge.
+    fn copy_point(&self, x: u16, y: u16, clamp: bool) -> Option<(isize, u16)> {
+        if !self.cfg.general.copy_mode {
+            return None;
+        }
+        let id = self.focus();
+        let s = self.slots.get(&id)?;
+        if wants_mouse(s.pane.screen()) {
+            return None;
+        }
+        let inner = self.inner(id, self.tabs[self.tab].layout.rect_of(id)?);
+        if inner.w == 0 || inner.h == 0 || (!clamp && !inner.contains(x, y)) {
+            return None;
+        }
+        let col = x.clamp(inner.x, inner.right() - 1) - inner.x;
+        let row = y.clamp(inner.y, inner.bottom() - 1) - inner.y;
+        let line = s.pane.scrolled_off() as isize + row as isize - s.pane.scroll as isize;
+        Some((line, col))
     }
 
     /// Send a mouse event to the pane under the pointer, if it asked for one.
@@ -1779,21 +1983,7 @@ impl App {
                     // Like typing: what lands on the screen is the pane's
                     // echo, and that marks the frame dirty on its own.
                     Event::Paste(text) => {
-                        let id = self.focus();
-                        if let Some(s) = self.slots.get_mut(&id) {
-                            // Only a guest that set DECSET 2004 parses the
-                            // brackets; to anything else they are literal text.
-                            let bracket = s.pane.screen().bracketed_paste();
-                            if bracket {
-                                s.pane.send(b"\x1b[200~");
-                            }
-                            // A pasted end marker would end the paste early and
-                            // run the rest as typed commands.
-                            s.pane.send(text.replace("\x1b[201~", "").as_bytes());
-                            if bracket {
-                                s.pane.send(b"\x1b[201~");
-                            }
-                        }
+                        self.paste(&text);
                         false
                     }
                     Event::Resize(w, h) => {
@@ -2002,6 +2192,9 @@ impl App {
                     self.cfg.appearance.dim_unfocused && !focused,
                 );
                 places.push((id, inner));
+                if let Some(c) = self.copy.as_ref().filter(|c| c.pane == id) {
+                    draw_selection(buf, inner, &slot.pane, c);
+                }
                 if focused {
                     let sc = slot.pane.screen();
                     if !sc.hide_cursor() && slot.pane.scroll == 0 {
@@ -2204,6 +2397,34 @@ impl App {
 
 /// Does this pane want raw mouse events (vim, htop, a TUI) rather than ttmux
 /// handling the click itself?
+/// Reverse the selection, or just the cursor before one is started, over the
+/// pane drawn at `inner`.
+fn draw_selection(buf: &mut Buffer, inner: Rect, pane: &Pane, c: &Copy) {
+    let (from, to) = match c.anchor {
+        Some(a) if a <= c.cursor => (a, c.cursor),
+        Some(a) => (c.cursor, a),
+        None => (c.cursor, c.cursor),
+    };
+    let base = pane.scrolled_off() as isize;
+    for row in 0..inner.h {
+        let line = base + row as isize - pane.scroll as isize;
+        if line < from.0 || line > to.0 {
+            continue;
+        }
+        let start = if line == from.0 { from.1 } else { 0 };
+        let end = if line == to.0 {
+            to.1
+        } else {
+            inner.w.saturating_sub(1)
+        };
+        for col in start..=end.min(inner.w.saturating_sub(1)) {
+            if let Some(cell) = buf.cell_mut((inner.x + col, inner.y + row)) {
+                cell.modifier.toggle(Modifier::REVERSED);
+            }
+        }
+    }
+}
+
 fn wants_mouse(screen: &vt100::Screen) -> bool {
     screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
 }
@@ -3177,5 +3398,91 @@ mod tests {
         a.slots.get_mut(&id).unwrap().pane.bell = true;
         a.update_agents(&mut host).unwrap();
         assert!(host.out.contains(&0x07), "bell did not reach the host");
+    }
+
+    #[test]
+    fn copy_mode_keeps_its_selection_on_the_text_the_pane_prints_over() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut a = app_running(
+            "printf 'one\\ntwo\\n'; sleep 0.4; i=1; \
+             while [ $i -le 40 ]; do echo pad$i; i=$((i+1)); done; sleep 60",
+        );
+        a.cfg.general.copy_mode = true;
+        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
+            .pane
+            .screen()
+            .contents()
+            .contains("two")));
+
+        // Select the two lines, then let the pane print past them.
+        a.dispatch(Action::CopyMode).unwrap();
+        for c in "kkvjll".chars() {
+            a.on_key(key(c)).unwrap();
+        }
+        // The frozen view no longer shows what the pane is printing, so wait
+        // on the rows leaving the top of the screen instead.
+        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
+            .pane
+            .scrolled_off()
+            >= 10));
+        let id = a.focus();
+        assert!(
+            a.slots[&id].pane.scroll > 0,
+            "the view followed the output instead of holding still"
+        );
+        a.on_key(key('y')).unwrap();
+        assert_eq!(a.paste_buffer, "one\ntwo");
+        assert!(!a.slots[&id].pane.frozen, "the pane stayed frozen");
+        assert_eq!(a.slots[&id].pane.scroll, 0, "leaving did not return live");
+    }
+
+    #[test]
+    fn copy_mode_copies_by_keys_and_by_drag_only_when_on() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut a = app_running("printf 'one\\ntwo\\n'; sleep 60");
+        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
+            .pane
+            .screen()
+            .contents()
+            .contains("two")));
+        let id = a.focus();
+        let inner = a.inner(id, a.tabs[0].layout.rect_of(id).unwrap());
+        let mouse = |kind, dx| MouseEvent {
+            kind,
+            column: inner.x + dx,
+            row: inner.y,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // Off: a drag is the pane's, and copy-mode is just scrollback.
+        a.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0))
+            .unwrap();
+        assert!(a.copy.is_none());
+        a.dispatch(Action::CopyMode).unwrap();
+        assert!(a.copy.is_none());
+
+        a.cfg.general.copy_mode = true;
+        a.dispatch(Action::CopyMode).unwrap();
+        for c in "kkvjlly".chars() {
+            a.on_key(key(c)).unwrap();
+        }
+        assert!(a.copy.is_none());
+        assert_eq!(a.paste_buffer, "one\ntwo");
+        let host = a
+            .slots
+            .get_mut(&id)
+            .unwrap()
+            .pane
+            .take_host_bytes(true, false);
+        assert_eq!(host, b"\x1b]52;c;b25lCnR3bw==\x1b\\");
+
+        a.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0))
+            .unwrap();
+        a.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 1))
+            .unwrap();
+        a.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 1))
+            .unwrap();
+        assert!(a.copy.is_none());
+        assert_eq!(a.paste_buffer, "on");
     }
 }

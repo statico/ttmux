@@ -333,6 +333,10 @@ pub struct General {
     pub clipboard: bool,
     /// Let panes send desktop notifications (OSC 9, 99, 777).
     pub notifications: bool,
+    /// tmux's copy mode: select pane text with the keyboard or a mouse drag
+    /// into a paste buffer. Off by default, because programs that copy on
+    /// their own (coding agents, editors) want the drag for themselves.
+    pub copy_mode: bool,
     /// Milliseconds to wait for a second chord after the prefix.
     pub prefix_timeout_ms: u64,
     /// Stock keymap that `keys` overrides sit on top of.
@@ -353,6 +357,7 @@ impl Default for General {
             passthrough_images: true,
             clipboard: true,
             notifications: true,
+            copy_mode: false,
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
             which_key: true,
@@ -642,13 +647,13 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+t =", "set-preset even-horizontal"),
             ("ctrl+t shift+a", "rename-tab"),
             ("ctrl+t a", "rename-pane"),
-            ("ctrl+t [", "scroll-up 10"),
+            ("ctrl+t [", "copy-mode"),
+            ("ctrl+t ]", "paste-buffer"),
             // tmux's choose-tree / choose-window; the palette is the nearest
             // chooser ttmux has.
             ("ctrl+t ;", "command-palette"),
             ("ctrl+t \"", "command-palette"),
-            // `esc` is copy-mode in tmux; scrollback is the closest analogue.
-            ("ctrl+t esc", "scroll-up 10"),
+            ("ctrl+t esc", "copy-mode"),
             ("ctrl+t ?", "help"),
             ("ctrl+t ,", "settings"),
             ("ctrl+t r", "reload-config"),
@@ -678,7 +683,8 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b :", "command-line"),
             ("ctrl+b ?", "help"),
             ("ctrl+b space", "next-preset"),
-            ("ctrl+b [", "scroll-up 10"),
+            ("ctrl+b [", "copy-mode"),
+            ("ctrl+b ]", "paste-buffer"),
             ("ctrl+b d", "detach"),
             ("ctrl+b ctrl+b", "send-prefix"),
         ],
@@ -697,7 +703,8 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a shift+k", "close-pane"),
             ("ctrl+a :", "command-line"),
             ("ctrl+a ?", "help"),
-            ("ctrl+a esc", "scroll-up 10"),
+            ("ctrl+a esc", "copy-mode"),
+            ("ctrl+a ]", "paste-buffer"),
             ("ctrl+a d", "detach"),
         ],
     };

@@ -114,6 +114,24 @@ fn as_str(b: &[u8]) -> &str {
     std::str::from_utf8(b).unwrap_or_default()
 }
 
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            out.push(if i <= c.len() {
+                ABC[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
 /// Longest a synchronized update may hold the pane's frame, as tmux does,
 /// so a child that dies mid-update does not freeze its pane.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(1);
@@ -323,6 +341,11 @@ pub struct Pane {
     pub rows: u16,
     /// Rows scrolled back; 0 = live.
     pub scroll: usize,
+    /// Copy mode is on this pane: hold the view still even at the live
+    /// bottom, so a selection does not slide out from under the pointer.
+    pub frozen: bool,
+    /// `scrolled_off` as of the last pump, to see how far the text moved.
+    seen_scrolled_off: usize,
     /// Sticky bell flag, cleared by the app.
     pub bell: bool,
     pub title_override: Option<String>,
@@ -435,6 +458,8 @@ impl Pane {
             cols,
             rows,
             scroll: 0,
+            frozen: false,
+            seen_scrolled_off: 0,
             bell: false,
             title_override: None,
             parser: vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default()),
@@ -529,8 +554,17 @@ impl Pane {
         if std::mem::take(&mut self.parser.callbacks_mut().bell) {
             self.bell = true;
         }
-        // New output only reaches the live view; keep the scrollback offset put.
+        // Rows that scrolled off carry the text up with them. A view that is
+        // not live -- scrolled back, or held by copy mode -- follows its text
+        // instead, so what is being read or selected stays where it was.
+        let now = self.parser.screen().scrolled_off();
+        let moved = now - self.seen_scrolled_off;
+        self.seen_scrolled_off = now;
+        if self.scroll > 0 || self.frozen {
+            self.scroll += moved;
+        }
         self.parser.screen_mut().set_scrollback(self.scroll);
+        self.scroll = self.parser.screen().scrollback();
         // Mid synchronized update the screen is half drawn; the update's end
         // is the change worth a frame.
         !holding
@@ -668,6 +702,50 @@ impl Pane {
             lines.pop();
         }
         lines.join("\n")
+    }
+
+    /// Rows that have left the top of the screen, the origin copy mode counts
+    /// its lines from.
+    pub fn scrolled_off(&self) -> usize {
+        self.parser.screen().scrolled_off()
+    }
+
+    /// The text from `from` to `to` inclusive, each a (line, column) where
+    /// line 0 is the top of the live screen and history is negative. A row
+    /// that wrapped joins the next without a newline.
+    pub fn text_between(&mut self, from: (isize, u16), to: (isize, u16)) -> String {
+        let (from, to) = if from <= to { (from, to) } else { (to, from) };
+        let mut out = String::new();
+        for line in from.0..=to.0 {
+            let back = (-line).max(0) as usize;
+            self.parser.screen_mut().set_scrollback(back);
+            let row = (line + back as isize) as u16;
+            let start = if line == from.0 { from.1 } else { 0 };
+            let end = if line == to.0 { to.1 + 1 } else { self.cols };
+            let screen = self.parser.screen();
+            let text = screen
+                .rows(start, end.saturating_sub(start))
+                .nth(row.into())
+                .unwrap_or_default();
+            if line == to.0 || screen.row_wrapped(row) {
+                out.push_str(&text);
+            } else {
+                out.push_str(text.trim_end());
+                out.push('\n');
+            }
+        }
+        self.parser.screen_mut().set_scrollback(self.scroll);
+        out
+    }
+
+    /// Send `text` to the outer terminal's clipboard with OSC 52, through the
+    /// same queue as a program's own copies, so `general.clipboard` gates both.
+    pub fn copy_to_host(&mut self, text: &str) {
+        let sink = self.parser.callbacks_mut();
+        sink.copies.extend_from_slice(b"\x1b]52;c;");
+        sink.copies
+            .extend_from_slice(base64(text.as_bytes()).as_bytes());
+        sink.copies.extend_from_slice(b"\x1b\\");
     }
 
     /// Recent plain text from the screen, for agent detection.
@@ -860,6 +938,28 @@ mod tests {
         assert_ne!(p.screen().contents(), live);
         p.scroll_to_bottom();
         assert_eq!(p.screen().contents(), live);
+    }
+
+    #[test]
+    fn copy_mode_text_spans_history_and_screen() {
+        let mut p = pane(
+            "i=1; while [ $i -le 30 ]; do echo line$i; i=$((i+1)); done",
+            40,
+            10,
+        );
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("line30")));
+        let top = (0..10)
+            .find(|&r| p.screen().rows(0, 40).nth(r).unwrap() == "line22")
+            .unwrap() as isize;
+        // Two lines above the screen, through the first on it, part-way in.
+        assert_eq!(p.text_between((top - 2, 4), (top, 4)), "20\nline21\nline2");
+        assert_eq!(p.text_between((top, 1), (top - 1, 0)), "line21\nli");
+        assert_eq!(p.scroll, 0);
+        assert_eq!(base64(b"hi there"), "aGkgdGhlcmU=");
+        assert_eq!(base64(b"ab"), "YWI=");
     }
 
     #[test]
