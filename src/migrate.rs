@@ -43,10 +43,6 @@ use serde::{Deserialize, Serialize};
 use crate::layout::{Layout, PaneId};
 use crate::proto::{self, ClientMsg, ServerMsg};
 
-/// Set on a forked server to tell it to take this socket's session over
-/// instead of starting an empty one.
-pub const ENV_ADOPT: &str = "TTMUX_ADOPT";
-
 /// How long the two servers give each other. Generous, because the new
 /// server replays every pane's scrollback through a vt100 parser before it
 /// can answer, and a session with a lot of history is not quick. It still

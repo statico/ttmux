@@ -445,8 +445,21 @@ impl Pane {
         // Drop our copy of the slave so the reader sees EOF when the child exits.
         drop(pair.slave);
 
-        let writer = pair.master.take_writer().context("pty writer")?;
-        let mut reader = pair.master.try_clone_reader().context("pty reader")?;
+        let parser = vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default());
+        Pane::assemble(id, name, parser, pair.master, child)
+    }
+
+    /// A pane around a master and its child, however they were come by: the
+    /// reader thread and every field's starting value.
+    fn assemble(
+        id: PaneId,
+        name: String,
+        parser: vt100::Parser<Sink>,
+        master: Box<dyn MasterPty + Send>,
+        child: Box<dyn Child + Send + Sync>,
+    ) -> anyhow::Result<Pane> {
+        let writer = master.take_writer().context("pty writer")?;
+        let mut reader = master.try_clone_reader().context("pty reader")?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = vec![0u8; READ_BUF];
@@ -461,7 +474,7 @@ impl Pane {
                 }
             }
         });
-
+        let (rows, cols) = parser.screen().size();
         Ok(Pane {
             id,
             cols,
@@ -471,11 +484,11 @@ impl Pane {
             seen_scrolled_off: 0,
             bell: false,
             title_override: None,
-            parser: vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default()),
+            parser,
             scanner: Scanner::new(),
             images: RefCell::new(Vec::new()),
             rx,
-            master: pair.master,
+            master,
             writer,
             child: RefCell::new(child),
             exit: Cell::new(None),
@@ -1453,56 +1466,24 @@ impl Pane {
         if snap.pid <= 1 {
             anyhow::bail!("pane {} arrived without a pid", snap.id);
         }
-        let (id, pid, name, replay) = (snap.id, snap.pid, snap.name.clone(), &snap.replay[..]);
         let (cols, rows) = (snap.cols.max(1), snap.rows.max(1));
-        let master = AdoptedMaster { fd };
-        let writer = master.take_writer()?;
-        let mut reader = master.try_clone_reader()?;
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buf = vec![0u8; READ_BUF];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
         let mut parser = vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default());
-        parser.process(replay);
+        parser.process(&snap.replay);
         // The replay is this pane's own past, not new output: anything it
         // emitted -- a title, a clipboard copy, a bell -- has already been
         // acted on once.
         parser.callbacks_mut().copies.clear();
         parser.callbacks_mut().notices.clear();
-
-        Ok(Pane {
-            id,
-            cols,
-            rows,
-            scroll: 0,
-            frozen: false,
-            seen_scrolled_off: 0,
-            bell: false,
-            title_override: None,
+        let child = AdoptedChild {
+            pid: snap.pid as libc::pid_t,
+            gone: Arc::new(AtomicBool::new(false)),
+        };
+        Pane::assemble(
+            snap.id,
+            snap.name.clone(),
             parser,
-            scanner: Scanner::new(),
-            images: RefCell::new(Vec::new()),
-            rx,
-            master: Box::new(master),
-            writer,
-            child: RefCell::new(Box::new(AdoptedChild {
-                pid: pid as libc::pid_t,
-                gone: Arc::new(AtomicBool::new(false)),
-            })),
-            exit: Cell::new(None),
-            reaped: Cell::new(false),
-            disconnected: false,
-            name,
-        })
+            Box::new(AdoptedMaster { fd }),
+            Box::new(child),
+        )
     }
 }

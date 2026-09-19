@@ -136,39 +136,10 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-mod imp {
-    use std::path::PathBuf;
-
-    pub struct Identity {
-        pub asid: i32,
-        pub flags: u64,
-        pub responsible: Option<i32>,
-        pub responsible_path: Option<PathBuf>,
-    }
-
-    impl Identity {
-        pub fn interactive(&self) -> bool {
-            true
-        }
-        pub fn orphaned(&self) -> bool {
-            false
-        }
-        pub fn flag_names(&self) -> String {
-            String::new()
-        }
-    }
-
-    pub fn identity() -> Option<Identity> {
-        None
-    }
-}
-
-pub use imp::{identity, Identity};
-
 /// One line about this process's macOS identity, or nothing off macOS.
+#[cfg(target_os = "macos")]
 pub fn line() -> Option<String> {
-    let id = identity()?;
+    let id = imp::identity()?;
     let who = match (id.responsible, id.responsible_path.as_ref()) {
         (Some(pid), Some(path)) => format!(
             "{} (pid {pid})",
@@ -187,8 +158,9 @@ pub fn line() -> Option<String> {
 /// Why a pane here would fail to reach the keychain or a TCC-guarded folder,
 /// or `None` when nothing is wrong. Written for the status line and for
 /// `ttmux doctor`, so it is one sentence.
+#[cfg(target_os = "macos")]
 pub fn complaint() -> Option<String> {
-    let id = identity()?;
+    let id = imp::identity()?;
     if id.orphaned() {
         return Some(
             "the terminal this session was started from has quit, so macOS \
@@ -207,5 +179,15 @@ pub fn complaint() -> Option<String> {
                 .into(),
         );
     }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn line() -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn complaint() -> Option<String> {
     None
 }
