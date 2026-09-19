@@ -449,10 +449,10 @@ ttmux list-sessions
 ttmux doctor
 ```
 
-Report why panes in this session cannot reach the keychain or a permission
-prompt: the server's macOS audit session, the process macOS holds responsible
-for its permission checks, and whether that process is still alive. `ttmux
-upgrade` is the fix when it is not.
+Show why panes in this session cannot unlock the keychain or show a
+permission prompt. The report gives the macOS audit session of the server, and
+the process that macOS holds responsible for its permission checks. If that
+process is gone, run `ttmux upgrade` in a live terminal.
 
 This command takes no flags.
 
