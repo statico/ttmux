@@ -121,9 +121,11 @@ pub fn is_safe(seq: &[u8]) -> bool {
             };
             let end = keys.iter().position(|b| *b == b';').unwrap_or(keys.len());
             let mut keys = keys[..end].split(|b| *b == b',');
-            let reply = keys
-                .clone()
-                .all(|kv| [b"i=", b"I=", b"p=", b"r="].iter().any(|k| kv.starts_with(*k)));
+            let reply = keys.clone().all(|kv| {
+                [b"i=", b"I=", b"p=", b"r="]
+                    .iter()
+                    .any(|k| kv.starts_with(*k))
+            });
             !reply && keys.all(|kv| !kv.starts_with(b"t=") || kv == b"t=d")
         });
     }
