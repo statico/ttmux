@@ -123,7 +123,7 @@ union CmsgBuf {
 /// One byte of payload and one descriptor. The byte matters: ancillary data
 /// rides with real data, and a zero-length send would carry nothing.
 fn send_fd(sock: &UnixStream, fd: RawFd) -> io::Result<()> {
-    let mut byte = [b'f'];
+    let mut byte = *b"f";
     let mut iov = libc::iovec {
         iov_base: byte.as_mut_ptr().cast(),
         iov_len: 1,
