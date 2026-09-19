@@ -43,11 +43,10 @@ use serde::{Deserialize, Serialize};
 use crate::layout::{Layout, PaneId};
 use crate::proto::{self, ClientMsg, ServerMsg};
 
-/// How long the two servers give each other. Generous, because the new
-/// server replays every pane's scrollback through a vt100 parser before it
-/// can answer, and a session with a lot of history is not quick. It still
-/// has to end: the old server must never be left wedged holding a session
-/// nobody can reach.
+/// How long the two servers give each other, and how long `upgrade` waits
+/// for the new one to answer. Generous: a session with a lot of history is a
+/// big snapshot, and the new server replays all of it before it answers. It
+/// still has to end, or the old server could wait for ever.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 // ------------------------------------------------------------- the payload
@@ -277,22 +276,39 @@ pub fn confirm(sock: &mut UnixStream) -> Result<()> {
 pub fn upgrade(session: &str) -> Result<()> {
     let path = proto::socket_path(session)?;
     if !proto::is_live(&path) {
+        // 0.5 and older put the protocol version in the socket name, and do
+        // not speak this handshake at all.
+        let mut old = path.as_os_str().to_os_string();
+        old.push("-1");
+        if proto::is_live(Path::new(&old)) {
+            bail!("session {session:?} was started by ttmux 0.5 or older, which cannot hand it over; end it with the old binary");
+        }
         bail!("no server for session {session:?}");
     }
     let before = describe(&path)
         .map(|(_, pid)| pid)
         .context("the running server did not answer; not touching it")?;
+    let pending = pending_path(&path);
     crate::server::spawn_adopting(session, &path)?;
 
     let deadline = Instant::now() + TIMEOUT;
     loop {
         // The new server renames its socket over this path, so "something is
         // live here" proves nothing: the handover is done when the pid
-        // answering has changed.
+        // answering has changed. The pending socket is looked at first: once
+        // it is gone, `path` is the new server's, so the old pid still
+        // answering there means the new server gave up.
+        let gave_up = !pending.exists();
         if let Some((version, pid)) = describe(&path) {
             if pid != before {
                 println!("session {session:?} is now served by ttmux {version} (pid {pid})");
                 return Ok(());
+            }
+            if gave_up {
+                bail!(
+                    "the new server gave up; the old one still has the session. See {}",
+                    crate::server::log_path(session).display()
+                );
             }
         }
         if Instant::now() > deadline {

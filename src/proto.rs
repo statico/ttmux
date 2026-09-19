@@ -263,8 +263,9 @@ pub fn list_sessions() -> Vec<(String, PathBuf)> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            // `.log`, and `<session>.new.<pid>` while a handover runs.
-            if name.contains('.') {
+            // `<session>.new.<pid>` while a handover runs. Logs are not
+            // sockets, which the check below catches.
+            if name.contains(".new.") {
                 return None;
             }
             if !e.file_type().ok()?.is_socket() {
