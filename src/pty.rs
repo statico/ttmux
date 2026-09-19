@@ -381,7 +381,7 @@ impl Pane {
         command: Option<&str>,
         cols: u16,
         rows: u16,
-        env: &[(String, String)],
+        env: &[(String, Option<String>)],
     ) -> anyhow::Result<Pane> {
         let shell = if !cfg.general.shell.is_empty() {
             cfg.general.shell.clone()
@@ -410,7 +410,10 @@ impl Pane {
         // Last, so a client's `SSH_AUTH_SOCK` wins over the stale one this
         // server was started with. See `general.update_environment`.
         for (k, v) in env {
-            cmd.env(k, v);
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            }
         }
         Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)
     }
@@ -1022,6 +1025,29 @@ mod tests {
             .screen()
             .contents()
             .contains("truecolor")));
+    }
+
+    #[test]
+    fn scrolled_off_never_goes_down_into_the_alternate_screen() {
+        let mut p = vt100::Parser::new(4, 10, 100);
+        p.process("1\r\n2\r\n3\r\n4\r\n5\r\n6".as_bytes());
+        let before = p.screen().scrolled_off();
+        assert!(before > 0);
+        p.process(b"\x1b[?1049h");
+        assert!(p.screen().scrolled_off() >= before);
+    }
+
+    #[test]
+    fn a_name_the_last_client_did_not_have_is_gone_from_a_new_pane() {
+        let mut cfg = Config::default();
+        cfg.general.shell = "/bin/sh".into();
+        cfg.general.shell_args = vec!["-c".into(), "printf '[%s|%s]' \"$HOME\" \"$A\"".into()];
+        let env = [("HOME".into(), None), ("A".into(), Some("b".into()))];
+        let mut p = Pane::spawn(1, &cfg, None, None, 40, 4, &env).unwrap();
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("[|b]")));
     }
 
     #[test]

@@ -185,7 +185,8 @@ screens stay. Add `-t work` for a named session. Use it for two things:
 The scrollback comes back as plain text, and inline images are lost.
 
 When a client attaches, new panes get its `SSH_AUTH_SOCK`, `DISPLAY`, and the
-other variables in `general.update-environment`.
+other variables in `general.update-environment`. If the client does not have
+one of them, new panes do not get it either.
 
 ## Scripting
 
