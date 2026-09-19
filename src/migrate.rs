@@ -62,26 +62,19 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 /// has moved, and the old server keeps the session: a failed upgrade is
 /// always a no-op, never a lost shell.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Snapshot {
     /// The version that wrote it, for the log and for error messages.
-    #[serde(default)]
     pub version: String,
-    #[serde(default)]
     pub session: String,
-    #[serde(default)]
     pub tab: usize,
-    #[serde(default)]
     pub next_id: PaneId,
     /// The size the session was being laid out at, so the new server does not
     /// squeeze every pane through 80x24 before the first client attaches.
-    #[serde(default)]
     pub cols: u16,
-    #[serde(default)]
     pub rows: u16,
-    #[serde(default)]
     pub tabs: Vec<TabSnap>,
     /// One per pty master that follows, in the same order.
-    #[serde(default)]
     pub panes: Vec<PaneSnap>,
 }
 
@@ -258,12 +251,6 @@ pub fn take(from: &Path) -> Result<(Snapshot, Vec<OwnedFd>, UnixStream)> {
         fds.push(recv_fd(&sock).with_context(|| format!("receiving pane {}", pane.id))?);
     }
     Ok((snap, fds, sock))
-}
-
-/// Tell the old server the session is safely here. It exits on this.
-pub fn confirm(sock: &mut UnixStream) -> Result<()> {
-    proto::write_msg(sock, &ClientMsg::Adopted)?;
-    Ok(())
 }
 
 // ------------------------------------------------------------- the verb
