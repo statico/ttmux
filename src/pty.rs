@@ -1400,47 +1400,53 @@ impl Pane {
     /// ten thousand lines of attributes.
     fn replay(&mut self) -> Vec<u8> {
         let mut out: Vec<u8> = vec![];
-        let here = self.scroll;
-        // The screen to restore is the live one. Scrolled back -- or frozen
-        // in copy mode -- the visible rows are history, and replaying those
-        // as the screen would put the shell's cursor in the middle of it.
-        self.parser.screen_mut().set_scrollback(0);
-        self.parser.screen_mut().set_scrollback(usize::MAX);
-        let oldest = self.parser.screen().scrollback();
-        for at in (1..=oldest).rev() {
-            self.parser.screen_mut().set_scrollback(at);
-            if let Some(row) = self.parser.screen().rows(0, self.cols).next() {
-                out.extend_from_slice(row.as_bytes());
-                out.extend_from_slice(b"\r\n");
-            }
+        let history = self.parser.screen().history();
+        for line in &history {
+            out.extend_from_slice(line.as_bytes());
+            out.extend_from_slice(b"\r\n");
         }
-        if !out.is_empty() {
+        if !history.is_empty() {
             // Those lines land on the screen first and only scroll into the
-            // history as more arrive, so a screenful of blanks is fed in
-            // after them to push the last of them back where they belong.
-            out.extend(std::iter::repeat_n(b'\n', self.rows as usize));
+            // history as more arrive. The cursor is on the last row, so one
+            // newline fewer than a screenful pushes the last of them off.
+            out.extend(std::iter::repeat_n(b'\n', usize::from(self.rows) - 1));
+        }
+        // Kitty keyboard flags are a stack per screen: the primary's is
+        // pushed before any switch, the alternate's after it.
+        let kitty = self.parser.callbacks().kitty.clone();
+        for flags in &kitty[0] {
+            out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
         }
         // A pane in the alternate screen (vim, less, top) must be restored
         // onto the alternate grid, or its next `?1049l` would restore a grid
         // it never left and paint the shell's prompt into the leftovers.
         //
-        // ponytail: what the primary grid held underneath is lost; carrying
-        // both grids means a second full dump per pane.
-        if self.parser.screen().alternate_screen() {
+        // ponytail: what the primary grid *showed* underneath is lost, and
+        // so are the saved cursor and the charset; carrying them means
+        // dumping a second grid and more of vt100's private state.
+        let alt = self.parser.screen().alternate_screen();
+        if alt {
             out.extend_from_slice(b"\x1b[?1049h");
+            for flags in &kitty[1] {
+                out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
+            }
         }
+        // A pinned footer (apt's progress bar) is a scroll region. Set
+        // before the screen, because setting one homes the cursor.
+        let (top, bottom) = self.parser.screen().scroll_region();
+        if (top, bottom) != (0, self.rows - 1) {
+            out.extend_from_slice(format!("\x1b[{};{}r", top + 1, bottom + 1).as_bytes());
+        }
+        // The live screen, not whatever is scrolled back to -- or frozen in
+        // copy mode -- right now.
+        let here = self.parser.screen().scrollback();
+        self.parser.screen_mut().set_scrollback(0);
         out.extend_from_slice(&self.parser.screen().state_formatted());
+        self.parser.screen_mut().set_scrollback(here);
         // What the child negotiated about *input*, which the screen dump does
-        // not carry: a program already in kitty keyboard mode will never ask
-        // again, and would spend the rest of its life getting legacy keys.
+        // not carry: a program already in one of these modes will never ask
+        // again.
         let sink = self.parser.callbacks();
-        let kitty = sink.kitty[usize::from(self.parser.screen().alternate_screen())]
-            .last()
-            .copied()
-            .unwrap_or(0);
-        if kitty != 0 {
-            out.extend_from_slice(format!("\x1b[>{kitty}u").as_bytes());
-        }
         if sink.modify_other_keys != 0 {
             out.extend_from_slice(format!("\x1b[>4;{}m", sink.modify_other_keys).as_bytes());
         }
@@ -1453,7 +1459,9 @@ impl Pane {
         if sink.cursor_shape != 0 {
             out.extend_from_slice(format!("\x1b[{} q", sink.cursor_shape).as_bytes());
         }
-        self.parser.screen_mut().set_scrollback(here);
+        if !sink.title.is_empty() {
+            out.extend_from_slice(format!("\x1b]2;{}\x07", sink.title).as_bytes());
+        }
         out
     }
 
