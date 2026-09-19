@@ -41,8 +41,13 @@ no security email address. Do not open a public issue for a vulnerability.
   `src/server.rs`.
 - A session name that is empty, or that holds `/`, `..`, or a NUL byte, is
   rejected in `socket_path`.
-- The socket name carries the protocol version. A new binary starts its own
-  server, so an upgrade never hands an old client a new wire format.
+- The socket name is the session name. Client and server check protocol
+  versions in the handshake and refuse each other if they disagree; `ttmux
+  upgrade` moves a live session to a server built from the new binary.
+- `ttmux upgrade` passes pty masters over the existing `0600` socket with
+  `SCM_RIGHTS`, so a handover reaches no further than a connection to that
+  socket already does. The receiving server is forked from the client, and
+  the panes it adopts inherit that client's identity, not the old server's.
 - `is_live` connects to test a socket. `cleanup_stale` deletes the sockets of
   servers that are gone, and `spawn` removes a stale file before it binds.
 - The daemon does `fork`, `setsid`, `fork` again. It has no controlling
@@ -88,6 +93,10 @@ no security email address. Do not open a public issue for a vulnerability.
   control character from that title before it stores it.
 - A pane gets `TERM`, `COLORTERM`, `TTMUX` (the socket path), `TTMUX_PANE`,
   and `TTMUX_SESSION` on top of your environment.
+- An attaching client sends the variables named by `general.update-environment`
+  (`SSH_AUTH_SOCK` and friends) and panes started afterwards get them. Only
+  those names are sent, and only a client that could already run commands in
+  the session can send them.
 
 ### Config and widgets
 

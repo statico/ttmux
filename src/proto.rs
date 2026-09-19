@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
@@ -16,10 +17,19 @@ use ratatui::style::Style;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-/// Bumped whenever the wire format changes. It is part of the socket path,
-/// so a new binary starts its own server and an old client keeps talking to
-/// the old one -- which is how upgrading does not cost you your sessions.
-pub const PROTOCOL: u32 = 1;
+/// Bumped whenever the wire format changes.
+///
+/// It is *not* part of the socket path. It used to be, so that a new binary
+/// simply started its own server -- which kept the old sessions alive but
+/// stranded them: a new client could not even find the old server to ask it
+/// for them. Now there is one socket per session for ever, and the first
+/// frame in each direction settles the version. See `ttmux upgrade`.
+///
+/// Two things here are frozen and may never change shape, because a build
+/// from any year has to be able to say hello to a build from any other:
+/// `ClientMsg::Hello`'s `proto` field, and `ServerMsg::Welcome`. Everything
+/// else is free to move.
+pub const PROTOCOL: u32 = 2;
 
 /// Refuse a frame larger than this rather than allocating what the peer asked
 /// for. A whole 200x60 repaint is well under a megabyte of JSON; the biggest
@@ -42,6 +52,12 @@ pub enum ClientMsg {
         cols: u16,
         rows: u16,
         term: String,
+        /// Environment worth taking from this client, as chosen by
+        /// `general.update_environment`. Panes spawned from now on get it,
+        /// so a reattach from a new login fixes `SSH_AUTH_SOCK` and friends
+        /// without restarting anything.
+        #[serde(default)]
+        env: Vec<(String, String)>,
         /// The terminal's (foreground, background) as `rgb:` specs, when it
         /// answered OSC 10 and 11. Panes that ask get these back.
         #[serde(default)]
@@ -58,6 +74,14 @@ pub enum ClientMsg {
         argv: Vec<String>,
         pane: Option<crate::layout::PaneId>,
     },
+    /// "Who are you?" -- answered with `Welcome` and nothing else. A whole
+    /// connection, like `Command`.
+    Version,
+    /// "Give me this session." Sent by a newly forked server; the answer is
+    /// `Handover` and then one pty master per pane. See [`crate::migrate`].
+    Adopt,
+    /// "I have it, and the socket is mine." The old server exits on this.
+    Adopted,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -65,6 +89,11 @@ pub enum ServerMsg {
     Welcome {
         proto: u32,
         version: String,
+        /// Which process is serving. It is how `ttmux upgrade` knows the
+        /// handover happened, since the version may be the same on both
+        /// sides.
+        #[serde(default)]
+        pid: u32,
     },
     /// Repaint these cells. Empty is legal.
     Draw(Vec<WireCell>),
@@ -82,6 +111,9 @@ pub enum ServerMsg {
         code: u8,
         text: String,
     },
+    /// A whole session as JSON, in answer to `Adopt`. The pty masters follow
+    /// out of band, over `SCM_RIGHTS`.
+    Handover(String),
 }
 
 // ------------------------------------------------------------------ framing
@@ -90,7 +122,7 @@ pub enum ServerMsg {
 /// Terminal bytes as a JSON string when they are UTF-8, which image payloads
 /// always are: as an array of numbers a 4MB frame is 14MB of JSON. Arrays
 /// still read, so a newer client can talk to an older server.
-mod text_bytes {
+pub(crate) mod text_bytes {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(b: &[u8], s: S) -> Result<S::Ok, S::Error> {
@@ -214,12 +246,13 @@ pub fn socket_path(session: &str) -> io::Result<PathBuf> {
             format!("bad session name {session:?}"),
         ));
     }
-    Ok(socket_dir()?.join(format!("{session}-{PROTOCOL}")))
+    Ok(socket_dir()?.join(session))
 }
 
-/// Every socket in the directory speaking *this* `PROTOCOL`, live or stale.
+/// Every session socket in the directory, live or stale. The directory also
+/// holds logs and the half-bound socket of a handover in progress, so a
+/// socket is recognised by being one.
 pub fn list_sessions() -> Vec<(String, PathBuf)> {
-    let suffix = format!("-{PROTOCOL}");
     let Ok(dir) = socket_dir() else {
         return vec![];
     };
@@ -230,8 +263,14 @@ pub fn list_sessions() -> Vec<(String, PathBuf)> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            let session = name.strip_suffix(&suffix)?;
-            Some((session.to_string(), e.path()))
+            // `.log`, and `<session>.new.<pid>` while a handover runs.
+            if name.contains('.') {
+                return None;
+            }
+            if !e.file_type().ok()?.is_socket() {
+                return None;
+            }
+            Some((name, e.path()))
         })
         .collect();
     out.sort();
@@ -328,6 +367,7 @@ mod tests {
                 rows: 24,
                 term: "xterm-256color".into(),
                 colours: None,
+                env: vec![],
             },
             ClientMsg::Input(Event::Key(KeyEvent::from(KeyCode::Char('q')))),
             ClientMsg::Input(Event::Resize(100, 40)),
@@ -338,6 +378,7 @@ mod tests {
             ServerMsg::Welcome {
                 proto: PROTOCOL,
                 version: "0.1.0".into(),
+                pid: 1,
             },
             ServerMsg::Draw(vec![cell()]),
             ServerMsg::Draw(vec![]),
@@ -391,10 +432,7 @@ mod tests {
     fn socket_paths() {
         std::env::remove_var("TTMUX_SOCKET");
         let p = socket_path("work").unwrap();
-        assert_eq!(
-            p.file_name().unwrap().to_str().unwrap(),
-            format!("work-{PROTOCOL}")
-        );
+        assert_eq!(p.file_name().unwrap().to_str().unwrap(), "work");
         assert_eq!(
             fs::metadata(p.parent().unwrap())
                 .unwrap()

@@ -166,11 +166,17 @@ ttmux new -d -s work        # start a session in the background
 ttmux attach -t work        # attach to a named session
 ttmux ls                    # list the sessions
 ttmux kill-session -t work  # stop one
+ttmux upgrade               # move a session to a server started from here
 ```
 
-<kbd>ctrl+t</kbd> <kbd>d</kbd> detaches. A new binary starts a new server, so
-an upgrade never kills a running session. Detach, install, then attach again
-with the old binary until you are ready to move.
+<kbd>ctrl+t</kbd> <kbd>d</kbd> detaches.
+
+`ttmux upgrade` hands the live session -- shells, jobs, screens and all -- to
+a server forked from the terminal you run it in. It picks up a newly installed
+build without losing anything, and on macOS it is also the fix for a session
+that has outlived the terminal that started it: permission prompts and the
+login keychain are tied to that terminal, so once it quits, panes are refused
+in silence. `ttmux doctor` says whether that has happened.
 
 ## Scripting
 

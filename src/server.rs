@@ -1,9 +1,9 @@
 //! The session server: an `App` running with no terminal of its own.
 //!
 //! The server owns the ptys and the `App`; clients are only viewers. That is
-//! what makes detaching free and what makes `cargo install` of a new build
-//! harmless -- the socket path carries `proto::PROTOCOL`, so a new binary
-//! starts its own server and the old one keeps serving its old clients.
+//! what makes detaching free: a client can come and go, or be replaced by a
+//! newer build, without the session noticing. `ttmux upgrade` goes further
+//! and moves the session itself into a new server -- see [`crate::migrate`].
 
 use std::fs;
 use std::io;
@@ -25,9 +25,10 @@ use ratatui::layout::{Position, Size};
 use ratatui::style::Style;
 use ratatui::Terminal;
 
-use crate::app::{App, Exit, Host, ScriptJob};
+use crate::app::{App, Exit, Handover, Host, ScriptJob};
 use crate::config::Config;
 use crate::layout::{PaneId, Rect};
+use crate::migrate;
 use crate::proto::{self, ClientMsg, ServerMsg, WireCell};
 use crate::script;
 
@@ -81,6 +82,13 @@ struct Hub {
     kill: AtomicBool,
     /// Colours the last client to say hello reported, for the app to take.
     colours: Mutex<Option<(String, String)>>,
+    /// Environment the last client to say hello brought, for the app to take.
+    env: Mutex<Option<Vec<(String, String)>>>,
+    /// `ttmux upgrade` requests waiting on the app thread to pack up.
+    handovers: Mutex<Vec<Handover>>,
+    /// Set once the panes have been duplicated for a new server. From then
+    /// on nothing here may kill them -- not shutdown, not `kill-server`.
+    handing_over: AtomicBool,
 }
 
 impl Hub {
@@ -272,6 +280,14 @@ impl Host for ServerHost {
     fn colours(&mut self) -> Option<(String, String)> {
         self.hub.colours.lock().unwrap().take()
     }
+
+    fn env(&mut self) -> Option<Vec<(String, String)>> {
+        self.hub.env.lock().unwrap().take()
+    }
+
+    fn handovers(&mut self) -> Vec<Handover> {
+        std::mem::take(&mut *self.hub.handovers.lock().unwrap())
+    }
 }
 
 // --------------------------------------------------------------- clients
@@ -300,10 +316,12 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
             rows,
             term,
             colours,
+            env,
         })) => {
             if colours.is_some() {
                 *hub.colours.lock().unwrap() = colours;
             }
+            *hub.env.lock().unwrap() = Some(env);
             if v != proto::PROTOCOL {
                 let why = format!(
                     "client speaks protocol {v}, this server speaks {}",
@@ -328,6 +346,24 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
             let _ = proto::write_msg(&mut out, &ServerMsg::Reply { code, text });
             return;
         }
+        // Frozen: the one question any version may ask any other.
+        Ok(Some(ClientMsg::Version)) => {
+            let _ = proto::write_msg(
+                &mut out,
+                &ServerMsg::Welcome {
+                    proto: proto::PROTOCOL,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    pid: std::process::id(),
+                },
+            );
+            return;
+        }
+        // A newly forked server asking for the session. If it gets it, this
+        // process is finished -- see `hand_over`.
+        Ok(Some(ClientMsg::Adopt)) => {
+            hand_over(&hub, &mut out);
+            return;
+        }
         _ => return,
     };
     let _ = rd.set_read_timeout(None);
@@ -347,6 +383,7 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
             ServerMsg::Welcome {
                 proto: proto::PROTOCOL,
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                pid: std::process::id(),
             },
             ServerMsg::Clear,
             ServerMsg::Draw(snapshot(&st.screen)),
@@ -402,7 +439,10 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 drop(st);
                 break;
             }
-            Ok(Some(ClientMsg::Hello { .. })) => {}
+            Ok(Some(ClientMsg::Hello { .. }))
+            | Ok(Some(ClientMsg::Version))
+            | Ok(Some(ClientMsg::Adopt))
+            | Ok(Some(ClientMsg::Adopted)) => {}
             Ok(Some(ClientMsg::KillServer)) => {
                 hub.kill.store(true, Ordering::SeqCst);
                 park();
@@ -483,23 +523,95 @@ fn snapshot(screen: &Buffer) -> Vec<WireCell> {
     out
 }
 
+/// Give the session away and stop being it.
+///
+/// The app thread does the packing, because it is the only thread that may
+/// touch the panes. If anything at all goes wrong the answer is to say so and
+/// carry on serving: the session is still here and still whole.
+fn hand_over(hub: &Hub, out: &mut UnixStream) {
+    // Two at once would duplicate every pty into two servers, both of them
+    // reading it and both of them armed to kill the shell.
+    if hub.handing_over.swap(true, Ordering::SeqCst) {
+        let _ = proto::write_msg(
+            out,
+            &ServerMsg::Error("a handover is already running".into()),
+        );
+        return;
+    }
+    let (tx, rx) = mpsc::sync_channel(1);
+    hub.handovers.lock().unwrap().push(Handover { reply: tx });
+    let packed = match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(packed)) => packed,
+        Ok(Err(e)) => {
+            hub.handing_over.store(false, Ordering::SeqCst);
+            let _ = proto::write_msg(out, &ServerMsg::Error(e));
+            return;
+        }
+        Err(_) => {
+            hub.handing_over.store(false, Ordering::SeqCst);
+            let _ = proto::write_msg(out, &ServerMsg::Error("session did not respond".into()));
+            return;
+        }
+    };
+    let (snap, fds) = packed;
+    // ponytail: if the new server takes the socket over and then dies before
+    // its confirmation lands, both processes hold the same ptys and the user
+    // sees double. It takes a 10s stall on a local socket to get there;
+    // closing it properly means a two-phase commit between the two servers.
+    if let Err(e) = migrate::give(out, &snap, &fds) {
+        // Nothing more goes down this socket: a failed `give` may have left
+        // half a frame on it, and another frame behind that is just noise the
+        // far end would try to parse as a session.
+        eprintln!("handover failed, keeping the session: {e:#}");
+        hub.handing_over.store(false, Ordering::SeqCst);
+        return;
+    }
+    eprintln!("handed {} panes over; leaving them running", fds.len());
+    // Viewers are watching a session that lives somewhere else now. The
+    // writer threads need a moment to push that out before the process goes.
+    hub.detach_all("upgraded -- reattach with `ttmux attach`");
+    std::thread::sleep(Duration::from_millis(200));
+    // Every pane belongs to the new server now. Returning would drop the app,
+    // which kills them, so nothing here may run a destructor ever again.
+    unsafe { libc::_exit(0) }
+}
+
 // ------------------------------------------------------------ daemonising
 
 /// Start a server for `session` and return once its socket will accept
 /// connections. Does nothing if one is already running.
 pub fn spawn(session: &str) -> Result<()> {
+    spawn_at(session, None)
+}
+
+/// Start a server for `session` that takes the session over from the one
+/// already running at `from`, and return once it has.
+///
+/// Forked from the caller, so it inherits whatever identity the caller has --
+/// which is the entire point of [`crate::migrate`].
+pub fn spawn_adopting(session: &str, from: &Path) -> Result<()> {
+    spawn_at(session, Some(from))
+}
+
+fn spawn_at(session: &str, adopt: Option<&Path>) -> Result<()> {
     let path = proto::socket_path(session)?;
-    if proto::is_live(&path) {
+    if adopt.is_none() && proto::is_live(&path) {
         return Ok(());
     }
+    // While adopting, the real path is still the running server's: bind
+    // beside it and move over it once the session is safely here.
+    let bind = match adopt {
+        Some(_) => migrate::pending_path(&path),
+        None => path.clone(),
+    };
     // A crashed server leaves the file behind; bind would fail on it.
-    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&bind);
     // Bound in the *parent*, before the fork: the caller attaches the moment
     // this returns, and the kernel queues connections on a listening socket
     // whether or not the child has reached `accept` yet. Binding in the child
     // would mean racing it, and a bind error would have nowhere to be printed.
-    let listener = UnixListener::bind(&path).with_context(|| format!("bind {}", path.display()))?;
-    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    let listener = UnixListener::bind(&bind).with_context(|| format!("bind {}", bind.display()))?;
+    let _ = fs::set_permissions(&bind, fs::Permissions::from_mode(0o600));
     // The app reads the session name from the environment. `TTMUX` is how a
     // pane knows it is inside this session, as `$TMUX` is for tmux.
     std::env::set_var("TTMUX_SESSION", session);
@@ -527,8 +639,36 @@ pub fn spawn(session: &str) -> Result<()> {
         _ => unsafe { libc::_exit(0) },
     }
     redirect_stdio(&log_path(session));
-    let code = i32::from(serve(listener, &path).is_err());
+    no_unwinding();
+    let adopt = adopt.map(|from| Adoption {
+        from: from.to_path_buf(),
+        pending: bind,
+        path: path.clone(),
+    });
+    let code = i32::from(serve(listener, &path, adopt).is_err());
     unsafe { libc::_exit(code) }
+}
+
+/// What a forked server needs to take a session over: who has it, where this
+/// server's socket is now, and where it belongs once the session is here.
+struct Adoption {
+    from: PathBuf,
+    pending: PathBuf,
+    path: PathBuf,
+}
+
+/// Turn a panic into an immediate exit.
+///
+/// Unwinding out of the app thread drops the `App`, and dropping an `App`
+/// kills every shell in it -- including, during an upgrade, shells that now
+/// belong to another server. The hook runs *before* the unwind, so the
+/// process is gone before a single destructor has run.
+fn no_unwinding() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        unsafe { libc::_exit(101) }
+    }));
 }
 
 /// Where the daemon's stderr goes. `$TTMUX_LOG` overrides it.
@@ -584,22 +724,50 @@ fn redirect_stdio(log: &Path) {
 }
 
 /// Run the session until it quits. Consumes the already-bound listener.
-fn serve(listener: UnixListener, path: &Path) -> Result<()> {
-    let result = run(listener);
-    let _ = fs::remove_file(path);
+fn serve(listener: UnixListener, path: &Path, adopt: Option<Adoption>) -> Result<()> {
+    let pending = adopt.as_ref().map(|a| a.pending.clone());
+    let result = run(listener, adopt);
+    // Whichever socket this process is on. Until the rename it is still the
+    // pending one, and `path` belongs to the server that still has the
+    // session; after it, the pending name is gone and `path` is ours.
+    let _ = fs::remove_file(match pending {
+        Some(pending) if pending.exists() => pending,
+        _ => path.to_path_buf(),
+    });
     result
 }
 
-fn run(listener: UnixListener) -> Result<()> {
+fn run(listener: UnixListener, adopt: Option<Adoption>) -> Result<()> {
     let cfg_path = crate::config::config_path();
     let cfg = Config::load(&cfg_path).unwrap_or_default();
-    let (w, h) = DEFAULT_SIZE;
+    // Everything the other server has to say happens here, before a single
+    // pane is replayed: it is holding the session open until this returns,
+    // and both processes are reading the same ptys until it lets go.
+    let taken = match &adopt {
+        None => None,
+        Some(a) => {
+            let (snap, fds, mut sock) = migrate::take(&a.from)?;
+            // Take the name over before saying so: the old server exits on
+            // the word, and a client attaching in between must find a server
+            // here. The listener is already bound, so connections queue.
+            fs::rename(&a.pending, &a.path)
+                .with_context(|| format!("take over {}", a.path.display()))?;
+            migrate::confirm(&mut sock)?;
+            Some((snap, fds))
+        }
+    };
+    // An adopted session keeps the size it had: laying it out at 80x24 first
+    // would truncate every pane's replay before a client ever attached.
+    let (w, h) = match &taken {
+        Some((snap, _)) if snap.cols > 0 && snap.rows > 0 => (snap.cols, snap.rows),
+        _ => DEFAULT_SIZE,
+    };
     let (tx, rx) = mpsc::channel();
     let (jobs_tx, jobs_rx) = mpsc::channel();
     let hub = Arc::new(Hub {
         state: Mutex::new(State {
             clients: vec![],
-            size: DEFAULT_SIZE,
+            size: (w, h),
             screen: Buffer::empty(ratatui::layout::Rect::new(0, 0, w, h)),
             cursor: None,
             next_id: 1,
@@ -609,9 +777,24 @@ fn run(listener: UnixListener) -> Result<()> {
         events: tx,
         kill: AtomicBool::new(false),
         colours: Mutex::new(None),
+        env: Mutex::new(None),
+        handovers: Mutex::new(vec![]),
+        handing_over: AtomicBool::new(false),
     });
 
-    let mut app = App::new(cfg, cfg_path, Rect::new(0, 0, w, h))?;
+    let area = Rect::new(0, 0, w, h);
+    let mut app = match taken {
+        None => App::new(cfg, cfg_path, area)?,
+        Some((snap, fds)) => {
+            // The panes are this process's now, so from here nothing may
+            // unwind past them: `no_unwinding` turns a panic into an exit,
+            // and `handing_over` keeps shutdown from killing them.
+            hub.handing_over.store(true, Ordering::SeqCst);
+            let app = App::adopt(cfg, cfg_path, area, snap, fds);
+            hub.handing_over.store(false, Ordering::SeqCst);
+            app
+        }
+    };
     let mut term = Terminal::new(WireBackend {
         hub: hub.clone(),
         cursor: Position::new(0, 0),
@@ -640,8 +823,14 @@ fn run(listener: UnixListener) -> Result<()> {
         }
     })();
 
-    // Dropping the app kills every pane and its process group.
-    drop(app);
+    // Dropping the app kills every pane and its process group -- which is
+    // right for a session that is ending, and fatal for one that has just
+    // been handed to another server.
+    if hub.handing_over.load(Ordering::SeqCst) {
+        std::mem::forget(app);
+    } else {
+        drop(app);
+    }
     hub.detach_all("server exiting");
     // `detach_all` dropped every sender, so each writer ends once it has
     // drained. Joining outside the lock, because the writers take it on the

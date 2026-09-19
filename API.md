@@ -443,6 +443,23 @@ One line per session on this machine.
 ttmux list-sessions
 ```
 
+### doctor
+
+```
+ttmux doctor
+```
+
+Report why panes in this session cannot reach the keychain or a permission
+prompt: the server's macOS audit session, the process macOS holds responsible
+for its permission checks, and whether that process is still alive. `ttmux
+upgrade` is the fix when it is not.
+
+This command takes no flags.
+
+```
+ttmux doctor
+```
+
 ### display-message
 
 ```

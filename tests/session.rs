@@ -61,6 +61,7 @@ impl Session {
             rows,
             term: "xterm-256color".into(),
             colours: None,
+            env: vec![],
         });
         match c.recv() {
             Some(ServerMsg::Welcome { proto: v, .. }) => assert_eq!(v, proto::PROTOCOL),
