@@ -19,19 +19,19 @@ struct Harness {
 
 impl Harness {
     fn start(cols: u16, rows: u16) -> Harness {
-        Harness::spawn(cols, rows, true)
+        Harness::spawn(cols, rows, Some(""))
     }
 
     /// No config on disk, which is what puts the app on the welcome screen.
     fn start_first_run(cols: u16, rows: u16) -> Harness {
-        Harness::spawn(cols, rows, false)
+        Harness::spawn(cols, rows, None)
     }
 
     /// Starts with `toml` already on disk, for the config-driven tests.
+    /// The config is on disk *before* the server starts: it reads the file
+    /// once at startup, so writing it afterwards is a race.
     fn start_with_config(cols: u16, rows: u16, toml: &str) -> Harness {
-        let h = Harness::spawn(cols, rows, true);
-        std::fs::write(&h.cfg, toml).unwrap();
-        h
+        Harness::spawn(cols, rows, Some(toml))
     }
 
     /// Rewrites the config while ttmux is running. Hot reload is what turns
@@ -40,7 +40,7 @@ impl Harness {
         std::fs::write(&self.cfg, toml).unwrap();
     }
 
-    fn spawn(cols: u16, rows: u16, configured: bool) -> Harness {
+    fn spawn(cols: u16, rows: u16, config: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -61,8 +61,8 @@ impl Harness {
         // An empty file is a default config, and its mere existence is what
         // tells the app this is not a first run. Without it every smoke test
         // would open on the keymap picker.
-        if configured {
-            std::fs::write(&cfg_path, "").unwrap();
+        if let Some(toml) = config {
+            std::fs::write(&cfg_path, toml).unwrap();
         }
         cmd.env("TTMUX_CONFIG", &cfg_path);
         cmd.env("TTMUX_SESSION", "test");
