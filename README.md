@@ -178,9 +178,9 @@ screens stay. Add `-t work` for a named session. Use it for two things:
   session then runs on the new build.
 - **The macOS keychain and permission prompts.** macOS ties them to the
   terminal that started the server. When that terminal quits, panes cannot
-  unlock the keychain or show a permission prompt. Run `ttmux upgrade` in a
-  live terminal to correct this. `ttmux doctor` tells you if a session has
-  this problem.
+  unlock the keychain or show a permission prompt. To correct this, run
+  `ttmux upgrade` in a terminal window that is not inside ttmux.
+  `ttmux doctor` tells you if a session has this problem.
 
 The scrollback comes back as plain text, and inline images are lost.
 
