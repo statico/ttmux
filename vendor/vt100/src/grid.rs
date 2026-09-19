@@ -204,6 +204,14 @@ impl Grid {
         self.scrollback_offset
     }
 
+    pub fn scrollback_rows(&self) -> impl Iterator<Item = &crate::row::Row> {
+        self.scrollback.iter()
+    }
+
+    pub fn scroll_region(&self) -> (u16, u16) {
+        (self.scroll_top, self.scroll_bottom)
+    }
+
     pub fn scrolled_off(&self) -> usize {
         self.scrolled_off
     }

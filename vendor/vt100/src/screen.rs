@@ -635,6 +635,28 @@ impl Screen {
         self.attrs.underline()
     }
 
+    /// The primary grid's scrollback as plain text, oldest row first. The
+    /// primary grid's even while the alternate screen shows, because the
+    /// alternate one has none.
+    #[must_use]
+    pub fn history(&self) -> Vec<String> {
+        let cols = self.grid.size().cols;
+        self.grid
+            .scrollback_rows()
+            .map(|row| {
+                let mut line = String::new();
+                row.write_contents(&mut line, 0, cols, false);
+                line
+            })
+            .collect()
+    }
+
+    /// The top and bottom rows of the showing grid's scroll region, from 0.
+    #[must_use]
+    pub fn scroll_region(&self) -> (u16, u16) {
+        self.grid().scroll_region()
+    }
+
     /// Returns whether newly drawn text should be rendered with the inverse
     /// text attribute.
     #[must_use]

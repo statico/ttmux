@@ -4,7 +4,6 @@
 //! The two things that must hold are that the shell is the *same process*
 //! (its variables are still set) and that its screen came with it.
 
-use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
@@ -58,64 +57,23 @@ impl Session {
             .1
     }
 
-    /// Keep looking until `needle` is on the screen. Everything here waits on
-    /// a shell running somewhere else, so nothing is ever "done" on a timer.
-    fn wait_for(&self, needle: &str) -> String {
-        let deadline = Instant::now() + TIMEOUT;
-        loop {
-            let screen = self.screen();
-            if screen.contains(needle) {
-                return screen;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "never saw {needle:?}; screen was:\n{screen}"
-            );
-        }
+    /// The pane's text, history and all.
+    fn capture(&self) -> String {
+        String::from_utf8_lossy(&self.run(&["capture-pane", "-S", "-"]).stdout).to_string()
     }
 
-    /// Attach, collect frames until the screen stops changing, and flatten it
-    /// to one string -- enough to ask "is that text still there?".
-    fn screen(&self) -> String {
-        let mut sock = UnixStream::connect(&self.sock).unwrap();
-        sock.set_read_timeout(Some(Duration::from_millis(400)))
-            .unwrap();
-        proto::write_msg(
-            &mut sock,
-            &ClientMsg::Hello {
-                proto: proto::PROTOCOL,
-                cols: 80,
-                rows: 24,
-                term: "xterm-256color".into(),
-                colours: None,
-                env: vec![],
-            },
-        )
-        .unwrap();
-        let mut cells: BTreeMap<(u16, u16), String> = BTreeMap::new();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            match proto::read_msg::<_, ServerMsg>(&mut sock) {
-                Ok(Some(ServerMsg::Draw(cs))) => {
-                    for c in cs {
-                        cells.insert((c.y, c.x), c.symbol);
-                    }
-                }
-                Ok(Some(ServerMsg::Clear)) => cells.clear(),
-                Ok(Some(_)) => {}
-                _ => break,
-            }
+    /// Keep looking until `needle` is in the pane. Everything here waits on a
+    /// shell running somewhere else, so nothing is ever "done" on a timer.
+    fn wait_for(&self, needle: &str) {
+        let deadline = Instant::now() + TIMEOUT;
+        while !self.capture().contains(needle) {
+            assert!(
+                Instant::now() < deadline,
+                "never saw {needle:?}; the pane had:\n{}",
+                self.capture()
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
-        let mut out = String::new();
-        let mut row = None;
-        for ((y, _), sym) in cells {
-            if row != Some(y) {
-                out.push('\n');
-                row = Some(y);
-            }
-            out.push_str(&sym);
-        }
-        out
     }
 }
 
@@ -136,7 +94,8 @@ impl Drop for Session {
 #[test]
 fn upgrade_keeps_the_shell_and_its_screen() {
     let s = Session::start();
-    s.keys("MARKER=survivor; echo screen-was-here");
+    // Quoted apart, so the echoed command line cannot match the output.
+    s.keys("MARKER=survivor; echo screen-was''-here");
     s.wait_for("screen-was-here");
     let before = s.pid();
 
@@ -203,6 +162,45 @@ fn an_adopted_pane_still_closes_when_its_shell_exits() {
         assert!(
             Instant::now() < deadline,
             "the adopted pane never closed: {panes}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn upgrade_keeps_the_scrollback_and_the_screen_where_they_were() {
+    let s = Session::start();
+    s.keys("seq 1 60; echo filled''-up");
+    s.wait_for("filled-up");
+    let before = s.capture();
+    assert!(before.contains("\n1\n"), "no scrollback to test: {before}");
+
+    // Twice: a replay that is off by a row, or adds one, shows on the
+    // second pass if it hid on the first.
+    for _ in 0..2 {
+        assert!(s.run(&["upgrade"]).status.success());
+        assert_eq!(
+            before,
+            s.capture(),
+            "the pane's text moved across the handover"
+        );
+    }
+}
+
+#[test]
+fn a_full_screen_program_keeps_the_history_under_it() {
+    let s = Session::start();
+    s.keys("seq 1 60; printf '\\033[?1049hin-the''-alt-screen'; read x; printf '\\033[?1049l'");
+    s.wait_for("in-the-alt-screen");
+    assert!(s.run(&["upgrade"]).status.success());
+    s.wait_for("in-the-alt-screen");
+    s.keys("");
+    let deadline = Instant::now() + TIMEOUT;
+    while !s.capture().contains("\n1\n") {
+        assert!(
+            Instant::now() < deadline,
+            "the history is gone: {}",
+            s.capture()
         );
         std::thread::sleep(Duration::from_millis(100));
     }
