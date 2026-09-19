@@ -626,8 +626,9 @@ impl App {
     /// server may be any older version, and losing a float's exact rect is
     /// better than losing the shells.
     /// Never fails: by the time it is called the ptys are already here, and
-    /// an error return would drop them -- which kills the shells this whole
-    /// mechanism exists to keep.
+    /// an error return would drop them all. A pane that cannot be rebuilt
+    /// (out of file descriptors, say) is dropped alone, and its shell gets a
+    /// hangup.
     pub fn adopt(
         cfg: Config,
         cfg_path: PathBuf,

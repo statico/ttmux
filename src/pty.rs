@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -1371,16 +1371,16 @@ impl Pane {
         let fd = self.master.as_raw_fd().context("pane has no pty")?;
         // Duplicated before anything is closed, so the master is held by one
         // process or the other without a gap. A gap would hang up the shell.
-        let dup = unsafe { libc::dup(fd) };
-        if dup < 0 {
-            return Err(std::io::Error::last_os_error()).context("dup pty");
-        }
-        let dup = unsafe { OwnedFd::from_raw_fd(dup) };
+        // Close-on-exec, or a widget command spawned before this process
+        // exits would inherit every pane's master.
+        let dup = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
+            .try_clone_to_owned()
+            .context("dup pty")?;
         // ponytail: the reader thread here keeps reading until this process
-        // exits, so output between this drain and that exit is read by the
-        // old server and dropped. Stopping it properly means a shutdown
-        // channel per pane; the handover instead hands the socket over
-        // before it replays, which keeps the window to the fd passing.
+        // exits, so output from this drain to that exit is lost, and a cut
+        // can land mid escape sequence. The window is the fd passing plus the
+        // new server's parse of the snapshot. Closing it means a shutdown
+        // channel per pane.
         //
         // Bounded, not `while self.pump()`: a pane running `yes` is never
         // drained, and looping until it is would hang the app thread.

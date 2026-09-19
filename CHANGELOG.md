@@ -10,6 +10,7 @@
   Use it after you install a new version. On macOS, also use it when the
   terminal that started the session has quit: the keychain and permission
   prompts work again. `ttmux doctor` shows if a session has this problem.
+  A session from 0.5 or older cannot move. End it with the old binary.
 - `general.update-environment`: new panes get `SSH_AUTH_SOCK` and similar
   variables from the client that attached last.
 
