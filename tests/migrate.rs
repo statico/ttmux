@@ -134,13 +134,19 @@ fn upgrade_keeps_every_pane_and_window() {
     let s = Session::start();
     s.run(&["split-window"]);
     s.run(&["new-window"]);
-    let before = String::from_utf8_lossy(&s.run(&["list-panes", "-a"]).stdout).to_string();
-    assert_eq!(before.lines().count(), 3, "expected three panes: {before}");
+    // Ids and sizes: a title can change on its own when a shell prompts.
+    let panes = || {
+        String::from_utf8_lossy(&s.run(&["list-panes", "-a"]).stdout)
+            .lines()
+            .map(|l| l.split(']').next().unwrap_or_default().to_string())
+            .collect::<Vec<_>>()
+    };
+    let before = panes();
+    assert_eq!(before.len(), 3, "expected three panes: {before:?}");
 
     s.upgrade();
 
-    let after = String::from_utf8_lossy(&s.run(&["list-panes", "-a"]).stdout).to_string();
-    assert_eq!(before, after, "the layout changed across the handover");
+    assert_eq!(before, panes(), "the layout changed across the handover");
 }
 
 #[test]
