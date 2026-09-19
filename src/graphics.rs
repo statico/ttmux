@@ -107,7 +107,9 @@ fn more_chunks(seq: &[u8]) -> bool {
 /// read a file or shared memory (`t=f`, `t=t`, `t=s`), and OSC 1337 carries
 /// far more than images (downloads, user vars, focus stealing), so only
 /// direct kitty data, inline iTerm2 files and sixel pass. tmux blocks all of
-/// it by default.
+/// it by default. A terminal's reply (`i=31;OK`) is not a command either:
+/// a pane that echoes its input would send it back to the host, which
+/// answers again, forever.
 // ponytail: iTerm2 multipart transfers (`MultipartFile`) are dropped too;
 // allow them with `inline=1` if a real tool needs them.
 pub fn is_safe(seq: &[u8]) -> bool {
@@ -118,9 +120,11 @@ pub fn is_safe(seq: &[u8]) -> bool {
                 return true;
             };
             let end = keys.iter().position(|b| *b == b';').unwrap_or(keys.len());
-            keys[..end]
-                .split(|b| *b == b',')
-                .all(|kv| !kv.starts_with(b"t=") || kv == b"t=d")
+            let mut keys = keys[..end].split(|b| *b == b',');
+            let reply = keys
+                .clone()
+                .all(|kv| [b"i=", b"I=", b"p=", b"r="].iter().any(|k| kv.starts_with(*k)));
+            !reply && keys.all(|kv| !kv.starts_with(b"t=") || kv == b"t=d")
         });
     }
     if let Some(rest) = seq.strip_prefix(b"\x1b]1337;File=") {
@@ -378,6 +382,11 @@ mod tests {
         assert!(is_safe(b"\x1b_Ga=T,t=d;AAAA\x1b\\"));
         assert!(!is_safe(b"\x1b_Ga=T,t=f;L2V0Yy9wYXNzd2Q=\x1b\\"));
         assert!(!is_safe(b"\x1b_Ga=T,m=1;AA\x1b\\\x1b_Gt=s,m=0;AA\x1b\\"));
+        // The host's answer to a query, echoed back by a pane's tty.
+        assert!(!is_safe(b"\x1b_Gi=31;OK\x1b\\"));
+        assert!(!is_safe(b"\x1b_Gi=31,p=2;ENOENT:no such image\x1b\\"));
+        assert!(is_safe(b"\x1b_Gm=0;AAAA\x1b\\"));
+        assert!(is_safe(b"\x1b_Ga=q,i=31,s=1,v=1,f=24;AAAA\x1b\\"));
         assert!(is_safe(b"\x1b]1337;File=name=eA==;inline=1:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;File=name=eA==:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;StealFocus\x07"));
