@@ -6,6 +6,12 @@
   and paste it back with the prefix and ]. It is off by default; set
   `general.copy-mode = true`. When it is off, the copy mode key scrolls
   back as before.
+- `ttmux upgrade` moves a live session to a new server. The shells stay.
+  Use it after you install a new version. On macOS, also use it when the
+  terminal that started the session has quit: the keychain and permission
+  prompts work again. `ttmux doctor` shows if a session has this problem.
+- `general.update-environment`: new panes get `SSH_AUTH_SOCK` and similar
+  variables from the client that attached last.
 
 ## 0.5.0 — 2026-09-12
 

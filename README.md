@@ -171,12 +171,21 @@ ttmux upgrade               # move a session to a server started from here
 
 <kbd>ctrl+t</kbd> <kbd>d</kbd> detaches.
 
-`ttmux upgrade` hands the live session -- shells, jobs, screens and all -- to
-a server forked from the terminal you run it in. It picks up a newly installed
-build without losing anything, and on macOS it is also the fix for a session
-that has outlived the terminal that started it: permission prompts and the
-login keychain are tied to that terminal, so once it quits, panes are refused
-in silence. `ttmux doctor` says whether that has happened.
+`ttmux upgrade` moves a live session to a new server. The shells, jobs, and
+screens stay. Add `-t work` for a named session. Use it for two things:
+
+- **A new version.** Install the new build, then run `ttmux upgrade`. The
+  session then runs on the new build.
+- **The macOS keychain and permission prompts.** macOS ties them to the
+  terminal that started the server. When that terminal quits, panes cannot
+  unlock the keychain or show a permission prompt. Run `ttmux upgrade` in a
+  live terminal to correct this. `ttmux doctor` tells you if a session has
+  this problem.
+
+The scrollback comes back as plain text, and inline images are lost.
+
+When a client attaches, new panes get its `SSH_AUTH_SOCK`, `DISPLAY`, and the
+other variables in `general.update-environment`.
 
 ## Scripting
 
@@ -235,6 +244,7 @@ passthrough-images = true    # kitty, iTerm2, and sixel inline images
 clipboard = true             # programs may copy with OSC 52
 notifications = true         # programs may send OSC 9, 99, and 777
 copy-mode = false            # tmux's copy mode and mouse-drag copy
+update-environment = ["SSH_AUTH_SOCK", "DISPLAY"]  # taken from each client that attaches
 
 [appearance]
 border-style = "curved"      # curved | square | heavy | double | dashed | divider | none

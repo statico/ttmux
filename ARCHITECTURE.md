@@ -272,6 +272,19 @@ Per-client `Detach` drops that one view. `Exit::Detached` out of
 `main_loop` is the session's own detach action, so every client leaves and
 the panes keep running. Only `Exit::Quit` ends the process.
 
+## src/migrate.rs
+`ttmux upgrade`. The client forks a new server. That server gets a
+`Snapshot` (tabs, layouts, pane screens) from the old server, and then each
+pty master over `SCM_RIGHTS`. It renames its socket over the old one and
+says so. Then the old server calls `_exit`, so no destructor kills a shell.
+If a step fails before the rename, the old server keeps the session.
+
+## src/mac.rs
+A report only. macOS ties the keychain and permission prompts to the audit
+session and the responsible process of the server. Both come from the
+terminal that started it, and nothing can change them later. `ttmux doctor`
+shows them.
+
 ## src/client.rs
 Connect to the session's socket, or spawn a server and connect to that.
 Puts the terminal in raw mode with the alternate screen, mouse and
