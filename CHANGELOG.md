@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-18
 
 - Copy mode, as in tmux: select text with the keyboard or a mouse drag,
   and paste it back with the prefix and ]. It is off by default; set
