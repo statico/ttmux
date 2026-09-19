@@ -542,20 +542,17 @@ fn hand_over(hub: &Hub, out: &mut UnixStream) {
     }
     let (tx, rx) = mpsc::sync_channel(1);
     hub.handovers.lock().unwrap().push(Handover { reply: tx });
-    let packed = match rx.recv_timeout(Duration::from_secs(10)) {
-        Ok(Ok(packed)) => packed,
-        Ok(Err(e)) => {
+    let packed = rx
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| Err("session did not respond".into()));
+    let (snap, fds) = match packed {
+        Ok(packed) => packed,
+        Err(e) => {
             HANDING_OVER.store(false, Ordering::SeqCst);
             let _ = proto::write_msg(out, &ServerMsg::Error(e));
             return;
         }
-        Err(_) => {
-            HANDING_OVER.store(false, Ordering::SeqCst);
-            let _ = proto::write_msg(out, &ServerMsg::Error("session did not respond".into()));
-            return;
-        }
     };
-    let (snap, fds) = packed;
     // ponytail: if this side's wait for the confirmation times out (120s:
     // a machine asleep, a SIGSTOP) after the new server has renamed over the
     // socket, this server keeps shells nobody can reach. Closing that means
@@ -759,7 +756,8 @@ fn run(listener: UnixListener, adopt: Option<Adoption>) -> Result<()> {
             // here. The listener is already bound, so connections queue.
             fs::rename(&a.pending, &a.path)
                 .with_context(|| format!("take over {}", a.path.display()))?;
-            migrate::confirm(&mut sock)?;
+            // The old server exits on this.
+            proto::write_msg(&mut sock, &ClientMsg::Adopted)?;
             Some((snap, fds))
         }
     };

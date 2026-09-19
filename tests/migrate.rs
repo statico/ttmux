@@ -51,6 +51,16 @@ impl Session {
         assert!(self.run(&["send-keys", line, "Enter"]).status.success());
     }
 
+    #[track_caller]
+    fn upgrade(&self) {
+        let out = self.run(&["upgrade"]);
+        assert!(
+            out.status.success(),
+            "upgrade failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     fn pid(&self) -> u32 {
         ttmux::migrate::describe(&self.sock)
             .expect("nothing serving")
@@ -103,12 +113,7 @@ fn upgrade_keeps_the_shell_and_its_screen() {
     s.wait_for("screen-was-here");
     let before = s.pid();
 
-    let out = s.run(&["upgrade"]);
-    assert!(
-        out.status.success(),
-        "upgrade failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    s.upgrade();
     let after = s.pid();
     assert_ne!(before, after, "the same server is still serving");
 
@@ -116,12 +121,7 @@ fn upgrade_keeps_the_shell_and_its_screen() {
 
     // Twice: an adopted session has to be handed on again, which is the
     // path a second `ttmux upgrade` takes.
-    let out = s.run(&["upgrade"]);
-    assert!(
-        out.status.success(),
-        "second upgrade failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    s.upgrade();
     assert_ne!(after, s.pid());
 
     // The same shell, not a new one: only it knows $MARKER.
@@ -137,12 +137,7 @@ fn upgrade_keeps_every_pane_and_window() {
     let before = String::from_utf8_lossy(&s.run(&["list-panes", "-a"]).stdout).to_string();
     assert_eq!(before.lines().count(), 3, "expected three panes: {before}");
 
-    let out = s.run(&["upgrade"]);
-    assert!(
-        out.status.success(),
-        "upgrade failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    s.upgrade();
 
     let after = String::from_utf8_lossy(&s.run(&["list-panes", "-a"]).stdout).to_string();
     assert_eq!(before, after, "the layout changed across the handover");
@@ -152,7 +147,7 @@ fn upgrade_keeps_every_pane_and_window() {
 fn an_adopted_pane_still_closes_when_its_shell_exits() {
     let s = Session::start();
     s.run(&["split-window"]);
-    assert!(s.run(&["upgrade"]).status.success());
+    s.upgrade();
 
     // The new server never forked this shell, so it cannot `wait` for it;
     // noticing it has gone is `AdoptedChild`'s whole job.
@@ -182,7 +177,7 @@ fn upgrade_keeps_the_scrollback_and_the_screen_where_they_were() {
     // Twice: a replay that is off by a row, or adds one, shows on the
     // second pass if it hid on the first.
     for _ in 0..2 {
-        assert!(s.run(&["upgrade"]).status.success());
+        s.upgrade();
         assert_eq!(
             before,
             s.capture(),
@@ -196,7 +191,7 @@ fn a_full_screen_program_keeps_the_history_under_it() {
     let s = Session::start();
     s.keys("seq 1 60; printf '\\033[?1049hin-the''-alt-screen'; read x; printf '\\033[?1049l'");
     s.wait_for("in-the-alt-screen");
-    assert!(s.run(&["upgrade"]).status.success());
+    s.upgrade();
     s.wait_for("in-the-alt-screen");
     s.keys("");
     let deadline = Instant::now() + TIMEOUT;

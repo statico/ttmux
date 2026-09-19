@@ -20,7 +20,7 @@
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use std::ffi::{CStr, CString};
+    use std::ffi::CStr;
     use std::path::PathBuf;
 
     /// `auditinfo_addr_t` from `<bsm/audit.h>`, checked against the SDK:
@@ -94,7 +94,7 @@ mod imp {
     /// line of the report, not the ability to start.
     fn responsible_for(pid: i32) -> Option<i32> {
         type Fun = unsafe extern "C" fn(i32) -> i32;
-        let name = CString::new("responsibility_get_pid_responsible_for_pid").ok()?;
+        let name = c"responsibility_get_pid_responsible_for_pid";
         let sym = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) };
         if sym.is_null() {
             return None;
