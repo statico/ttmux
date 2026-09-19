@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — 2026-09-19
+
+- A pane no longer fills with `Gi=31;OK` for good. When a pane echoed the
+  terminal's answer to a kitty graphics query, ttmux sent it back to the
+  terminal, which answered again.
+
 ## 0.6.0 — 2026-09-18
 
 - Copy mode, as in tmux: select text with the keyboard or a mouse drag,
