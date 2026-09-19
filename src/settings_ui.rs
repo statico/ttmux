@@ -172,6 +172,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 bool_f("clipboard", g.clipboard),
                 bool_f("notifications", g.notifications),
                 bool_f("copy-mode", g.copy_mode),
+                list_f("update-environment", &g.update_environment),
             ]
         }
         1 => {
@@ -304,6 +305,7 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
         (0, 10) => cfg.general.clipboard = parse_bool(value),
         (0, 11) => cfg.general.notifications = parse_bool(value),
         (0, 12) => cfg.general.copy_mode = parse_bool(value),
+        (0, 13) => cfg.general.update_environment = parse_list(value),
 
         (1, 0) => {
             cfg.appearance.border_style = match value {

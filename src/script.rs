@@ -438,6 +438,14 @@ pub const COMMANDS: &[Spec] = &[
         examples: &["ttmux list-sessions"],
     },
     Spec {
+        name: "doctor",
+        group: "session",
+        about: "report why panes here cannot reach the keychain or a permission prompt",
+        args: "",
+        flags: &[],
+        examples: &["ttmux doctor"],
+    },
+    Spec {
         name: "display-message",
         group: "session",
         about: "show text in the status bar",
@@ -795,6 +803,7 @@ pub enum Cmd {
     ListSessions {
         json: bool,
     },
+    Doctor,
     Display(String),
     ShowOptions {
         key: Option<String>,
@@ -1059,6 +1068,10 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         "list-sessions" => {
             a.end(verb)?;
             Cmd::ListSessions { json }
+        }
+        "doctor" => {
+            a.end(verb)?;
+            Cmd::Doctor
         }
         "display-message" => {
             let text = a.joined();

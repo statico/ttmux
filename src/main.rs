@@ -15,6 +15,9 @@ commands:
     ls                    list sessions
     kill-session -t NAME  end a session and its panes
     kill-server           end every session
+    upgrade [-t NAME]     move a session into a server started from this
+                          terminal: picks up a new build, and restores the
+                          keychain and permission prompts on macOS
 
 options:
     -c, --config <path>   use this config file instead of the default
@@ -119,6 +122,10 @@ fn run() -> Result<ExitCode> {
             let name = target(&rest, &["-t", "-s"])?
                 .ok_or_else(|| anyhow::anyhow!("kill-session needs -t NAME"))?;
             ttmux::client::kill(&name)?;
+        }
+        "upgrade" => {
+            let name = target(&rest, &["-t", "-s"])?.unwrap_or_else(default_session);
+            ttmux::migrate::upgrade(&name)?;
         }
         "kill-server" => {
             for (name, path) in ttmux::proto::list_sessions() {

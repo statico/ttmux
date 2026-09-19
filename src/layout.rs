@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::action::Dir;
 
 /// Stable identifier for a pane. Allocated by the app, opaque here.
@@ -22,7 +24,7 @@ pub type PaneId = u32;
 const MIN: u16 = 3;
 
 /// A rectangle in terminal cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Rect {
     pub x: u16,
     pub y: u16,
@@ -81,7 +83,7 @@ impl From<ratatui::layout::Rect> for Rect {
 }
 
 /// How panes are positioned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
     /// Panes tile `area` exactly.
     Tiling,
@@ -90,7 +92,7 @@ pub enum Mode {
 }
 
 /// Canned tiling arrangements. `Tree` means "whatever the user built".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Preset {
     EvenHorizontal,
     EvenVertical,
@@ -155,7 +157,7 @@ pub enum DragKind {
 }
 
 /// Split orientation. `Horizontal` puts the children side by side.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Axis {
     Horizontal,
     Vertical,
@@ -178,7 +180,7 @@ impl Axis {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Node {
     Leaf(PaneId),
     Split {
@@ -204,7 +206,10 @@ struct Drag {
 }
 
 /// The layout of one tab: a tiling tree plus floating panes.
-#[derive(Debug, Clone)]
+///
+/// Serialisable because a session outlives the process holding it: see
+/// [`crate::migrate`], which hands a running session to a new server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layout {
     pub mode: Mode,
     pub preset: Preset,
@@ -221,6 +226,9 @@ pub struct Layout {
     explicit: Vec<PaneId>,
     /// Z order of free-drawn panes, back to front.
     z: Vec<PaneId>,
+    /// A drag in progress belongs to the pointer, not to the session, so a
+    /// handover drops it rather than carrying half a gesture across.
+    #[serde(skip)]
     drag: Option<Drag>,
 }
 

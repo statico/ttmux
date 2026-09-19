@@ -5,12 +5,15 @@
 
 use std::cell::{Cell, RefCell};
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, ChildKiller, CommandBuilder, ExitStatus, MasterPty, PtySize};
 
 use crate::config::Config;
 use crate::graphics::{self, Image, Piece, Scanner};
@@ -378,6 +381,7 @@ impl Pane {
         command: Option<&str>,
         cols: u16,
         rows: u16,
+        env: &[(String, String)],
     ) -> anyhow::Result<Pane> {
         let shell = if !cfg.general.shell.is_empty() {
             cfg.general.shell.clone()
@@ -403,6 +407,11 @@ impl Pane {
             cmd.env("TTMUX", "1");
         }
         cmd.env("TTMUX_PANE", id.to_string());
+        // Last, so a client's `SSH_AUTH_SOCK` wins over the stale one this
+        // server was started with. See `general.update_environment`.
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)
     }
 
@@ -648,6 +657,12 @@ impl Pane {
         self.name.clone()
     }
 
+    /// The program the pane was started with, used as its title until it
+    /// says otherwise.
+    pub fn program(&self) -> &str {
+        &self.name
+    }
+
     /// The child's working directory, for opening new panes in the same place.
     pub fn cwd(&self) -> Option<PathBuf> {
         let pid = self.child.borrow().process_id()?;
@@ -768,8 +783,13 @@ impl Pane {
         let mut child = self.child.borrow_mut();
         // portable_pty setsid()s before exec, so the child's pid is also its
         // process group id.
+        // 0 is *this* process's group and 1 is launchd/init: a snapshot
+        // that lost a pid must not turn into a signal aimed at us.
         #[cfg(unix)]
-        let pg = child.process_id().map(|p| p as libc::pid_t);
+        let pg = child
+            .process_id()
+            .map(|p| p as libc::pid_t)
+            .filter(|pg| *pg > 1);
         #[cfg(unix)]
         if let Some(pg) = pg {
             unsafe { libc::killpg(pg, libc::SIGHUP) };
@@ -984,7 +1004,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.general.shell = "/bin/sh".into();
         cfg.general.shell_args = vec!["-c".into(), "printf %s \"$COLORTERM\"".into()];
-        let mut p = Pane::spawn(1, &cfg, None, None, 40, 4).unwrap();
+        let mut p = Pane::spawn(1, &cfg, None, None, 40, 4, &[]).unwrap();
         assert!(pump_until(&mut p, |p| p
             .screen()
             .contents()
@@ -1190,5 +1210,299 @@ mod tests {
             String::from_utf8_lossy(&p.callbacks().replies),
             "\x1b]11;rgb:0000/0000/0000\x07\x1b]52;c;aGk=\x1b\\"
         );
+    }
+}
+
+// ----------------------------------------------------- handover
+
+/// A pty master that arrived over a socket rather than from `openpty`.
+///
+/// The pty itself does not care who holds its master: the shell's session and
+/// controlling terminal were fixed when it was spawned and are not affected
+/// by this end changing hands. All that matters is that *someone* holds the
+/// master at every instant, or the kernel hangs the shell up.
+#[derive(Debug)]
+struct AdoptedMaster {
+    fd: OwnedFd,
+}
+
+impl MasterPty for AdoptedMaster {
+    fn resize(&self, size: PtySize) -> anyhow::Result<()> {
+        let ws = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: size.pixel_width,
+            ws_ypixel: size.pixel_height,
+        };
+        if unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::TIOCSWINSZ, &ws) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+
+    fn get_size(&self) -> anyhow::Result<PtySize> {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(self.fd.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(PtySize {
+            rows: ws.ws_row,
+            cols: ws.ws_col,
+            pixel_width: ws.ws_xpixel,
+            pixel_height: ws.ws_ypixel,
+        })
+    }
+
+    fn try_clone_reader(&self) -> anyhow::Result<Box<dyn Read + Send>> {
+        Ok(Box::new(std::fs::File::from(self.fd.try_clone()?)))
+    }
+
+    fn take_writer(&self) -> anyhow::Result<Box<dyn Write + Send>> {
+        Ok(Box::new(std::fs::File::from(self.fd.try_clone()?)))
+    }
+
+    fn process_group_leader(&self) -> Option<libc::pid_t> {
+        match unsafe { libc::tcgetpgrp(self.fd.as_raw_fd()) } {
+            -1 => None,
+            pg => Some(pg),
+        }
+    }
+
+    fn as_raw_fd(&self) -> Option<RawFd> {
+        Some(self.fd.as_raw_fd())
+    }
+
+    fn tty_name(&self) -> Option<PathBuf> {
+        None
+    }
+}
+
+/// A shell this process did not spawn, so `wait` is not available: it is
+/// watched with signal 0 instead, and its exit status is unknowable.
+#[derive(Debug, Clone)]
+struct AdoptedChild {
+    pid: libc::pid_t,
+    /// Once it is gone the pid must never be signalled again: the kernel is
+    /// free to hand that number to somebody else.
+    gone: Arc<AtomicBool>,
+}
+
+impl AdoptedChild {
+    fn alive(&self) -> bool {
+        if self.gone.load(Ordering::Relaxed) {
+            return false;
+        }
+        if unsafe { libc::kill(self.pid, 0) } == 0 {
+            return true;
+        }
+        // EPERM means alive but not ours; only ESRCH means gone.
+        let gone = std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            self.gone.store(true, Ordering::Relaxed);
+        }
+        !gone
+    }
+}
+
+impl ChildKiller for AdoptedChild {
+    fn kill(&mut self) -> std::io::Result<()> {
+        if self.alive() {
+            unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        }
+        Ok(())
+    }
+
+    fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+        Box::new(self.clone())
+    }
+}
+
+impl Child for AdoptedChild {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        // An adopted shell is reaped by launchd, not by us, so there is no
+        // status to collect: "it ended" is all this can ever say.
+        Ok((!self.alive()).then(|| ExitStatus::with_exit_code(0)))
+    }
+
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        // Bounded: `alive` calls anything but ESRCH alive, so a pid that has
+        // been recycled by a process this user cannot signal would otherwise
+        // spin here for ever -- inside `Drop`, on the app thread.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(ExitStatus::with_exit_code(0))
+    }
+
+    fn process_id(&self) -> Option<u32> {
+        // `None` once it is gone, which is what stops `Pane::kill` from
+        // signalling a recycled pid.
+        self.alive().then_some(self.pid as u32)
+    }
+}
+
+impl Pane {
+    /// Everything the new server needs to keep this pane: the pty master, and
+    /// escape codes that rebuild what is on it.
+    ///
+    /// Takes `&mut self` because draining what has arrived but not yet been
+    /// drawn is part of the picture -- the bytes are in this process's
+    /// channel, not in the kernel, and would otherwise be lost.
+    pub fn handover(&mut self) -> anyhow::Result<(u32, OwnedFd, Vec<u8>)> {
+        let pid = self
+            .child
+            .borrow()
+            .process_id()
+            .context("pane has no process")?;
+        let fd = self.master.as_raw_fd().context("pane has no pty")?;
+        // Duplicated before anything is closed, so the master is held by one
+        // process or the other without a gap. A gap would hang up the shell.
+        let dup = unsafe { libc::dup(fd) };
+        if dup < 0 {
+            return Err(std::io::Error::last_os_error()).context("dup pty");
+        }
+        let dup = unsafe { OwnedFd::from_raw_fd(dup) };
+        // ponytail: the reader thread here keeps reading until this process
+        // exits, so output between this drain and that exit is read by the
+        // old server and dropped. Stopping it properly means a shutdown
+        // channel per pane; the handover instead hands the socket over
+        // before it replays, which keeps the window to the fd passing.
+        //
+        // Bounded, not `while self.pump()`: a pane running `yes` is never
+        // drained, and looping until it is would hang the app thread.
+        for _ in 0..8 {
+            if !self.pump() {
+                break;
+            }
+        }
+        Ok((pid, dup, self.replay()))
+    }
+
+    /// Escape codes that reproduce this pane: scrollback as plain lines, then
+    /// the live screen with its colours and modes.
+    ///
+    /// The scrollback loses its formatting on the way through, which is the
+    /// trade for it surviving at all: the alternative is a row-by-row dump of
+    /// ten thousand lines of attributes.
+    fn replay(&mut self) -> Vec<u8> {
+        let mut out: Vec<u8> = vec![];
+        let here = self.scroll;
+        // The screen to restore is the live one. Scrolled back -- or frozen
+        // in copy mode -- the visible rows are history, and replaying those
+        // as the screen would put the shell's cursor in the middle of it.
+        self.parser.screen_mut().set_scrollback(0);
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let oldest = self.parser.screen().scrollback();
+        for at in (1..=oldest).rev() {
+            self.parser.screen_mut().set_scrollback(at);
+            if let Some(row) = self.parser.screen().rows(0, self.cols).next() {
+                out.extend_from_slice(row.as_bytes());
+                out.extend_from_slice(b"\r\n");
+            }
+        }
+        if !out.is_empty() {
+            // Those lines land on the screen first and only scroll into the
+            // history as more arrive, so a screenful of blanks is fed in
+            // after them to push the last of them back where they belong.
+            out.extend(std::iter::repeat_n(b'\n', self.rows as usize));
+        }
+        // A pane in the alternate screen (vim, less, top) must be restored
+        // onto the alternate grid, or its next `?1049l` would restore a grid
+        // it never left and paint the shell's prompt into the leftovers.
+        //
+        // ponytail: what the primary grid held underneath is lost; carrying
+        // both grids means a second full dump per pane.
+        if self.parser.screen().alternate_screen() {
+            out.extend_from_slice(b"\x1b[?1049h");
+        }
+        out.extend_from_slice(&self.parser.screen().state_formatted());
+        // What the child negotiated about *input*, which the screen dump does
+        // not carry: a program already in kitty keyboard mode will never ask
+        // again, and would spend the rest of its life getting legacy keys.
+        let sink = self.parser.callbacks();
+        let kitty = sink.kitty[usize::from(self.parser.screen().alternate_screen())]
+            .last()
+            .copied()
+            .unwrap_or(0);
+        if kitty != 0 {
+            out.extend_from_slice(format!("\x1b[>{kitty}u").as_bytes());
+        }
+        if sink.modify_other_keys != 0 {
+            out.extend_from_slice(format!("\x1b[>4;{}m", sink.modify_other_keys).as_bytes());
+        }
+        if sink.focus_events {
+            out.extend_from_slice(b"\x1b[?1004h");
+        }
+        if sink.theme_reports {
+            out.extend_from_slice(b"\x1b[?2031h");
+        }
+        if sink.cursor_shape != 0 {
+            out.extend_from_slice(format!("\x1b[{} q", sink.cursor_shape).as_bytes());
+        }
+        self.parser.screen_mut().set_scrollback(here);
+        out
+    }
+
+    /// Rebuild a pane around a pty master handed over by another server.
+    pub fn adopt(
+        snap: &crate::migrate::PaneSnap,
+        fd: OwnedFd,
+        scrollback: usize,
+    ) -> anyhow::Result<Pane> {
+        if snap.pid <= 1 {
+            anyhow::bail!("pane {} arrived without a pid", snap.id);
+        }
+        let (id, pid, name, replay) = (snap.id, snap.pid, snap.name.clone(), &snap.replay[..]);
+        let (cols, rows) = (snap.cols.max(1), snap.rows.max(1));
+        let master = AdoptedMaster { fd };
+        let writer = master.take_writer()?;
+        let mut reader = master.try_clone_reader()?;
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; READ_BUF];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let mut parser = vt100::Parser::new_with_callbacks(rows, cols, scrollback, Sink::default());
+        parser.process(replay);
+        // The replay is this pane's own past, not new output: anything it
+        // emitted -- a title, a clipboard copy, a bell -- has already been
+        // acted on once.
+        parser.callbacks_mut().copies.clear();
+        parser.callbacks_mut().notices.clear();
+
+        Ok(Pane {
+            id,
+            cols,
+            rows,
+            scroll: 0,
+            frozen: false,
+            seen_scrolled_off: 0,
+            bell: false,
+            title_override: None,
+            parser,
+            scanner: Scanner::new(),
+            images: RefCell::new(Vec::new()),
+            rx,
+            master: Box::new(master),
+            writer,
+            child: RefCell::new(Box::new(AdoptedChild {
+                pid: pid as libc::pid_t,
+                gone: Arc::new(AtomicBool::new(false)),
+            })),
+            exit: Cell::new(None),
+            reaped: Cell::new(false),
+            disconnected: false,
+            name,
+        })
     }
 }

@@ -10,6 +10,8 @@ pub mod graphics;
 pub mod input;
 pub mod layout;
 pub mod line_edit;
+pub mod mac;
+pub mod migrate;
 pub mod onboarding;
 pub mod proto;
 pub mod pty;

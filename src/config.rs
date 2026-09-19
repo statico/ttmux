@@ -343,6 +343,11 @@ pub struct General {
     pub keys_preset: KeysPreset,
     /// Show the which-key hint popup while waiting for the chord after the prefix.
     pub which_key: bool,
+    /// Variables a newly attached client updates in the session, so panes
+    /// started afterwards talk to *this* terminal's ssh agent, display and
+    /// clipboard rather than the long-dead one that started the session.
+    /// tmux calls this `update-environment`.
+    pub update_environment: Vec<String>,
 }
 
 impl Default for General {
@@ -361,6 +366,23 @@ impl Default for General {
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
             which_key: true,
+            update_environment: [
+                "SSH_AUTH_SOCK",
+                "SSH_CONNECTION",
+                "SSH_CLIENT",
+                "SSH_TTY",
+                "DISPLAY",
+                "TERM_PROGRAM",
+                "TERM_PROGRAM_VERSION",
+                "TERM_SESSION_ID",
+                "__CFBundleIdentifier",
+                "XPC_SERVICE_NAME",
+                "XPC_FLAGS",
+                "SECURITYSESSIONID",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         }
     }
 }

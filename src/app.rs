@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
@@ -18,6 +18,8 @@ use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::Terminal;
 
+use std::os::fd::OwnedFd;
+
 use crate::action::{Action, Dir, ALL_ACTIONS};
 use crate::agent::{AgentState, Watcher};
 use crate::cmdline::{CmdLine, Outcome as CmdOutcome};
@@ -26,6 +28,7 @@ use crate::graphics::Image;
 use crate::input::{encode_key, encode_mouse, Keys, Resolution};
 use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
 use crate::line_edit::{LineEdit, CARET};
+use crate::migrate::{PaneSnap, Snapshot, TabSnap};
 use crate::pty::Pane;
 use crate::render;
 use crate::script::{Cmd, Win};
@@ -72,6 +75,21 @@ pub trait Host {
     fn colours(&mut self) -> Option<(String, String)> {
         None
     }
+    /// Environment a client newly brought with it, for panes spawned from
+    /// here on. See `general.update_environment`.
+    fn env(&mut self) -> Option<Vec<(String, String)>> {
+        None
+    }
+    /// Requests to hand this session to another server, each wanting one
+    /// snapshot and the panes' ptys. See [`crate::migrate`].
+    fn handovers(&mut self) -> Vec<Handover> {
+        Vec::new()
+    }
+}
+
+/// One `ttmux upgrade` waiting for the session to be packed up.
+pub struct Handover {
+    pub reply: std::sync::mpsc::SyncSender<Result<(Snapshot, Vec<OwnedFd>), String>>,
 }
 
 /// The local terminal: crossterm's event queue and this process's stdout.
@@ -150,6 +168,33 @@ fn formatted(format: &str, rows: &[serde_json::Value]) -> String {
         .collect()
 }
 
+/// Ask securityd for a login-keychain item that does not exist. "Not found"
+/// means the keychain was reachable, which is the question; -25308 means it
+/// refused to unlock because this audit session cannot prompt.
+fn keychain_probe() -> String {
+    // On a thread with a deadline: if the keychain is locked *and* macOS can
+    // prompt, `security` waits for a human, and this runs on the app thread.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new("security")
+            .args(["find-generic-password", "-l", "__ttmux_probe__"])
+            .output();
+        let _ = tx.send(out);
+    });
+    let out = match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return format!("could not run `security`: {e}"),
+        Err(_) => return "no answer in 3s: securityd is waiting on something".into(),
+    };
+    let err = String::from_utf8_lossy(&out.stderr);
+    if err.contains("-25308") || err.contains("interaction is not allowed") {
+        "REFUSED (errSecInteractionNotAllowed): this session cannot unlock the login keychain"
+            .into()
+    } else {
+        "reachable".into()
+    }
+}
+
 fn json_line(v: &serde_json::Value) -> String {
     serde_json::to_string_pretty(v).unwrap_or_default() + "\n"
 }
@@ -226,6 +271,12 @@ pub struct App {
     host_focused: bool,
     /// The outer terminal's colours, for panes that ask with OSC 10 and 11.
     colours: Option<(String, String)>,
+    /// Environment from the client that attached most recently, applied to
+    /// every pane spawned after it. A server outlives the terminal that
+    /// started it, and `SSH_AUTH_SOCK` does not survive that.
+    env: Vec<(String, String)>,
+    /// The macOS identity warning is shown once, not every attach.
+    warned_mac: bool,
     copy: Option<Copy>,
     /// What copy mode last copied, for `paste-buffer`.
     paste_buffer: String,
@@ -309,11 +360,22 @@ fn restore() -> Result<()> {
 
 impl App {
     pub fn new(cfg: Config, cfg_path: PathBuf, area: Rect) -> Result<App> {
-        let keys = Keys::new(&cfg);
         // No config file means nobody has chosen a keymap yet, so offer the
         // choice before the first keystroke lands on a default they did not
         // pick. Answering it writes the file, which is what retires this.
         let first_run = !cfg_path.exists();
+        let mut app = App::empty(cfg, cfg_path, area);
+        app.new_tab(None)?;
+        if first_run {
+            app.overlay = Overlay::Welcome(crate::onboarding::Welcome::new());
+        }
+        Ok(app)
+    }
+
+    /// An app with no tabs and no panes: what `new` and what a handover both
+    /// start from.
+    fn empty(cfg: Config, cfg_path: PathBuf, area: Rect) -> App {
+        let keys = Keys::new(&cfg);
         let mut app = App {
             keys,
             widgets: widget::Runner::default(),
@@ -336,6 +398,8 @@ impl App {
             focus_told: None,
             host_focused: true,
             colours: None,
+            env: vec![],
+            warned_mac: false,
             copy: None,
             paste_buffer: String::new(),
             quit: false,
@@ -344,11 +408,7 @@ impl App {
         // Not just on reload: a widget that is in the config at startup has
         // to run too.
         app.widgets.reload(&app.cfg.status.widgets);
-        app.new_tab(None)?;
-        if first_run {
-            app.overlay = Overlay::Welcome(crate::onboarding::Welcome::new());
-        }
-        Ok(app)
+        app
     }
 
     // ---------------------------------------------------------- geometry
@@ -482,7 +542,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         // Real size is pushed by sync_sizes once the layout knows about it.
-        let mut pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24)?;
+        let mut pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24, &self.env)?;
         pane.set_colours(self.colours.clone());
         self.slots.insert(
             id,
@@ -494,6 +554,149 @@ impl App {
             },
         );
         Ok(id)
+    }
+
+    // ---------------------------------------------------------- handover
+
+    /// Pack this session up for another server: see [`crate::migrate`].
+    ///
+    /// Nothing is changed here. If the handover falls through, this app keeps
+    /// running with every pane exactly as it was; the duplicated descriptors
+    /// are simply dropped.
+    pub fn handover(&mut self) -> Result<(Snapshot, Vec<OwnedFd>)> {
+        let mut panes = vec![];
+        let mut fds = vec![];
+        let ids: Vec<PaneId> = self.slots.keys().copied().collect();
+        for id in ids {
+            let Some(slot) = self.slots.get_mut(&id) else {
+                continue;
+            };
+            // A pane whose shell has already gone has nothing to hand over.
+            // Leaving it out of the snapshot is enough: the new server prunes
+            // any layout entry with no pane behind it. Its pid is no use
+            // either -- the kernel is free to hand that number to someone
+            // else the moment it is reaped.
+            if slot.pane.is_dead() {
+                continue;
+            }
+            // Any other failure ends the handover. Dropping the pane from the
+            // snapshot would leave its shell with no master at all once this
+            // server exits, which is a hangup and a lost job.
+            let (pid, fd, replay) = slot
+                .pane
+                .handover()
+                .with_context(|| format!("packing pane {id}"))?;
+            panes.push(PaneSnap {
+                id,
+                pid,
+                cols: slot.pane.cols,
+                rows: slot.pane.rows,
+                name: slot.pane.program().to_string(),
+                title_override: slot.pane.title_override.clone(),
+                replay,
+            });
+            fds.push(fd);
+        }
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|t| TabSnap {
+                name: t.name.clone(),
+                renamed: t.renamed,
+                focus: t.focus,
+                layout: t.layout.clone(),
+            })
+            .collect();
+        let snap = Snapshot {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            session: self.session.clone(),
+            tab: self.tab,
+            next_id: self.next_id,
+            cols: self.area.w,
+            rows: self.area.h,
+            tabs,
+            panes,
+        };
+        Ok((snap, fds))
+    }
+
+    /// The other half: a session that another server was running.
+    ///
+    /// Anything unrecognised is dropped rather than refused -- the sending
+    /// server may be any older version, and losing a float's exact rect is
+    /// better than losing the shells.
+    /// Never fails: by the time it is called the ptys are already here, and
+    /// an error return would drop them -- which kills the shells this whole
+    /// mechanism exists to keep.
+    pub fn adopt(
+        cfg: Config,
+        cfg_path: PathBuf,
+        area: Rect,
+        snap: Snapshot,
+        fds: Vec<OwnedFd>,
+    ) -> App {
+        let mut app = App::empty(cfg, cfg_path, area);
+        for (p, fd) in snap.panes.into_iter().zip(fds) {
+            let pane = match Pane::adopt(&p, fd, app.cfg.general.scrollback) {
+                Ok(pane) => pane,
+                Err(e) => {
+                    eprintln!("dropping pane {}: {e:#}", p.id);
+                    continue;
+                }
+            };
+            app.slots.insert(
+                p.id,
+                Slot {
+                    pane,
+                    watcher: Watcher::new(),
+                    state: AgentState::Idle,
+                    images: vec![],
+                },
+            );
+            if let Some(slot) = app.slots.get_mut(&p.id) {
+                slot.pane.title_override = p.title_override;
+            }
+        }
+        for t in snap.tabs {
+            let mut layout = t.layout;
+            // Panes that did not make it -- one whose shell had already
+            // exited, say -- would otherwise be tiles with nothing behind
+            // them: invisible, unfocusable and unkillable.
+            for id in layout.ids() {
+                if !app.slots.contains_key(&id) {
+                    layout.remove(id);
+                }
+            }
+            if layout.ids().is_empty() {
+                continue;
+            }
+            let focus = if app.slots.contains_key(&t.focus) {
+                t.focus
+            } else {
+                layout.ids()[0]
+            };
+            app.tabs.push(Tab {
+                name: t.name,
+                layout,
+                focus,
+                renamed: t.renamed,
+            });
+        }
+        // Before any pane is spawned, or a fresh one could be given the id of
+        // an adopted pane and evict it -- which would kill its shell.
+        app.next_id = snap
+            .next_id
+            .max(app.slots.keys().copied().max().unwrap_or(0) + 1);
+        // A handover that arrives with nothing left running is still a
+        // session: give it the one pane a new session would have had.
+        if app.tabs.is_empty() {
+            if let Err(e) = app.new_tab(None) {
+                eprintln!("adopted an empty session and could not start a shell: {e:#}");
+            }
+        }
+        app.tab = snap.tab.min(app.tabs.len().saturating_sub(1));
+        app.sync_sizes();
+        app
     }
 
     fn focused_cwd(&self) -> Option<PathBuf> {
@@ -855,6 +1058,7 @@ impl App {
             }
             Cmd::ListWindows { json, format } => Ok(self.list_windows(json, format)),
             Cmd::ListSessions { json } => Ok(self.list_sessions(json)),
+            Cmd::Doctor => Ok(self.doctor()),
             Cmd::Display(text) => {
                 self.note(text);
                 Ok(String::new())
@@ -958,6 +1162,32 @@ impl App {
 
     fn list_sessions(&self, json: bool) -> String {
         crate::proto::sessions_report(json, Some(&self.session))
+    }
+
+    /// What this session looks like to macOS, and whether that is the reason
+    /// something is being refused. The report is from the *server*, because
+    /// the server's identity is the one every pane inherits.
+    fn doctor(&self) -> String {
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "ttmux {} serving {:?}",
+            env!("CARGO_PKG_VERSION"),
+            self.session
+        );
+        if let Some(line) = crate::mac::line() {
+            let _ = writeln!(out, "{line}");
+            let _ = writeln!(out, "keychain: {}", keychain_probe());
+        }
+        match crate::mac::complaint() {
+            Some(why) => {
+                let _ = writeln!(out, "\nproblem: {why}");
+            }
+            None => {
+                let _ = writeln!(out, "\nno macOS identity problem found");
+            }
+        }
+        out
     }
 
     fn list_keys(&self, json: bool) -> String {
@@ -2013,6 +2243,28 @@ impl App {
                 for s in self.slots.values_mut() {
                     s.pane.set_colours(self.colours.clone());
                 }
+            }
+
+            if let Some(env) = host.env() {
+                // Filtered here, against this session's own config: a client
+                // is not the authority on what a pane's environment may be.
+                let allowed = &self.cfg.general.update_environment;
+                self.env = env
+                    .into_iter()
+                    .filter(|(k, _)| allowed.iter().any(|a| a == k))
+                    .collect();
+                // Someone is looking at the status bar: the one moment this
+                // is worth saying, and only once.
+                if !self.warned_mac && crate::mac::complaint().is_some() {
+                    self.warned_mac = true;
+                    self.note("macOS: this session's terminal is gone; `ttmux doctor` explains");
+                }
+            }
+
+            for want in host.handovers() {
+                let _ = want
+                    .reply
+                    .try_send(self.handover().map_err(|e| format!("{e:#}")));
             }
 
             let mut output = false;

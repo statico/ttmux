@@ -212,6 +212,12 @@ pub fn attach(session: &str, create: bool) -> Result<()> {
             rows,
             term: std::env::var("TERM").unwrap_or_default(),
             colours,
+            env: cfg
+                .general
+                .update_environment
+                .iter()
+                .filter_map(|k| Some((k.clone(), std::env::var(k).ok()?)))
+                .collect(),
         },
     )?;
 
@@ -263,6 +269,8 @@ fn paint_loop(sock: &mut UnixStream) -> Result<()> {
                 paint_underlines(&mut io::stdout(), &cells)?;
                 Backend::flush(&mut back)?;
             }
+            // Only ever sent to another server, mid-handover.
+            ServerMsg::Handover(_) => {}
             ServerMsg::Clear => back.clear()?,
             ServerMsg::Cursor(pos) => {
                 let mut out = io::stdout();
