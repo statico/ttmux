@@ -64,14 +64,18 @@ impl Session {
 
     /// Keep looking until `needle` is in the pane. Everything here waits on a
     /// shell running somewhere else, so nothing is ever "done" on a timer.
+    #[track_caller]
     fn wait_for(&self, needle: &str) {
         let deadline = Instant::now() + TIMEOUT;
         while !self.capture().contains(needle) {
-            assert!(
-                Instant::now() < deadline,
-                "never saw {needle:?}; the pane had:\n{}",
-                self.capture()
-            );
+            if Instant::now() > deadline {
+                let out = self.run(&["capture-pane", "-S", "-"]);
+                panic!(
+                    "never saw {needle:?}; the pane had:\n{}\n{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
             std::thread::sleep(Duration::from_millis(50));
         }
     }

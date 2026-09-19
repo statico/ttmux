@@ -172,19 +172,28 @@ fn formatted(format: &str, rows: &[serde_json::Value]) -> String {
 /// means the keychain was reachable, which is the question; -25308 means it
 /// refused to unlock because this audit session cannot prompt.
 fn keychain_probe() -> String {
-    // On a thread with a deadline: if the keychain is locked *and* macOS can
-    // prompt, `security` waits for a human, and this runs on the app thread.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let out = std::process::Command::new("security")
-            .args(["find-generic-password", "-l", "__ttmux_probe__"])
-            .output();
-        let _ = tx.send(out);
-    });
-    let out = match rx.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(out)) => out,
-        Ok(Err(e)) => return format!("could not run `security`: {e}"),
-        Err(_) => return "no answer in 3s: securityd is waiting on something".into(),
+    // With a deadline: if the keychain is locked *and* macOS can prompt,
+    // `security` waits for a human, and this runs on the app thread.
+    let mut child = match std::process::Command::new("security")
+        .args(["find-generic-password", "-l", "__ttmux_probe__"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("could not run `security`: {e}"),
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while let Ok(None) = child.try_wait() {
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return "no answer in 3s: securityd is waiting on something".into();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let Ok(out) = child.wait_with_output() else {
+        return "could not read `security`".into();
     };
     let err = String::from_utf8_lossy(&out.stderr);
     if err.contains("-25308") || err.contains("interaction is not allowed") {
@@ -273,8 +282,9 @@ pub struct App {
     colours: Option<(String, String)>,
     /// Environment from the client that attached most recently, applied to
     /// every pane spawned after it. A server outlives the terminal that
-    /// started it, and `SSH_AUTH_SOCK` does not survive that.
-    env: Vec<(String, String)>,
+    /// started it, and `SSH_AUTH_SOCK` does not survive that. `None` is a
+    /// name that client did not have, so a pane must not have it either.
+    env: Vec<(String, Option<String>)>,
     /// The macOS identity warning is shown once, not every attach.
     warned_mac: bool,
     copy: Option<Copy>,
@@ -658,7 +668,10 @@ impl App {
                 slot.pane.title_override = p.title_override;
             }
         }
-        for t in snap.tabs {
+        // The active tab's index once the tabs before it that did not make it
+        // are gone.
+        let mut active = 0;
+        for (i, t) in snap.tabs.into_iter().enumerate() {
             let mut layout = t.layout;
             // Panes that did not make it -- one whose shell had already
             // exited, say -- would otherwise be tiles with nothing behind
@@ -676,6 +689,9 @@ impl App {
             } else {
                 layout.ids()[0]
             };
+            if i <= snap.tab {
+                active = app.tabs.len();
+            }
             app.tabs.push(Tab {
                 name: t.name,
                 layout,
@@ -695,7 +711,7 @@ impl App {
                 eprintln!("adopted an empty session and could not start a shell: {e:#}");
             }
         }
-        app.tab = snap.tab.min(app.tabs.len().saturating_sub(1));
+        app.tab = active;
         app.sync_sizes();
         app
     }
@@ -2249,16 +2265,21 @@ impl App {
             if let Some(env) = host.env() {
                 // Filtered here, against this session's own config: a client
                 // is not the authority on what a pane's environment may be.
-                let allowed = &self.cfg.general.update_environment;
-                self.env = env
-                    .into_iter()
-                    .filter(|(k, _)| allowed.iter().any(|a| a == k))
+                self.env = self
+                    .cfg
+                    .general
+                    .update_environment
+                    .iter()
+                    .map(|k| {
+                        let v = env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+                        (k.clone(), v)
+                    })
                     .collect();
                 // Someone is looking at the status bar: the one moment this
                 // is worth saying, and only once.
                 if !self.warned_mac && crate::mac::complaint().is_some() {
                     self.warned_mac = true;
-                    self.note("macOS: this session's terminal is gone; `ttmux doctor` explains");
+                    self.note("macOS: this session cannot reach the keychain or permission prompts; `ttmux doctor` explains");
                 }
             }
 

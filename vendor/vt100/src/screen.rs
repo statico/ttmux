@@ -127,10 +127,11 @@ impl Screen {
     ///
     /// A row that scrolls off moves every row above it one further back, so a
     /// caller that remembers a position in the text can add this to it and
-    /// keep pointing at the same row.
+    /// keep pointing at the same row. Counted on the primary grid, so it
+    /// never goes down when a program switches to the alternate screen.
     #[must_use]
     pub fn scrolled_off(&self) -> usize {
-        self.grid().scrolled_off()
+        self.grid.scrolled_off()
     }
 
     /// Returns the text contents of the terminal.

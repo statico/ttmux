@@ -12,7 +12,8 @@
   prompts work again. `ttmux doctor` shows if a session has this problem.
   A session from 0.5 or older cannot move. End it with the old binary.
 - `general.update-environment`: new panes get `SSH_AUTH_SOCK` and similar
-  variables from the client that attached last.
+  variables from the client that attached last. If that client does not
+  have one of them, new panes do not get it either.
 
 ## 0.5.0 — 2026-09-12
 
