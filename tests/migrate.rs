@@ -204,3 +204,32 @@ fn a_full_screen_program_keeps_the_history_under_it() {
         std::thread::sleep(Duration::from_millis(100));
     }
 }
+
+#[test]
+fn a_view_scrolled_back_stays_put_when_new_output_arrives() {
+    let s = Session::start();
+    // Output that comes on its own: a key would snap the view back down.
+    s.keys("seq 1 200; sleep 3; echo lat''er");
+    s.wait_for("\n200\n");
+    s.upgrade();
+    assert!(s.run(&["run", "scroll-up"]).status.success());
+    let view = || String::from_utf8_lossy(&s.run(&["capture-pane"]).stdout).to_string();
+    let before = view();
+    s.wait_for("later");
+    assert_eq!(before, view(), "the view jumped on the first new output");
+}
+
+#[test]
+fn a_pinned_footer_stays_on_the_bottom_row() {
+    let s = Session::start();
+    s.keys(
+        "R=$(stty size | cut -d' ' -f1); seq 1 30; \
+         printf \"\\033[1;$((R-1))r\\033[$R;1HFOOT\"\"ER\\033[$((R-1));1H\"; read x; echo NEW; read y",
+    );
+    s.wait_for("FOOTER");
+    s.upgrade();
+    s.keys("");
+    s.wait_for("NEW");
+    let screen = String::from_utf8_lossy(&s.run(&["capture-pane"]).stdout).to_string();
+    assert_eq!(screen.lines().last(), Some("FOOTER"), "{screen}");
+}

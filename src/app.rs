@@ -1580,6 +1580,7 @@ impl App {
             CopyMode if !self.cfg.general.copy_mode => self.scroll(-10),
             CopyMode => {
                 let id = self.focus();
+                self.leave_copy_mode_elsewhere(id);
                 if let Some(s) = self.slots.get_mut(&id) {
                     // Scrolled back, the program's cursor is off the view;
                     // start at the top left of what is on screen instead.
@@ -1843,6 +1844,14 @@ impl App {
         self.leave_copy_mode();
     }
 
+    /// Starting copy mode in one pane ends it in any other, or that one would
+    /// stay frozen with nothing left to thaw it.
+    fn leave_copy_mode_elsewhere(&mut self, pane: PaneId) {
+        if self.copy.as_ref().is_some_and(|c| c.pane != pane) {
+            self.leave_copy_mode();
+        }
+    }
+
     fn leave_copy_mode(&mut self) {
         if let Some(c) = self.copy.take() {
             if let Some(s) = self.slots.get_mut(&c.pane) {
@@ -2075,6 +2084,7 @@ impl App {
                     self.sync_sizes();
                 } else if let Some(at) = self.copy_point(x, y, false) {
                     let pane = self.focus();
+                    self.leave_copy_mode_elsewhere(pane);
                     if let Some(s) = self.slots.get_mut(&pane) {
                         s.pane.frozen = true;
                     }
@@ -3758,5 +3768,17 @@ mod tests {
             .unwrap();
         assert!(a.copy.is_none());
         assert_eq!(a.paste_buffer, "on");
+    }
+
+    #[test]
+    fn copy_mode_in_a_second_pane_thaws_the_first() {
+        let mut a = app_running("sleep 60");
+        a.cfg.general.copy_mode = true;
+        let first = a.focus();
+        a.dispatch(Action::CopyMode).unwrap();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        assert_ne!(a.focus(), first);
+        a.dispatch(Action::CopyMode).unwrap();
+        assert!(!a.slots[&first].pane.frozen, "the first pane stayed frozen");
     }
 }

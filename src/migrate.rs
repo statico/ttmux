@@ -289,6 +289,14 @@ pub fn upgrade(session: &str) -> Result<()> {
         if let Some((version, pid)) = describe(&path) {
             if pid != before {
                 println!("session {session:?} is now served by ttmux {version} (pid {pid})");
+                // The new server has this process's identity, and inside a
+                // pane that is the one the session already had.
+                if let Some(why) = crate::mac::complaint() {
+                    eprintln!("ttmux: the macOS problem is still there: {why}");
+                    eprintln!(
+                        "ttmux: run `ttmux upgrade` in a terminal window that is not inside ttmux"
+                    );
+                }
                 return Ok(());
             }
             if gave_up {

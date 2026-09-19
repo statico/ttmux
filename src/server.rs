@@ -323,7 +323,6 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
             if colours.is_some() {
                 *hub.colours.lock().unwrap() = colours;
             }
-            *hub.env.lock().unwrap() = Some(env);
             if v != proto::PROTOCOL {
                 let why = format!(
                     "client speaks protocol {v}, this server speaks {}",
@@ -333,6 +332,7 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 let _ = proto::write_msg(&mut out, &ServerMsg::Bye(why));
                 return;
             }
+            *hub.env.lock().unwrap() = Some(env);
             (cols.max(1), rows.max(1), term)
         }
         // `kill-server` is a one-shot command, not a view: it does not need

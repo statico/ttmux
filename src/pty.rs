@@ -484,7 +484,8 @@ impl Pane {
             rows,
             scroll: 0,
             frozen: false,
-            seen_scrolled_off: 0,
+            // An adopted parser has had the replay through it already.
+            seen_scrolled_off: parser.screen().scrolled_off(),
             bell: false,
             title_override: None,
             parser,
@@ -583,7 +584,8 @@ impl Pane {
         // not live -- scrolled back, or held by copy mode -- follows its text
         // instead, so what is being read or selected stays where it was.
         let now = self.parser.screen().scrolled_off();
-        let moved = now - self.seen_scrolled_off;
+        // Down only on a reset (RIS), which takes the history with it.
+        let moved = now.saturating_sub(self.seen_scrolled_off);
         self.seen_scrolled_off = now;
         if self.scroll > 0 || self.frozen {
             self.scroll += moved;
@@ -726,9 +728,12 @@ impl Pane {
                     lines.push(row);
                 }
             }
-            self.parser.screen_mut().set_scrollback(self.scroll);
+            // The history ends where the live screen begins, whatever the
+            // view is scrolled to.
+            self.parser.screen_mut().set_scrollback(0);
         }
         lines.extend(self.parser.screen().rows(0, self.cols));
+        self.parser.screen_mut().set_scrollback(self.scroll);
         while lines.last().is_some_and(|l| l.trim().is_empty()) {
             lines.pop();
         }
@@ -747,7 +752,11 @@ impl Pane {
     pub fn text_between(&mut self, from: (isize, u16), to: (isize, u16)) -> String {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };
         let mut out = String::new();
-        for line in from.0..=to.0 {
+        // Lines that have fallen out of the history since the selection began
+        // are gone; asking for them would repeat the oldest one.
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let oldest = -(self.parser.screen().scrollback() as isize);
+        for line in from.0.max(oldest)..=to.0 {
             let back = (-line).max(0) as usize;
             self.parser.screen_mut().set_scrollback(back);
             let row = (line + back as isize) as u16;
@@ -1025,6 +1034,20 @@ mod tests {
             .screen()
             .contents()
             .contains("truecolor")));
+    }
+
+    #[test]
+    fn a_reset_after_scrolling_does_not_panic() {
+        let mut p = pane(
+            "seq 1 50; sleep 0.3; printf '\\033c'; echo after''-reset",
+            20,
+            5,
+        );
+        assert!(pump_until(&mut p, |p| p.screen().contents().contains("50")));
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("after-reset")));
     }
 
     #[test]
@@ -1457,17 +1480,28 @@ impl Pane {
                 out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
             }
         }
-        // A pinned footer (apt's progress bar) is a scroll region. Set
-        // before the screen, because setting one homes the cursor.
-        let (top, bottom) = self.parser.screen().scroll_region();
-        if (top, bottom) != (0, self.rows - 1) {
-            out.extend_from_slice(format!("\x1b[{};{}r", top + 1, bottom + 1).as_bytes());
-        }
         // The live screen, not whatever is scrolled back to -- or frozen in
         // copy mode -- right now.
         let here = self.parser.screen().scrollback();
         self.parser.screen_mut().set_scrollback(0);
         out.extend_from_slice(&self.parser.screen().state_formatted());
+        // A pinned footer (apt's progress bar) is a scroll region. Set after
+        // the screen, whose row-to-row newlines would scroll inside it, and
+        // then put back the cursor that setting one homes.
+        let (top, bottom) = self.parser.screen().scroll_region();
+        if (top, bottom) != (0, self.rows - 1) {
+            let (row, col) = self.parser.screen().cursor_position();
+            out.extend_from_slice(
+                format!(
+                    "\x1b[{};{}r\x1b[{};{}H",
+                    top + 1,
+                    bottom + 1,
+                    row + 1,
+                    col + 1
+                )
+                .as_bytes(),
+            );
+        }
         self.parser.screen_mut().set_scrollback(here);
         // What the child negotiated about *input*, which the screen dump does
         // not carry: a program already in one of these modes will never ask
