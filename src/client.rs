@@ -223,6 +223,13 @@ pub fn attach(session: &str, create: bool) -> Result<()> {
 
     // Local events go up on their own thread; this one only paints. The
     // thread dies with the process, which is why it is never joined.
+    //
+    // `event::read` parses what the terminal sends as keys, mouse and paste.
+    // It knows nothing of the *answers* a terminal gives to queries, so an
+    // answer that arrives here is read as an Escape key and its letters, and
+    // typed into a pane. Anything ttmux passes out to the terminal must
+    // therefore be a sequence the terminal never replies to; a query from a
+    // pane is answered in ttmux instead. See `graphics::query_reply`.
     let mut up = sock.try_clone()?;
     thread::spawn(move || loop {
         match event::read() {

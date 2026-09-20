@@ -2602,6 +2602,11 @@ impl App {
     /// Terminals draw images into their own layer at the real cursor, not
     /// into ratatui's buffer, so this has to run once `term.draw` has
     /// finished painting or the next diff simply covers them.
+    ///
+    /// Everything held here goes out again on *every* frame, which is what
+    /// keeps an image on screen. So only sequences that draw may be held: one
+    /// that asks the terminal something would be asked again on each frame,
+    /// and each answer arrives as input in the pane that asked.
     fn replay_images(&mut self, places: &[(PaneId, Rect)], host: &mut dyn Host) -> Result<()> {
         for slot in self.slots.values_mut() {
             slot.pane.images_supported = self.cfg.general.passthrough_images;
