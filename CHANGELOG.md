@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.4 — 2026-09-20
+
+- No change to what ttmux does. The code now says why a question from a
+  pane must be answered in ttmux, and not passed out to the terminal.
+
 ## 0.6.3 — 2026-09-20
 
 - A pane no longer shows `Gi=31;OK` at all. ttmux answers a program's
