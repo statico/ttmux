@@ -2652,6 +2652,13 @@ impl App {
         }
         out.extend_from_slice(b"\x1b8");
         host.passthrough(&out)?;
+        // Only the panes that were on screen; one that was not has not had
+        // its question asked yet.
+        for (id, _) in places {
+            if let Some(slot) = self.slots.get_mut(id) {
+                slot.images.retain(|i| !i.once);
+            }
+        }
         self.drew_graphics = drew;
         Ok(())
     }
@@ -3075,6 +3082,7 @@ mod tests {
         Image {
             row,
             col,
+            once: false,
             bytes: vec![tag],
         }
     }
@@ -3648,6 +3656,7 @@ mod tests {
             row: inner.h + 5,
             col: 0,
             bytes: b"PAYLOAD".to_vec(),
+            once: false,
         });
         a.draw(&mut term, &mut host).unwrap();
 
@@ -3657,6 +3666,28 @@ mod tests {
         assert!(out.contains(&last), "not clamped to the last row: {out:?}");
         // The host cursor the frame set has to survive the replay.
         assert!(out.contains('\u{1b}') && out.contains("\x1b7") && out.contains("\x1b8"));
+    }
+
+    #[test]
+    fn a_graphics_query_goes_to_the_host_once() {
+        let mut a = app();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+        let id = a.focus();
+        a.slots.get_mut(&id).unwrap().images.push(Image {
+            row: 0,
+            col: 0,
+            bytes: b"\x1b_Ga=q,i=31;ASK\x1b\\".to_vec(),
+            once: true,
+        });
+
+        a.draw(&mut term, &mut host).unwrap();
+        assert!(host.out.windows(3).any(|w| w == b"ASK"), "never asked");
+        // Asking again every frame has the host answer every frame, and each
+        // answer is input to the pane that asked.
+        host.out.clear();
+        a.draw(&mut term, &mut host).unwrap();
+        assert!(!host.out.windows(3).any(|w| w == b"ASK"), "asked again");
     }
 
     #[test]
@@ -3670,6 +3701,7 @@ mod tests {
             row: 0,
             col: 0,
             bytes: b"\x1b_Gf=100;PAYLOAD\x1b\\".to_vec(),
+            once: false,
         });
         a.draw(&mut term, &mut host).unwrap();
         assert!(
