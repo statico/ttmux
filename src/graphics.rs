@@ -51,15 +51,12 @@ pub fn query_reply(seq: &[u8], supported: bool) -> Option<Vec<u8>> {
     // The answer carries back the image and placement the question named,
     // and nothing else, so the asker can match it to what it asked.
     let mut out = b"\x1b_G".to_vec();
-    for kv in keys
+    let kept: Vec<&[u8]> = keys
         .iter()
+        .copied()
         .filter(|kv| kv.starts_with(b"i=") || kv.starts_with(b"I=") || kv.starts_with(b"p="))
-    {
-        if out.len() > 4 {
-            out.push(b',');
-        }
-        out.extend_from_slice(kv);
-    }
+        .collect();
+    out.extend_from_slice(&kept.join(&b','));
     out.push(b';');
     out.extend_from_slice(if supported {
         &b"OK"[..]

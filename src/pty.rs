@@ -554,16 +554,16 @@ impl Pane {
                             // Anything but drawing is dropped, not replayed.
                             // Answered here, not passed out: see
                             // `graphics::query_reply`.
-                            Piece::Image(bytes)
-                                if graphics::query_reply(&bytes, self.images_supported)
-                                    .is_some() =>
-                            {
-                                let reply =
-                                    graphics::query_reply(&bytes, self.images_supported).unwrap();
-                                self.send(&reply);
-                            }
-                            Piece::Image(bytes) if !graphics::is_safe(&bytes) => {}
                             Piece::Image(bytes) => {
+                                if let Some(reply) =
+                                    graphics::query_reply(&bytes, self.images_supported)
+                                {
+                                    self.send(&reply);
+                                    continue;
+                                }
+                                if !graphics::is_safe(&bytes) {
+                                    continue;
+                                }
                                 let (row, col) = self.parser.screen().cursor_position();
                                 let mut pending = self.images.borrow_mut();
                                 // A video redraws the same cell every frame;
