@@ -1,6 +1,6 @@
 [package]
 name = "ttmux"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 rust-version = "1.82"
 description = "A modern terminal multiplexer: tiling + free-floating panes, mouse, curved borders, in-UI config"

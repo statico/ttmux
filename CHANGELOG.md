@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.3 — 2026-09-20
+
+- A pane no longer shows `Gi=31;OK` at all. ttmux answers a program's
+  kitty graphics question itself. The answer used to come from the outer
+  terminal, and the client typed it into the pane as keys.
+
 ## 0.6.2 — 2026-09-19
 
 - A pane no longer fills with `Gi=31;OK`. A program's kitty graphics
