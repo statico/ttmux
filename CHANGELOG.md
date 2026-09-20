@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2 — 2026-09-19
+
+- A pane no longer fills with `Gi=31;OK`. A program's kitty graphics
+  question was asked again after every frame, and each answer from the
+  terminal arrived as input in the pane that asked.
+
 ## 0.6.1 — 2026-09-19
 
 - A pane no longer fills with `Gi=31;OK` for good. When a pane echoed the
