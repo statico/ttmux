@@ -30,19 +30,44 @@ pub struct Image {
     pub row: u16,
     pub col: u16,
     pub bytes: Vec<u8>,
-    /// A question, not a picture: send it once and forget it. Sending it
-    /// again every frame would have the terminal answer every frame, and
-    /// each answer arrives as input to the pane that asked.
-    pub once: bool,
 }
 
-/// Whether a kitty sequence only asks the terminal a question (`a=q`).
-pub fn is_query(seq: &[u8]) -> bool {
-    let Some(keys) = seq.strip_prefix(b"\x1b_G") else {
-        return false;
-    };
+/// The answer to a kitty graphics query (`a=q`), or `None` when the sequence
+/// is not one.
+///
+// ponytail: the answer is what ttmux itself can do, not what the outer
+// terminal can. Asking the terminal once at startup and passing the result
+// in `Hello` would make it exact.
+/// ttmux answers these itself. Passing one out to the terminal would have
+/// the terminal answer the *client*, whose input parser knows nothing of
+/// graphics replies and would type `Gi=31;OK` into the pane instead.
+pub fn query_reply(seq: &[u8], supported: bool) -> Option<Vec<u8>> {
+    let keys = seq.strip_prefix(b"\x1b_G")?;
     let end = keys.iter().position(|b| *b == b';').unwrap_or(keys.len());
-    keys[..end].split(|b| *b == b',').any(|kv| kv == b"a=q")
+    let keys: Vec<&[u8]> = keys[..end].split(|b| *b == b',').collect();
+    if !keys.contains(&&b"a=q"[..]) {
+        return None;
+    }
+    // The answer carries back the image and placement the question named,
+    // and nothing else, so the asker can match it to what it asked.
+    let mut out = b"\x1b_G".to_vec();
+    for kv in keys
+        .iter()
+        .filter(|kv| kv.starts_with(b"i=") || kv.starts_with(b"I=") || kv.starts_with(b"p="))
+    {
+        if out.len() > 4 {
+            out.push(b',');
+        }
+        out.extend_from_slice(kv);
+    }
+    out.push(b';');
+    out.extend_from_slice(if supported {
+        &b"OK"[..]
+    } else {
+        &b"ENOTSUPPORTED:graphics are off"[..]
+    });
+    out.extend_from_slice(b"\x1b\\");
+    Some(out)
 }
 
 /// Output of [`Scanner::feed`], in stream order.
@@ -402,8 +427,13 @@ mod tests {
         assert!(!is_safe(b"\x1b_Gi=31,p=2;ENOENT:no such image\x1b\\"));
         assert!(is_safe(b"\x1b_Gm=0;AAAA\x1b\\"));
         assert!(is_safe(b"\x1b_Ga=q,i=31,s=1,v=1,f=24;AAAA\x1b\\"));
-        assert!(is_query(b"\x1b_Ga=q,i=31,s=1,v=1;AAAA\x1b\\"));
-        assert!(!is_query(b"\x1b_Ga=T,f=100;AAAA\x1b\\"));
+        assert_eq!(
+            query_reply(b"\x1b_Ga=q,i=31,p=2,s=1,v=1;AAAA\x1b\\", true).as_deref(),
+            Some(&b"\x1b_Gi=31,p=2;OK\x1b\\"[..])
+        );
+        assert!(query_reply(b"\x1b_Ga=q,i=1;AA\x1b\\", false)
+            .is_some_and(|r| r.windows(3).any(|w| w == b"ENO")));
+        assert!(query_reply(b"\x1b_Ga=T,f=100;AAAA\x1b\\", true).is_none());
         assert!(is_safe(b"\x1b]1337;File=name=eA==;inline=1:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;File=name=eA==:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;StealFocus\x07"));

@@ -347,6 +347,9 @@ pub struct Pane {
     /// Copy mode is on this pane: hold the view still even at the live
     /// bottom, so a selection does not slide out from under the pointer.
     pub frozen: bool,
+    /// What to answer a graphics query with. The app keeps it in step with
+    /// `general.passthrough-images`.
+    pub images_supported: bool,
     /// `scrolled_off` as of the last pump, to see how far the text moved.
     seen_scrolled_off: usize,
     /// Sticky bell flag, cleared by the app.
@@ -491,6 +494,7 @@ impl Pane {
             parser,
             scanner: Scanner::new(),
             images: RefCell::new(Vec::new()),
+            images_supported: true,
             rx,
             master,
             writer,
@@ -548,6 +552,16 @@ impl Pane {
                             // The cursor is wherever the preceding plain bytes
                             // left it, which is where the image belongs.
                             // Anything but drawing is dropped, not replayed.
+                            // Answered here, not passed out: see
+                            // `graphics::query_reply`.
+                            Piece::Image(bytes)
+                                if graphics::query_reply(&bytes, self.images_supported)
+                                    .is_some() =>
+                            {
+                                let reply =
+                                    graphics::query_reply(&bytes, self.images_supported).unwrap();
+                                self.send(&reply);
+                            }
                             Piece::Image(bytes) if !graphics::is_safe(&bytes) => {}
                             Piece::Image(bytes) => {
                                 let (row, col) = self.parser.screen().cursor_position();
@@ -558,13 +572,7 @@ impl Pane {
                                 if pending.len() >= MAX_PENDING_IMAGES {
                                     pending.remove(0);
                                 }
-                                let once = graphics::is_query(&bytes);
-                                pending.push(Image {
-                                    row,
-                                    col,
-                                    bytes,
-                                    once,
-                                });
+                                pending.push(Image { row, col, bytes });
                             }
                         }
                     }
@@ -1040,6 +1048,21 @@ mod tests {
             .screen()
             .contents()
             .contains("truecolor")));
+    }
+
+    #[test]
+    fn a_graphics_query_is_answered_here_and_not_passed_on() {
+        // Asks, then prints what came back with the escapes made visible.
+        let mut p = pane(
+            "printf '\\033_Ga=q,i=31,s=1,v=1,f=24;AAAA\\033\\\\';              head -c 18 | tr -d '\\033\\\\'",
+            40,
+            6,
+        );
+        assert!(pump_until(&mut p, |p| p
+            .screen()
+            .contents()
+            .contains("_Gi=31;OK")));
+        assert!(p.take_images().is_empty(), "the query went to the terminal");
     }
 
     #[test]
