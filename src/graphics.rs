@@ -30,6 +30,19 @@ pub struct Image {
     pub row: u16,
     pub col: u16,
     pub bytes: Vec<u8>,
+    /// A question, not a picture: send it once and forget it. Sending it
+    /// again every frame would have the terminal answer every frame, and
+    /// each answer arrives as input to the pane that asked.
+    pub once: bool,
+}
+
+/// Whether a kitty sequence only asks the terminal a question (`a=q`).
+pub fn is_query(seq: &[u8]) -> bool {
+    let Some(keys) = seq.strip_prefix(b"\x1b_G") else {
+        return false;
+    };
+    let end = keys.iter().position(|b| *b == b';').unwrap_or(keys.len());
+    keys[..end].split(|b| *b == b',').any(|kv| kv == b"a=q")
 }
 
 /// Output of [`Scanner::feed`], in stream order.
@@ -389,6 +402,8 @@ mod tests {
         assert!(!is_safe(b"\x1b_Gi=31,p=2;ENOENT:no such image\x1b\\"));
         assert!(is_safe(b"\x1b_Gm=0;AAAA\x1b\\"));
         assert!(is_safe(b"\x1b_Ga=q,i=31,s=1,v=1,f=24;AAAA\x1b\\"));
+        assert!(is_query(b"\x1b_Ga=q,i=31,s=1,v=1;AAAA\x1b\\"));
+        assert!(!is_query(b"\x1b_Ga=T,f=100;AAAA\x1b\\"));
         assert!(is_safe(b"\x1b]1337;File=name=eA==;inline=1:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;File=name=eA==:AAAA\x07"));
         assert!(!is_safe(b"\x1b]1337;StealFocus\x07"));

@@ -558,7 +558,13 @@ impl Pane {
                                 if pending.len() >= MAX_PENDING_IMAGES {
                                     pending.remove(0);
                                 }
-                                pending.push(Image { row, col, bytes });
+                                let once = graphics::is_query(&bytes);
+                                pending.push(Image {
+                                    row,
+                                    col,
+                                    bytes,
+                                    once,
+                                });
                             }
                         }
                     }
