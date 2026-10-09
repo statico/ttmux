@@ -312,6 +312,32 @@ pub enum TitlePosition {
     Hidden,
 }
 
+/// The spinner a tab shows while an agent in it is busy. ttmux draws it
+/// itself: an agent told it lost focus, as one in a background tab is,
+/// may stop animating its own title.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BusySpinner {
+    None,
+    #[default]
+    Braille,
+    Circle,
+    Line,
+    Dots,
+}
+
+impl BusySpinner {
+    pub fn frames(self) -> &'static [&'static str] {
+        match self {
+            BusySpinner::None => &[],
+            BusySpinner::Braille => &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+            BusySpinner::Circle => &["◐", "◓", "◑", "◒"],
+            BusySpinner::Line => &["|", "/", "-", "\\"],
+            BusySpinner::Dots => &["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"],
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct General {
@@ -548,6 +574,8 @@ pub struct Agents {
     pub enabled: bool,
     /// Ring the terminal bell when a pane starts waiting for input.
     pub bell_on_attention: bool,
+    /// Spinner on the tab of a busy agent.
+    pub busy_spinner: BusySpinner,
     /// Case-insensitive substrings marking "the agent needs me".
     pub attention_patterns: Vec<String>,
     /// Substrings marking "the agent is busy".
@@ -561,6 +589,7 @@ impl Default for Agents {
         Self {
             enabled: true,
             bell_on_attention: true,
+            busy_spinner: BusySpinner::Braille,
             attention_patterns: [
                 "waiting for input",
                 "needs your input",

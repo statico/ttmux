@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- A tab with a busy agent in it shows a spinner, so it keeps turning in a
+  background tab. Claude Code stops animating its own title when it loses
+  focus. Pick the style with `agents.busy-spinner`: `braille` (the
+  default), `circle`, `line`, `dots` or `none`.
+
 ## 0.6.4 — 2026-09-20
 
 - No change to what ttmux does. The code now says why a question from a

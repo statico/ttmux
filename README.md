@@ -261,6 +261,7 @@ right = ["agents", "time"]
 [agents]
 enabled = true
 bell-on-attention = true
+busy-spinner = "braille"   # none, braille, circle, line, dots
 
 # Overrides on top of the preset. "none" unbinds a key.
 [keys]
