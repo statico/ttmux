@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-10-08
 
 - A tab with a busy agent in it shows a spinner, so it keeps turning in a
   background tab. Claude Code stops animating its own title when it loses
