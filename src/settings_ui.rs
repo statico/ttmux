@@ -14,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::action::{Action, ALL_ACTIONS};
 use crate::color_picker::{self, Picker};
 use crate::config::{
-    BarEffect, Binding, BorderStyle, Chord, Config, KeysPreset, Rgb, TitlePosition,
+    BarEffect, Binding, BorderStyle, BusySpinner, Chord, Config, KeysPreset, Rgb, TitlePosition,
 };
 use crate::layout::Rect;
 use crate::line_edit::{LineEdit, CARET};
@@ -50,6 +50,7 @@ const BORDER_STYLES: &[&str] = &[
 ];
 const TITLE_POSITIONS: &[&str] = &["top", "bottom", "hidden"];
 const EFFECTS: &[&str] = &["flat", "starfield", "gradient"];
+const SPINNERS: &[&str] = &["none", "braille", "circle", "line", "dots"];
 const KEYS_PRESETS: &[&str] = &["vim", "tmux", "screen"];
 
 /// How a field is edited.
@@ -145,6 +146,16 @@ fn keys_preset_name(p: KeysPreset) -> &'static str {
     }
 }
 
+fn spinner_name(s: BusySpinner) -> &'static str {
+    match s {
+        BusySpinner::None => "none",
+        BusySpinner::Braille => "braille",
+        BusySpinner::Circle => "circle",
+        BusySpinner::Line => "line",
+        BusySpinner::Dots => "dots",
+    }
+}
+
 fn title_position_name(p: TitlePosition) -> &'static str {
     match p {
         TitlePosition::Top => "top",
@@ -221,6 +232,7 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
             vec![
                 bool_f("enabled", a.enabled),
                 bool_f("bell-on-attention", a.bell_on_attention),
+                choice_f("busy-spinner", SPINNERS, spinner_name(a.busy_spinner)),
                 list_f("attention-patterns", &a.attention_patterns),
                 list_f("busy-patterns", &a.busy_patterns),
                 list_f("done-patterns", &a.done_patterns),
@@ -358,9 +370,19 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
 
         (3, 0) => cfg.agents.enabled = parse_bool(value),
         (3, 1) => cfg.agents.bell_on_attention = parse_bool(value),
-        (3, 2) => cfg.agents.attention_patterns = parse_list(value),
-        (3, 3) => cfg.agents.busy_patterns = parse_list(value),
-        (3, 4) => cfg.agents.done_patterns = parse_list(value),
+        (3, 2) => {
+            cfg.agents.busy_spinner = match value {
+                "none" => BusySpinner::None,
+                "braille" => BusySpinner::Braille,
+                "circle" => BusySpinner::Circle,
+                "line" => BusySpinner::Line,
+                "dots" => BusySpinner::Dots,
+                other => return Err(format!("unknown spinner: {other}")),
+            }
+        }
+        (3, 3) => cfg.agents.attention_patterns = parse_list(value),
+        (3, 4) => cfg.agents.busy_patterns = parse_list(value),
+        (3, 5) => cfg.agents.done_patterns = parse_list(value),
 
         (KEYS, i) => {
             let (map, _) = cfg.keymap();
@@ -1504,6 +1526,22 @@ mod tests {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         assert_eq!(s.on_key(c('s'), &mut cfg), Outcome::Save);
         assert_eq!(s.on_key(k(KeyCode::Esc), &mut cfg), Outcome::Close);
+    }
+
+    #[test]
+    fn busy_spinner_cycles_from_the_agents_section() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        goto(&mut s, &cfg, 3, "busy-spinner");
+        for want in [
+            BusySpinner::Circle,
+            BusySpinner::Line,
+            BusySpinner::Dots,
+            BusySpinner::None,
+            BusySpinner::Braille,
+        ] {
+            assert_eq!(s.on_key(k(KeyCode::Right), &mut cfg), Outcome::Apply);
+            assert_eq!(cfg.agents.busy_spinner, want);
+        }
     }
 
     #[test]

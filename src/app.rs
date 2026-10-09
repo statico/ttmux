@@ -46,6 +46,8 @@ const TICK_BUSY: Duration = Duration::from_millis(1);
 const TICK_IDLE: Duration = Duration::from_millis(16);
 /// How long after the last keystroke or byte the loop stays on the fast tick.
 const BUSY_FOR: Duration = Duration::from_millis(400);
+/// How long each frame of a busy tab's spinner stays up.
+const SPIN_FRAME: Duration = Duration::from_millis(100);
 
 /// One scripted command waiting for the app thread, with the channel its
 /// answer goes back on.
@@ -2215,6 +2217,7 @@ impl App {
         let mut dirty = true;
         let mut last_tick = Instant::now();
         let mut last_busy = Instant::now();
+        let mut last_spin = None;
         loop {
             if let Some(e) = self.exit() {
                 return Ok(e);
@@ -2334,6 +2337,12 @@ impl App {
             self.reap();
             if let Some(e) = self.exit() {
                 return Ok(e);
+            }
+
+            let spin = self.spin_frame();
+            if spin != last_spin {
+                last_spin = spin;
+                dirty = true;
             }
 
             if self
@@ -2501,7 +2510,14 @@ impl App {
                     .tabs
                     .iter()
                     .enumerate()
-                    .map(|(i, t)| (self.tab_label(i, t), i == self.tab))
+                    .map(|(i, t)| {
+                        let label = self.tab_label(i, t);
+                        let label = match self.tab_spinner(t) {
+                            Some(f) => format!("{f} {label}"),
+                            None => label,
+                        };
+                        (label, i == self.tab)
+                    })
                     .collect();
                 let panes: Vec<(String, AgentState)> = self.tabs[self.tab]
                     .layout
@@ -2660,6 +2676,33 @@ impl App {
         host.passthrough(&out)?;
         self.drew_graphics = drew;
         Ok(())
+    }
+
+    /// The spinner frame showing now, while any agent is busy.
+    fn spin_frame(&self) -> Option<usize> {
+        let frames = self.cfg.agents.busy_spinner.frames();
+        if frames.is_empty() || !self.slots.values().any(|s| s.state == AgentState::Busy) {
+            return None;
+        }
+        // From the wall clock, so every busy tab turns in step without a
+        // counter to keep.
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Some((t.as_millis() / SPIN_FRAME.as_millis()) as usize % frames.len())
+    }
+
+    /// The spinner for a tab with a busy agent in it. ttmux turns it, not
+    /// the agent: one in a background tab has been told it lost focus, and
+    /// Claude Code, for one, stops animating its title then.
+    fn tab_spinner(&self, t: &Tab) -> Option<&'static str> {
+        let busy = t.layout.ids().iter().any(|id| {
+            self.slots
+                .get(id)
+                .is_some_and(|s| s.state == AgentState::Busy)
+        });
+        let frame = self.spin_frame().filter(|_| busy)?;
+        Some(self.cfg.agents.busy_spinner.frames()[frame])
     }
 
     /// A tab shows the program's own title only while it has one pane: with
@@ -3184,6 +3227,18 @@ mod tests {
         // An override is what outlasts an escape sequence from the program.
         assert_eq!(a.slots[&id].pane.title_override.as_deref(), Some("logs"));
         assert!(!a.tabs[0].renamed);
+    }
+
+    #[test]
+    fn a_busy_tab_spins_until_the_spinner_is_turned_off() {
+        let mut a = app();
+        let id = a.focus();
+        assert_eq!(a.tab_spinner(&a.tabs[0]), None);
+        a.slots.get_mut(&id).unwrap().state = AgentState::Busy;
+        let f = a.tab_spinner(&a.tabs[0]).expect("a busy tab spins");
+        assert!(a.cfg.agents.busy_spinner.frames().contains(&f));
+        a.cfg.agents.busy_spinner = crate::config::BusySpinner::None;
+        assert_eq!(a.tab_spinner(&a.tabs[0]), None);
     }
 
     #[test]
