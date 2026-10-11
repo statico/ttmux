@@ -15,5 +15,6 @@ can fix what its panes run into. Changes from upstream:
   An unknown `58;…` no longer leaks its arguments as other attributes.
 - `CSI f` (HVP) moves the cursor like `CSI H`.
 - `Callbacks::unhandled_dcs` hands over DCS strings, for XTGETTCAP.
+- `Callbacks::reset` is called after a full reset (RIS).
 - `Callbacks::unhandled_osc` is told whether the OSC ended with BEL, so a
   reply can end the same way.
