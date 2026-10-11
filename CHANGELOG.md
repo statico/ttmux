@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Programs can report their own status with OSC 7501. `working`,
+  `blocked`, `done` and `error` set the pane's agent mark in place of the
+  `[agents]` patterns, and the next shell prompt (OSC 133 `A`) ends them.
+- The README lists each terminal spec a pane can count on.
+
 ## 0.7.0 — 2026-10-08
 
 - A tab with a busy agent in it shows a spinner, so it keeps turning in a

@@ -113,6 +113,13 @@ impl Watcher {
         new_state
     }
 
+    /// Take the state a program reported itself (OSC 7501) over the
+    /// heuristics. A bell still asks for attention.
+    pub fn report(&mut self, state: AgentState, bell: bool) -> AgentState {
+        self.set_state(if bell { AgentState::Attention } else { state });
+        self.state
+    }
+
     /// True on the transition into `Attention` (the app rings the bell once).
     pub fn take_alert(&mut self) -> bool {
         std::mem::take(&mut self.alert_pending)
@@ -169,10 +176,192 @@ fn matches_patterns(patterns: &[String], title: &str, lines: &[&str]) -> bool {
     })
 }
 
+/// The most OSC 7501 records a pane keeps; the spec's ceiling.
+const MAX_RECORDS: usize = 256;
+
+/// A program's own state, from an OSC 7501 report, least urgent first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Reported {
+    Idle,
+    Done,
+    Working,
+    Blocked,
+    Error,
+}
+
+impl Reported {
+    /// `error` lands on `Attention`: the program stopped and someone should look.
+    fn agent_state(self) -> AgentState {
+        match self {
+            Reported::Idle => AgentState::Idle,
+            Reported::Working => AgentState::Busy,
+            Reported::Done => AgentState::Done,
+            Reported::Blocked | Reported::Error => AgentState::Attention,
+        }
+    }
+}
+
+/// OSC 7501 program status records, by id ("" being the root), least
+/// recently updated first. <https://www.superlogical.com/rex/docs/build/program-status>
+#[derive(Debug, Default)]
+pub struct Reports(Vec<(String, Reported)>);
+
+impl Reports {
+    /// Apply one report's body, the bytes after `7501;`. Anything malformed
+    /// or over a limit is dropped whole, as the spec asks.
+    pub fn apply(&mut self, body: &[u8]) {
+        let Some((id, state)) = parse_report(body) else {
+            return;
+        };
+        match (id, state) {
+            (None, None) => self.0.clear(),
+            (Some(id), None) => self.0.retain(|(r, _)| !is_within(r, &id)),
+            (id, Some(state)) => {
+                let id = id.unwrap_or_default();
+                self.0.retain(|(r, _)| *r != id);
+                if self.0.len() == MAX_RECORDS {
+                    self.0.remove(0);
+                }
+                self.0.push((id, state));
+            }
+        }
+    }
+
+    /// A new shell prompt (OSC 133 `A`): drop what the last command left
+    /// running or idle; `done` and `error` stay until the user moves on.
+    pub fn prompt(&mut self) {
+        self.0
+            .retain(|(_, s)| matches!(s, Reported::Done | Reported::Error));
+    }
+
+    /// The most urgent state across all records, if the program reports any.
+    pub fn state(&self) -> Option<AgentState> {
+        self.0
+            .iter()
+            .map(|(_, s)| *s)
+            .max()
+            .map(Reported::agent_state)
+    }
+}
+
+/// Is record `r` the record `id` or one of its children?
+fn is_within(r: &str, id: &str) -> bool {
+    r.strip_prefix(id)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
+
+/// `(id, state)` from a report body, `state` being `None` for `clear`. The
+/// outer `None` means ignore the report.
+// ponytail: msg and title are checked as base64 but never decoded, since
+// nothing shows them; decode and refuse control characters once something does.
+#[allow(clippy::type_complexity)]
+fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>)> {
+    if body.len() > 4096 || body.iter().any(|b| b.is_ascii_control()) {
+        return None;
+    }
+    let body = std::str::from_utf8(body).ok()?;
+    let (mut id, mut state) = (None, None);
+    for pair in body.split(':') {
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        let (k, v) = (k.trim(), v.trim());
+        if k.len() > 16 {
+            return None;
+        }
+        match k {
+            "id" => id = Some(v),
+            "state" => state = Some(v),
+            "msg" if v.len() > 2732 || !is_base64(v) => return None,
+            "title" if v.len() > 256 || !is_base64(v) => return None,
+            "app" if v.len() > 32 => return None,
+            _ => {}
+        }
+    }
+    let state = match state? {
+        "idle" => Some(Reported::Idle),
+        "working" => Some(Reported::Working),
+        "done" => Some(Reported::Done),
+        "blocked" => Some(Reported::Blocked),
+        "error" => Some(Reported::Error),
+        "clear" => None,
+        _ => return None,
+    };
+    let id = match id {
+        None => None,
+        Some(id) => {
+            let good = id.len() <= 128
+                && id.split('/').count() <= 8
+                && id.split('/').all(|s| !s.is_empty() && s.len() <= 32);
+            if !good {
+                return None;
+            }
+            Some(id.to_string())
+        }
+    };
+    Some((id, state))
+}
+
+fn is_base64(v: &str) -> bool {
+    let data = v.trim_end_matches('=');
+    v.len() - data.len() <= 2
+        && data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn reports_follow_the_spec() {
+        let mut r = Reports::default();
+        assert_eq!(
+            r.state(),
+            None,
+            "nothing reported, so the heuristics decide"
+        );
+        r.apply(b"state=working:progress=40:app=cargo");
+        assert_eq!(r.state(), Some(AgentState::Busy));
+        // A child blocked outranks the root working.
+        r.apply(b" id = build/test : state=blocked:kind=permission:msg=aGk=");
+        assert_eq!(r.state(), Some(AgentState::Attention));
+        // Clearing a parent takes its children; `buildx` is not one.
+        r.apply(b"id=buildx:state=done");
+        r.apply(b"id=build:state=clear");
+        assert_eq!(r.0.len(), 2);
+        assert_eq!(r.state(), Some(AgentState::Busy));
+        // A prompt drops the running root and keeps the unseen result.
+        r.apply(b"id=e:state=error");
+        r.prompt();
+        assert_eq!(r.0.len(), 2);
+        assert_eq!(r.state(), Some(AgentState::Attention));
+        r.apply(b"state=clear");
+        assert_eq!(r.state(), None);
+        // Each of these is ignored whole.
+        for bad in [
+            &b"state=bogus"[..],
+            b"app=x",
+            b"state=done:id=a//b",
+            b"state=done:msg=not base64!",
+            b"state=done:app=\x07",
+            b"state=done:averyveryverylongkey=1",
+        ] {
+            r.apply(bad);
+            assert_eq!(r.state(), None, "{}", String::from_utf8_lossy(bad));
+        }
+        // Malformed pairs are skipped, the rest still counts.
+        r.apply(b"junk:state=idle");
+        assert_eq!(r.state(), Some(AgentState::Idle));
+        // Full: the least recently updated record goes.
+        for i in 0..MAX_RECORDS {
+            r.apply(format!("id={i}:state=done").as_bytes());
+        }
+        assert_eq!(r.0.len(), MAX_RECORDS);
+        assert_eq!(r.0[0].0, "0");
+    }
 
     fn cfg() -> config::Agents {
         config::Agents::default()

@@ -59,6 +59,8 @@ struct Sink {
     modify_other_keys: u8,
     /// DECSET 2031: the child wants `CSI ? 997 ; n n` when the theme flips.
     theme_reports: bool,
+    /// What the child says it is doing, with OSC 7501.
+    reports: crate::agent::Reports,
 }
 
 /// The kitty keyboard flags ttmux honours: disambiguate (1) and report all
@@ -326,6 +328,13 @@ impl vt100::Callbacks for Sink {
                         .extend_from_slice(format!("\x1b]{n};{colour}{end}").as_bytes());
                 }
             }
+            // Program status: answer the probe, keep the reports.
+            [b"7501", b"?"] => self
+                .replies
+                .extend_from_slice(format!("\x1b]7501;?{end}").as_bytes()),
+            [b"7501", body] => self.reports.apply(body),
+            // A new shell prompt ends whatever the last command reported.
+            [b"133", b"A", ..] => self.reports.prompt(),
             // Desktop notifications go to the terminal that can show them.
             [b"9" | b"99" | b"777", ..] => {
                 self.notices.extend_from_slice(b"\x1b]");
@@ -675,6 +684,11 @@ impl Pane {
 
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
+    }
+
+    /// What the child reported with OSC 7501, if it reported anything.
+    pub fn reported(&self) -> Option<crate::agent::AgentState> {
+        self.parser.callbacks().reports.state()
     }
 
     /// Override, else the emulator's OSC title, else the program name.
@@ -1285,6 +1299,19 @@ mod tests {
         p.callbacks_mut().colours = Some(("rgb:0/0/0".into(), "rgb:ffff/ffff/ffff".into()));
         p.process(b"\x1b[?996n\x1b[?2031h\x1b[?2031$p");
         assert_eq!(p.callbacks().replies, b"\x1b[?997;2n\x1b[?2031;1$y");
+    }
+
+    #[test]
+    fn program_status_is_kept_and_probed() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b]7501;?\x07\x1b]7501;state=working\x1b\\");
+        assert_eq!(p.callbacks().replies, b"\x1b]7501;?\x07");
+        assert_eq!(
+            p.callbacks().reports.state(),
+            Some(crate::agent::AgentState::Busy)
+        );
+        p.process(b"\x1b]133;A\x07");
+        assert_eq!(p.callbacks().reports.state(), None);
     }
 
     #[test]
