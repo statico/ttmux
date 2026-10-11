@@ -201,28 +201,37 @@ impl Reported {
     }
 }
 
+/// One OSC 7501 record.
+#[derive(Debug)]
+struct Record {
+    id: String,
+    state: Reported,
+    /// Progress and message, as the pane border shows them; may be empty.
+    note: String,
+}
+
 /// OSC 7501 program status records, by id ("" being the root), least
 /// recently updated first. <https://www.superlogical.com/rex/docs/build/program-status>
 #[derive(Debug, Default)]
-pub struct Reports(Vec<(String, Reported)>);
+pub struct Reports(Vec<Record>);
 
 impl Reports {
     /// Apply one report's body, the bytes after `7501;`. Anything malformed
     /// or over a limit is dropped whole, as the spec asks.
     pub fn apply(&mut self, body: &[u8]) {
-        let Some((id, state)) = parse_report(body) else {
+        let Some((id, state, note)) = parse_report(body) else {
             return;
         };
         match (id, state) {
             (None, None) => self.0.clear(),
-            (Some(id), None) => self.0.retain(|(r, _)| !is_within(r, &id)),
+            (Some(id), None) => self.0.retain(|r| !is_within(&r.id, &id)),
             (id, Some(state)) => {
                 let id = id.unwrap_or_default();
-                self.0.retain(|(r, _)| *r != id);
+                self.0.retain(|r| r.id != id);
                 if self.0.len() == MAX_RECORDS {
                     self.0.remove(0);
                 }
-                self.0.push((id, state));
+                self.0.push(Record { id, state, note });
             }
         }
     }
@@ -231,16 +240,24 @@ impl Reports {
     /// running or idle; `done` and `error` stay until the user moves on.
     pub fn prompt(&mut self) {
         self.0
-            .retain(|(_, s)| matches!(s, Reported::Done | Reported::Error));
+            .retain(|r| matches!(r.state, Reported::Done | Reported::Error));
+    }
+
+    /// The most urgent record, the latest of equals.
+    fn top(&self) -> Option<&Record> {
+        self.0.iter().max_by_key(|r| r.state)
     }
 
     /// The most urgent state across all records, if the program reports any.
     pub fn state(&self) -> Option<AgentState> {
-        self.0
-            .iter()
-            .map(|(_, s)| *s)
-            .max()
-            .map(Reported::agent_state)
+        self.top().map(|r| r.state.agent_state())
+    }
+
+    /// The most urgent record's progress and message, if it has either.
+    pub fn note(&self) -> Option<&str> {
+        self.top()
+            .map(|r| r.note.as_str())
+            .filter(|n| !n.is_empty())
     }
 }
 
@@ -250,17 +267,15 @@ fn is_within(r: &str, id: &str) -> bool {
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
-/// `(id, state)` from a report body, `state` being `None` for `clear`. The
-/// outer `None` means ignore the report.
-// ponytail: msg and title are checked as base64 but never decoded, since
-// nothing shows them; decode and refuse control characters once something does.
+/// `(id, state, note)` from a report body, `state` being `None` for
+/// `clear`. The outer `None` means ignore the report.
 #[allow(clippy::type_complexity)]
-fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>)> {
+fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String)> {
     if body.len() > 4096 || body.iter().any(|b| b.is_ascii_control()) {
         return None;
     }
     let body = std::str::from_utf8(body).ok()?;
-    let (mut id, mut state) = (None, None);
+    let (mut id, mut state, mut progress, mut msg, mut title) = (None, None, None, None, None);
     for pair in body.split(':') {
         let Some((k, v)) = pair.split_once('=') else {
             continue;
@@ -272,8 +287,11 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>)> {
         match k {
             "id" => id = Some(v),
             "state" => state = Some(v),
-            "msg" if v.len() > 2732 || !is_base64(v) => return None,
-            "title" if v.len() > 256 || !is_base64(v) => return None,
+            // Out of range or not a number reads as indeterminate.
+            "progress" => progress = v.parse::<u8>().ok().filter(|p| *p <= 100),
+            "msg" if v.len() <= 2732 => msg = Some(decode_text(v, 2048)?),
+            "title" if v.len() <= 256 => title = Some(decode_text(v, 192)?),
+            "msg" | "title" => return None,
             "app" if v.len() > 32 => return None,
             _ => {}
         }
@@ -299,15 +317,53 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>)> {
             Some(id.to_string())
         }
     };
-    Some((id, state))
+    // Progress only means something while the program is still at it.
+    let progress = progress
+        .filter(|_| matches!(state, Some(Reported::Working | Reported::Blocked)))
+        .map(|p| format!("{p}%"));
+    let note = [progress, msg.or(title)]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some((id, state, note))
 }
 
-fn is_base64(v: &str) -> bool {
+/// Base64 `v` as at most `max` bytes of UTF-8. Control characters refuse
+/// the report; invisible formatting (zero widths, bidi overrides) is
+/// dropped, so a message cannot hide or reorder what it shows.
+fn decode_text(v: &str, max: usize) -> Option<String> {
     let data = v.trim_end_matches('=');
-    v.len() - data.len() <= 2
-        && data
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+    if v.len() - data.len() > 2 {
+        return None;
+    }
+    let (mut bits, mut n, mut out) = (0u32, 0, Vec::new());
+    for b in data.bytes() {
+        let d = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6 | u32::from(d)) & 0xffff;
+        n += 6;
+        if n >= 8 {
+            n -= 8;
+            out.push((bits >> n) as u8);
+        }
+    }
+    if out.len() > max {
+        return None;
+    }
+    let text = String::from_utf8(out).ok()?;
+    if text.chars().any(char::is_control) {
+        return None;
+    }
+    let invisible = |c: &char| matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}');
+    Some(text.chars().filter(|c| !invisible(c)).collect())
 }
 
 #[cfg(test)]
@@ -346,12 +402,22 @@ mod tests {
             b"app=x",
             b"state=done:id=a//b",
             b"state=done:msg=not base64!",
+            b"state=done:msg=YQdi", // "a\x07b"
             b"state=done:app=\x07",
             b"state=done:averyveryverylongkey=1",
         ] {
             r.apply(bad);
             assert_eq!(r.state(), None, "{}", String::from_utf8_lossy(bad));
         }
+        // Progress and message, the message winning over the title, and
+        // invisible formatting dropped.
+        r.apply(b"state=working:progress=40:title=dGl0bGU=:msg=Y29tcGlsaW5n4oCu");
+        assert_eq!(r.note(), Some("40% compiling"));
+        r.apply(b"state=done:progress=100:title=dGl0bGU");
+        assert_eq!(r.note(), Some("title"), "progress only while working");
+        r.apply(b"state=working:progress=101");
+        assert_eq!(r.note(), None, "out of range is indeterminate");
+        r.apply(b"state=clear");
         // Malformed pairs are skipped, the rest still counts.
         r.apply(b"junk:state=idle");
         assert_eq!(r.state(), Some(AgentState::Idle));
@@ -360,7 +426,7 @@ mod tests {
             r.apply(format!("id={i}:state=done").as_bytes());
         }
         assert_eq!(r.0.len(), MAX_RECORDS);
-        assert_eq!(r.0[0].0, "0");
+        assert_eq!(r.0[0].id, "0");
     }
 
     fn cfg() -> config::Agents {

@@ -695,6 +695,15 @@ impl Pane {
         self.parser.callbacks().reports.state()
     }
 
+    /// The title, then the progress and message the child reported, if any.
+    pub fn border_title(&self) -> String {
+        let title = self.title();
+        match self.parser.callbacks().reports.note() {
+            Some(note) => format!("{title} · {note}"),
+            None => title,
+        }
+    }
+
     /// Override, else the emulator's OSC title, else the program name.
     pub fn title(&self) -> String {
         if let Some(t) = &self.title_override {
