@@ -171,6 +171,10 @@ impl vt100::Callbacks for Sink {
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.bell = true;
     }
+    /// A full reset ends every program status record, as OSC 7501 asks.
+    fn reset(&mut self, _: &mut vt100::Screen) {
+        self.reports = Default::default();
+    }
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
         // A pane can put anything here; a TAB or other control character draws
         // at a width nobody agrees on and corrupts the status bar's tab row.
@@ -1315,6 +1319,8 @@ mod tests {
         );
         p.process(b"\x1b]133;A\x07");
         assert_eq!(p.callbacks().reports.state(), None);
+        p.process(b"\x1b]7501;state=done\x07\x1bc");
+        assert_eq!(p.callbacks().reports.state(), None, "RIS clears them");
     }
 
     #[test]

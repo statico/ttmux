@@ -34,6 +34,9 @@ pub trait Callbacks {
     /// This callback is called when the terminal requests data to be pasted
     /// from the system clipboard (typically with `\e]52;<ty>;?\a`).
     fn paste_from_clipboard(&mut self, _: &mut crate::Screen, _ty: &[u8]) {}
+    /// This callback is called after a full reset (RIS, `\ec`), for state
+    /// kept outside the screen.
+    fn reset(&mut self, _: &mut crate::Screen) {}
     /// This callback is called when the terminal receives an escape sequence
     /// which is otherwise not implemented.
     fn unhandled_char(&mut self, _: &mut crate::Screen, _c: char) {}
