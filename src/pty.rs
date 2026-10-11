@@ -933,6 +933,9 @@ mod tests {
     fn sh(script: &str) -> CommandBuilder {
         let mut cmd = CommandBuilder::new("/bin/sh");
         cmd.args(["-c", script]);
+        // From `/`, as a sandbox that hides the parent directories makes
+        // bash print a getcwd warning over the first rows.
+        cmd.cwd("/");
         cmd.env("TERM", "xterm-256color");
         cmd
     }

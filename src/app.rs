@@ -3622,8 +3622,10 @@ mod tests {
     fn app_running(cmd: &str) -> App {
         let cfg = Config {
             general: General {
-                shell: "/bin/sh".into(),
-                shell_args: vec!["-c".into(), cmd.into()],
+                // From `/`, as a sandbox that hides the parent directories
+                // makes bash print a getcwd warning over the first rows.
+                shell: "/usr/bin/env".into(),
+                shell_args: ["-C", "/", "/bin/sh", "-c", cmd].map(Into::into).to_vec(),
                 ..Default::default()
             },
             ..Default::default()
