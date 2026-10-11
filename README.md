@@ -308,8 +308,9 @@ you, and `✓` for done. The status bar counts the panes that wait on you, and
 A program that reports its own status with
 [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status) does
 not need patterns: `working` shows as busy, `blocked` and `error` as wants
-you, and `done` as done. Its reports win over the patterns until it clears
-them or the shell prints its next prompt.
+you, and `done` as done. The pane's border adds its progress and message,
+as in `cargo · 40% compiling`. Its reports win over the patterns until it
+clears them, resets the terminal, or the shell prints its next prompt.
 
 ## Terminals
 

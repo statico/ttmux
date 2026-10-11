@@ -2474,7 +2474,7 @@ impl App {
                     render::draw_border(
                         buf,
                         framed,
-                        &slot.pane.title(),
+                        &slot.pane.border_title(),
                         focused,
                         slot.state.is_alert(),
                         zoomed && focused,
