@@ -2381,7 +2381,10 @@ impl App {
             let title = slot.pane.title();
             let tail = slot.pane.tail(6);
             let bell = std::mem::take(&mut slot.pane.bell);
-            slot.state = slot.watcher.update(&cfg, &title, &tail, bell);
+            slot.state = match slot.pane.reported() {
+                Some(state) => slot.watcher.report(state, bell),
+                None => slot.watcher.update(&cfg, &title, &tail, bell),
+            };
             if slot.watcher.take_alert() && bell_on {
                 ring = true;
             }

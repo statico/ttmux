@@ -305,6 +305,12 @@ you, and `✓` for done. The status bar counts the panes that wait on you, and
 <kbd>ctrl+alt+n</kbd> goes to the next one. The patterns live under
 `[agents]`, so this works with any agent.
 
+A program that reports its own status with
+[OSC 7501](https://www.superlogical.com/rex/docs/build/program-status) does
+not need patterns: `working` shows as busy, `blocked` and `error` as wants
+you, and `done` as done. Its reports win over the patterns until it clears
+them or the shell prints its next prompt.
+
 ## Terminals
 
 ttmux is built against Ghostty and iTerm2. Any terminal with 24-bit color
@@ -327,18 +333,29 @@ keybind = alt+right=unbind
 
 ## Compatibility
 
-What programs inside a pane can count on:
+What programs inside a pane can count on, by the spec they follow:
 
 - Truecolor, and undercurl, dotted, dashed and double underlines in color
+  (SGR 38/48/58 and `4:x`)
 - Emoji with skin tones, flags and ZWJ sequences as one wide cell
-- Kitty keyboard protocol and modifyOtherKeys, so shift+enter works
-- Kitty, iTerm2 and sixel images, including `mpv --vo=kitty` video
-- Synchronized output, so redraws do not tear
-- Focus events, and a cursor shape per pane
+- Kitty keyboard protocol (flags 1 and 8) and xterm modifyOtherKeys, so
+  shift+enter works
+- Kitty graphics, iTerm2 inline images (OSC 1337) and sixel, including
+  `mpv --vo=kitty` video
+- Synchronized output (mode 2026), so redraws do not tear
+- Focus events (mode 1004), bracketed paste (mode 2004), SGR mouse
+  reporting (modes 1000, 1002, 1003, 1006), and a cursor shape per pane
+  (DECSCUSR)
+- Window titles (OSC 0, 1, 2)
 - OSC 52 copy to your clipboard, and OSC 9, 99 and 777 notifications, each
   of which can be turned off
-- Answers to cursor position, device attributes, window size, mode, color
-  and XTGETTCAP queries, so fzf, neovim and fish do not stall
+- [OSC 7501 program status](https://www.superlogical.com/rex/docs/build/program-status):
+  a program that reports `working`, `blocked`, `done` or `error` sets its
+  pane's agent mark itself; see [Coding-agent alerts](#coding-agent-alerts)
+- Shell prompt marks (OSC 133 `A`), which end the last command's status
+- Answers to cursor position and status (DSR 5, 6), device attributes (DA1,
+  DA2), XTVERSION, window size (`CSI 18t`), mode (DECRQM), color (OSC 10,
+  11) and XTGETTCAP queries, so fzf, neovim and fish do not stall
 - Dark or light theme reports (`CSI ?996n`, mode 2031)
 - Scrollback that keeps output scrolled under a fixed footer, as Claude
   Code and Codex draw, and `CSI 3J` to clear it
