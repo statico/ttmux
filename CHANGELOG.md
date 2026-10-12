@@ -9,6 +9,8 @@
 - An agent rings the bell at most once every three seconds, so one that
   flips in and out of needing you cannot flood the terminal.
 - The README lists each terminal spec a pane can count on.
+- A full reset (`ESC c`) turns off focus events, theme reports, the kitty
+  keyboard flags and modifyOtherKeys, and puts back the default cursor.
 
 ## 0.7.0 — 2026-10-08
 
