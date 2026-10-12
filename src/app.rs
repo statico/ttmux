@@ -46,6 +46,9 @@ const TICK_BUSY: Duration = Duration::from_millis(1);
 const TICK_IDLE: Duration = Duration::from_millis(16);
 /// How long after the last keystroke or byte the loop stays on the fast tick.
 const BUSY_FOR: Duration = Duration::from_millis(400);
+/// The least time between two agent bells passed to the outer terminal.
+const RING_GAP: Duration = Duration::from_secs(3);
+
 /// How long each frame of a busy tab's spinner stays up.
 const SPIN_FRAME: Duration = Duration::from_millis(100);
 
@@ -185,7 +188,7 @@ fn keychain_probe() -> String {
         Ok(c) => c,
         Err(e) => return format!("could not run `security`: {e}"),
     };
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + Duration::ZERO;
     while let Ok(None) = child.try_wait() {
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
@@ -292,6 +295,8 @@ pub struct App {
     copy: Option<Copy>,
     /// What copy mode last copied, for `paste-buffer`.
     paste_buffer: String,
+    /// When an agent last rang the outer terminal's bell.
+    last_ring: Option<Instant>,
     /// Set by the `quit` action: tear the session down, panes included.
     pub quit: bool,
     /// Set by the `detach` action: end this view only, panes keep running.
@@ -414,6 +419,7 @@ impl App {
             warned_mac: false,
             copy: None,
             paste_buffer: String::new(),
+            last_ring: None,
             quit: false,
             detached: false,
         };
@@ -2389,7 +2395,10 @@ impl App {
                 ring = true;
             }
         }
-        if ring {
+        // A program can flip its own state as fast as it likes with OSC 7501,
+        // so the bell rings at most once a few seconds.
+        if ring && self.last_ring.is_none_or(|t| t.elapsed() >= RING_GAP) {
+            self.last_ring = Some(Instant::now());
             // Pass the bell through to the outer terminal so the OS notifies.
             host.passthrough(b"\x07")?;
         }
@@ -3748,6 +3757,14 @@ mod tests {
         a.slots.get_mut(&id).unwrap().pane.bell = true;
         a.update_agents(&mut host).unwrap();
         assert!(host.out.contains(&0x07), "bell did not reach the host");
+
+        // Out of attention and straight back in: too soon to ring again.
+        host.out.clear();
+        a.update_agents(&mut host).unwrap();
+        a.slots.get_mut(&id).unwrap().pane.bell = true;
+        a.update_agents(&mut host).unwrap();
+        assert_eq!(a.slots[&id].state, AgentState::Attention);
+        assert!(host.out.is_empty(), "a flapping agent rang twice");
     }
 
     #[test]

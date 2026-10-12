@@ -305,18 +305,14 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String
         "clear" => None,
         _ => return None,
     };
-    let id = match id {
-        None => None,
-        Some(id) => {
-            let good = id.len() <= 128
-                && id.split('/').count() <= 8
-                && id.split('/').all(|s| !s.is_empty() && s.len() <= 32);
-            if !good {
-                return None;
-            }
-            Some(id.to_string())
+    if let Some(id) = id {
+        let good = id.len() <= 128
+            && id.split('/').count() <= 8
+            && id.split('/').all(|s| !s.is_empty() && s.len() <= 32);
+        if !good {
+            return None;
         }
-    };
+    }
     // Progress only means something while the program is still at it.
     let progress = progress
         .filter(|_| matches!(state, Some(Reported::Working | Reported::Blocked)))
@@ -327,7 +323,7 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Some((id, state, note))
+    Some((id.map(str::to_string), state, note))
 }
 
 /// Base64 `v` as at most `max` bytes of UTF-8. Control characters refuse
