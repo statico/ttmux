@@ -3633,8 +3633,11 @@ mod tests {
             general: General {
                 // From `/`, as a sandbox that hides the parent directories
                 // makes bash print a getcwd warning over the first rows.
-                shell: "/usr/bin/env".into(),
-                shell_args: ["-C", "/", "/bin/sh", "-c", cmd].map(Into::into).to_vec(),
+                // Not `env -C`, which macOS 14 lacks.
+                shell: "/usr/bin/perl".into(),
+                shell_args: ["-e", "chdir '/' or die; exec @ARGV", "/bin/sh", "-c", cmd]
+                    .map(Into::into)
+                    .to_vec(),
                 ..Default::default()
             },
             ..Default::default()
