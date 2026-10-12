@@ -171,8 +171,16 @@ impl vt100::Callbacks for Sink {
     fn audible_bell(&mut self, _: &mut vt100::Screen) {
         self.bell = true;
     }
-    /// A full reset ends every program status record, as OSC 7501 asks.
+    /// A full reset (RIS) puts back the modes vt100 does not keep, and ends
+    /// every program status record, as OSC 7501 asks. The title, clipboard
+    /// and bytes still on their way out stay, as in xterm.
     fn reset(&mut self, _: &mut vt100::Screen) {
+        self.focus_events = false;
+        self.cursor_shape = 0;
+        self.synced = None;
+        self.kitty = Default::default();
+        self.modify_other_keys = 0;
+        self.theme_reports = false;
         self.reports = Default::default();
     }
     fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
@@ -1330,6 +1338,17 @@ mod tests {
         assert_eq!(p.callbacks().reports.state(), None);
         p.process(b"\x1b]7501;state=done\x07\x1bc");
         assert_eq!(p.callbacks().reports.state(), None, "RIS clears them");
+    }
+
+    #[test]
+    fn a_full_reset_puts_back_the_modes_vt100_does_not_keep() {
+        let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Sink::default());
+        p.process(b"\x1b]2;t\x07\x1b[?1004;2026;2031h\x1b[5 q\x1b[>1u\x1b[>4;2m\x1bc");
+        let s = p.callbacks();
+        assert!(!s.focus_events && !s.theme_reports && s.synced.is_none());
+        assert_eq!((s.cursor_shape, s.modify_other_keys), (0, 0));
+        assert!(s.kitty.iter().all(Vec::is_empty));
+        assert_eq!(s.title, "t", "the title survives, as in xterm");
     }
 
     #[test]
