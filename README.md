@@ -309,7 +309,8 @@ A program that reports its own status with
 [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status) does
 not need patterns: `working` shows as busy, `blocked` and `error` as wants
 you, and `done` as done. The pane's border adds its progress and message,
-as in `cargo · 40% compiling`. Its reports win over the patterns until it
+as in `cargo · 40% compiling`, and what a blocked one waits for, as in
+`terraform · needs permission: apply plan?`. Its reports win over the patterns until it
 clears them, resets the terminal, or the shell prints its next prompt.
 
 ## Terminals
