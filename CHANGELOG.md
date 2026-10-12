@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 — 2026-10-12
 
 - Programs can report their own status with OSC 7501. `working`,
   `blocked`, `done` and `error` set the pane's agent mark in place of the
