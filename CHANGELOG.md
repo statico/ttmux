@@ -5,7 +5,8 @@
 - Programs can report their own status with OSC 7501. `working`,
   `blocked`, `done` and `error` set the pane's agent mark in place of the
   `[agents]` patterns, and the next shell prompt (OSC 133 `A`) or a reset
-  ends them. The pane's border shows the report's progress and message.
+  ends them. The pane's border shows the report's progress and message,
+  and what a blocked program waits for.
 - An agent rings the bell at most once every three seconds, so one that
   flips in and out of needing you cannot flood the terminal.
 - The README lists each terminal spec a pane can count on.

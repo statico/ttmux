@@ -275,7 +275,8 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String
         return None;
     }
     let body = std::str::from_utf8(body).ok()?;
-    let (mut id, mut state, mut progress, mut msg, mut title) = (None, None, None, None, None);
+    let (mut id, mut state, mut progress, mut kind, mut msg, mut title) =
+        (None, None, None, None, None, None);
     for pair in body.split(':') {
         let Some((k, v)) = pair.split_once('=') else {
             continue;
@@ -287,6 +288,7 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String
         match k {
             "id" => id = Some(v),
             "state" => state = Some(v),
+            "kind" => kind = Some(v),
             // Out of range or not a number reads as indeterminate.
             "progress" => progress = v.parse::<u8>().ok().filter(|p| *p <= 100),
             "msg" if v.len() <= 2732 => msg = Some(decode_text(v, 2048)?),
@@ -317,7 +319,19 @@ fn parse_report(body: &[u8]) -> Option<(Option<String>, Option<Reported>, String
     let progress = progress
         .filter(|_| matches!(state, Some(Reported::Working | Reported::Blocked)))
         .map(|p| format!("{p}%"));
-    let note = [progress, msg.or(title)]
+    // What a blocked program waits for; an unknown kind reads as none.
+    let kind = match kind.filter(|_| state == Some(Reported::Blocked)) {
+        Some("permission") => Some("needs permission"),
+        Some("question") => Some("has a question"),
+        Some("auth") => Some("needs sign-in"),
+        _ => None,
+    };
+    let text = msg.or(title).filter(|t| !t.is_empty());
+    let text = match (kind, text) {
+        (Some(k), Some(t)) => Some(format!("{k}: {t}")),
+        (k, t) => t.or(k.map(String::from)),
+    };
+    let note = [progress, text]
         .into_iter()
         .flatten()
         .filter(|s| !s.is_empty())
@@ -411,6 +425,12 @@ mod tests {
         assert_eq!(r.note(), Some("40% compiling"));
         r.apply(b"state=done:progress=100:title=dGl0bGU");
         assert_eq!(r.note(), Some("title"), "progress only while working");
+        r.apply(b"state=blocked:kind=question:msg=b2s/");
+        assert_eq!(r.note(), Some("has a question: ok?"));
+        r.apply(b"state=blocked:progress=5:kind=auth");
+        assert_eq!(r.note(), Some("5% needs sign-in"));
+        r.apply(b"state=working:kind=auth");
+        assert_eq!(r.note(), None, "kind only while blocked");
         r.apply(b"state=working:progress=101");
         assert_eq!(r.note(), None, "out of range is indeterminate");
         r.apply(b"state=clear");
