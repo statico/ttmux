@@ -6,6 +6,8 @@
   `blocked`, `done` and `error` set the pane's agent mark in place of the
   `[agents]` patterns, and the next shell prompt (OSC 133 `A`) or a reset
   ends them. The pane's border shows the report's progress and message.
+- An agent rings the bell at most once every three seconds, so one that
+  flips in and out of needing you cannot flood the terminal.
 - The README lists each terminal spec a pane can count on.
 
 ## 0.7.0 — 2026-10-08
