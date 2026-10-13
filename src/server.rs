@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -36,9 +36,10 @@ use crate::script;
 /// when the last client leaves: a detached session has to be *some* size.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
-/// Frames a client may fall behind before it is dropped. The app thread must
-/// never block on a socket -- one peer that stopped reading would freeze the
-/// session for everyone -- so every client gets a queue and its own writer.
+/// Frames a client may fall behind before it is skipped until it catches up.
+/// The app thread must never block on a socket -- one peer that stopped
+/// reading would freeze the session for everyone -- so every client gets a
+/// queue and its own writer.
 const QUEUE: usize = 256;
 
 /// Only the writer threads ever block on a socket, and this bounds how long
@@ -56,6 +57,9 @@ struct Client {
     tx: SyncSender<ServerMsg>,
     cols: u16,
     rows: u16,
+    /// Its queue filled, so frames are skipped until the writer has drained
+    /// it and sent a whole repaint in their place.
+    behind: bool,
 }
 
 struct State {
@@ -99,14 +103,42 @@ impl Hub {
         self.broadcast_locked(&mut st, msg);
     }
 
-    /// Never blocks: a client whose queue is full is one that has stopped
-    /// reading, and it is dropped rather than allowed to stall the app.
+    /// Never blocks: a client whose queue is full falls behind, and misses
+    /// frames until its writer catches it up with a repaint. A stall on a
+    /// slow link is not a dead client; one whose writer gave up is gone.
     fn broadcast_locked(&self, st: &mut State, msg: &ServerMsg) {
         let before = st.clients.len();
-        st.clients.retain(|c| c.tx.try_send(msg.clone()).is_ok());
+        st.clients.retain_mut(|c| {
+            if c.behind {
+                return true;
+            }
+            match c.tx.try_send(msg.clone()) {
+                Ok(()) => true,
+                Err(TrySendError::Full(_)) => {
+                    c.behind = true;
+                    true
+                }
+                Err(TrySendError::Disconnected(_)) => false,
+            }
+        });
         if st.clients.len() != before {
             self.resize_locked(st);
         }
+    }
+
+    /// For a writer that has drained its queue: if its client fell behind,
+    /// the repaint that replaces every frame it missed. Taken under the lock
+    /// and with the client put back in step, so frames painted from here on
+    /// queue up behind it.
+    fn catch_up(&self, id: u64) -> Option<[ServerMsg; 3]> {
+        let mut st = self.state.lock().unwrap();
+        let c = st.clients.iter_mut().find(|c| c.id == id && c.behind)?;
+        c.behind = false;
+        Some([
+            ServerMsg::Clear,
+            ServerMsg::Draw(snapshot(&st.screen)),
+            ServerMsg::Cursor(st.cursor),
+        ])
     }
 
     /// tmux's rule: the session is as big as its smallest viewer, so every
@@ -393,23 +425,56 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
         ] {
             let _ = tx.try_send(msg);
         }
-        st.clients.push(Client { id, tx, cols, rows });
+        st.clients.push(Client {
+            id,
+            tx,
+            cols,
+            rows,
+            behind: false,
+        });
         hub.resize_locked(&mut st);
         id
     };
     {
         let inner = hub.clone();
         let writer = thread::spawn(move || {
-            for msg in rx {
-                match proto::write_msg(&mut out, &msg) {
-                    // Too big to send is checked before anything is written:
-                    // lose the message, not the client.
-                    Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {}
-                    Err(_) => break,
-                    Ok(()) => {}
+            let mut send = |msg: &ServerMsg| match proto::write_msg(&mut out, msg) {
+                // Too big to send is checked before anything is written:
+                // lose the message, not the client.
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => true,
+                Err(_) => false,
+                Ok(()) => true,
+            };
+            'write: loop {
+                let msg = match rx.try_recv() {
+                    Ok(msg) => msg,
+                    Err(mpsc::TryRecvError::Disconnected) => break,
+                    // Drained. A client that fell behind can only have filled
+                    // its queue, so this is where it catches up.
+                    Err(mpsc::TryRecvError::Empty) => {
+                        if let Some(repaint) = inner.catch_up(id) {
+                            for msg in &repaint {
+                                if !send(msg) {
+                                    break 'write;
+                                }
+                            }
+                            continue;
+                        }
+                        match rx.recv() {
+                            Ok(msg) => msg,
+                            Err(_) => break,
+                        }
+                    }
+                };
+                if !send(&msg) {
+                    break;
                 }
             }
             inner.drop_client(id);
+            // The reader holds the socket open too. Close it, so a client
+            // this server has stopped writing to hears so, and does not sit
+            // on its last frame with its keys still going to the panes.
+            let _ = out.shutdown(std::net::Shutdown::Both);
         });
         hub.state.lock().unwrap().writers.push(writer);
     }
@@ -836,4 +901,62 @@ fn run(listener: UnixListener, adopt: Option<Adoption>) -> Result<()> {
         let _ = w.join();
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_client_whose_queue_fills_is_caught_up_not_dropped() {
+        let (events, _events_rx) = mpsc::channel();
+        let (jobs, _jobs_rx) = mpsc::channel();
+        let hub = Hub {
+            state: Mutex::new(State {
+                clients: vec![],
+                size: (2, 1),
+                screen: Buffer::empty(ratatui::layout::Rect::new(0, 0, 2, 1)),
+                cursor: Some((1, 0)),
+                next_id: 2,
+                writers: vec![],
+            }),
+            events,
+            jobs,
+            kill: AtomicBool::new(false),
+            colours: Mutex::new(None),
+            env: Mutex::new(None),
+            handovers: Mutex::new(vec![]),
+        };
+        let (tx, rx) = mpsc::sync_channel(1);
+        hub.state.lock().unwrap().clients.push(Client {
+            id: 1,
+            tx,
+            cols: 2,
+            rows: 1,
+            behind: false,
+        });
+
+        // A stalled link: frames pile up past the queue.
+        for _ in 0..3 {
+            hub.broadcast(&ServerMsg::Clear);
+        }
+        assert!(
+            hub.state.lock().unwrap().clients[0].behind,
+            "still attached"
+        );
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::Clear)));
+        assert!(rx.try_recv().is_err(), "frames behind are skipped");
+
+        // Drained: the writer gets one repaint, then frames flow again.
+        let repaint = hub.catch_up(1).expect("a repaint for the missed frames");
+        assert!(matches!(repaint[2], ServerMsg::Cursor(Some((1, 0)))));
+        assert!(hub.catch_up(1).is_none());
+        hub.broadcast(&ServerMsg::Clear);
+        assert!(matches!(rx.try_recv(), Ok(ServerMsg::Clear)));
+
+        // A writer that gave up is a client gone.
+        drop(rx);
+        hub.broadcast(&ServerMsg::Clear);
+        assert!(hub.state.lock().unwrap().clients.is_empty());
+    }
 }
