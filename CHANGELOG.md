@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 — 2026-10-13
 
 - A client on a slow link no longer freezes on its last frame while its
   keys still reach the panes. Since the tab spinner (0.7.0) a few seconds
