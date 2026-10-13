@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A client on a slow link no longer freezes on its last frame while its
+  keys still reach the panes. Since the tab spinner (0.7.0) a few seconds
+  of stall while an agent was busy filled its queue, and the server
+  stopped drawing to it for good. Now it skips the frames it missed and
+  gets one repaint when it catches up; one the server gives up on is
+  disconnected, so it says so.
+- `ttmux doctor` waits for the keychain check again; 0.8.0 gave it no time.
+
 ## 0.8.0 — 2026-10-12
 
 - Programs can report their own status with OSC 7501. `working`,

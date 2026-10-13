@@ -188,7 +188,7 @@ fn keychain_probe() -> String {
         Ok(c) => c,
         Err(e) => return format!("could not run `security`: {e}"),
     };
-    let deadline = std::time::Instant::now() + Duration::ZERO;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while let Ok(None) = child.try_wait() {
         if std::time::Instant::now() > deadline {
             let _ = child.kill();
