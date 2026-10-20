@@ -732,8 +732,12 @@ impl Pane {
 
     /// The child's working directory, for opening new panes in the same place.
     pub fn cwd(&self) -> Option<PathBuf> {
-        let pid = self.child.borrow().process_id()?;
-        cwd_of(pid)
+        cwd_of(self.pid()?)
+    }
+
+    /// The child's process id, `None` once it has been reaped.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.borrow().process_id()
     }
 
     pub fn is_dead(&self) -> bool {

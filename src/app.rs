@@ -1155,6 +1155,7 @@ impl App {
             let panes: Vec<serde_json::Value> = rows
                 .iter()
                 .map(|(w, id, r, title, active)| {
+                    let pane = self.slots.get(id).map(|s| &s.pane);
                     serde_json::json!({
                         "id": format!("%{id}"),
                         "window": w,
@@ -1162,6 +1163,8 @@ impl App {
                         "height": r.h,
                         "title": title,
                         "active": active,
+                        "pid": pane.and_then(Pane::pid),
+                        "cwd": pane.and_then(Pane::cwd),
                     })
                 })
                 .collect();
@@ -4097,6 +4100,22 @@ mod tests {
             a.on_key(key(c)).unwrap();
         }
         assert_eq!(a.paste_buffer, "foo.bar");
+    }
+
+    #[test]
+    fn list_panes_gives_each_pane_its_pid_and_directory() {
+        let mut a = app_running("sleep 60");
+        let id = a.focus();
+        let pid = a.slots[&id].pane.pid().unwrap();
+        // The test shell starts in `/` once perl has run its chdir.
+        assert!(pump_until(&mut a, |a| a.slots[&id].pane.cwd()
+            == Some(PathBuf::from("/"))));
+        let out = run(&mut a, "list-panes -F #{pane_pid}:#{pane_current_path}").unwrap();
+        assert_eq!(out.trim(), format!("{pid}:/"));
+        let out = run(&mut a, "list-panes --json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["panes"][0]["pid"], pid);
+        assert_eq!(v["panes"][0]["cwd"], "/");
     }
 
     #[test]

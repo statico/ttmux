@@ -279,7 +279,8 @@ ttmux kill-pane -t %3
 ttmux list-panes [-a] [--json] [-F FORMAT]
 ```
 
-One line per pane.
+One line per pane. The JSON and `-F` forms also give each pane's process id
+and working directory, as `pid` and `cwd`.
 
 | Flag | Meaning |
 |---|---|
@@ -301,8 +302,9 @@ ttmux list-panes -F '#{pane_id} #{pane_title}'
 ttmux new-window [-n NAME] [-d] [COMMAND]
 ```
 
-Open a window, focus it unless `-d` is given, and print its number. With `COMMAND`, the window's
-pane runs it instead of a shell, as `split-window` does.
+Open a window, focus it unless `-d` is given, and print its number. With
+`COMMAND`, the window's pane runs it instead of a shell, as `split-window`
+does.
 
 | Flag | Meaning |
 |---|---|
@@ -586,6 +588,8 @@ tmux's names work too, so a tmux format string runs as written:
 | pane | `width`, `height` | `pane_width`, `pane_height` |
 | pane | `active` | `pane_active` |
 | pane | `window` | `window_index` |
+| pane | `pid` | `pane_pid` |
+| pane | `cwd` | `pane_current_path` |
 | window | `index` | `window_index` |
 | window | `name` | `window_name` |
 | window | `panes` | `window_panes` |

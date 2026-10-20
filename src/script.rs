@@ -713,6 +713,7 @@ pub fn format_row(format: &str, row: &serde_json::Value) -> String {
             "window_index" => "window",
             "window_panes" => "panes",
             "window_name" => "name",
+            "pane_current_path" => "cwd",
             _ => bare,
         };
         match row
