@@ -822,6 +822,10 @@ impl Screen {
             .try_into()
             // width() can only return 0, 1, or 2
             .unwrap();
+        // A wide character cannot fit a one-column screen at all.
+        if width > size.cols {
+            return;
+        }
 
         // it doesn't make any sense to wrap if the last column in a row
         // didn't already have contents. don't try to handle the case where a

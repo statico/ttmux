@@ -87,3 +87,15 @@ fn extended_sgr_is_kept_on_the_cell() {
     assert!(!d.dim());
     assert_eq!(d.underline_color(), Color::Rgb(1, 2, 3));
 }
+
+#[test]
+fn text_wraps_on_tiny_screens() {
+    // A one-row pane: wrapping scrolls the row just written away. Issue #2.
+    let mut p = Parser::new(1, 5, 10);
+    p.process(b"abcdefghij\r\nkl");
+    assert_eq!(p.screen().contents(), "kl");
+    // A wide character on a one-column screen.
+    let mut p = Parser::new(3, 1, 10);
+    p.process("a界b界".as_bytes());
+    p.process(b"\x1b[1;1r\x1b[1;1Habc");
+}

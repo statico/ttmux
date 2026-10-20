@@ -18,3 +18,5 @@ can fix what its panes run into. Changes from upstream:
 - `Callbacks::reset` is called after a full reset (RIS).
 - `Callbacks::unhandled_osc` is told whether the OSC ended with BEL, so a
   reply can end the same way.
+- Text that wraps on a one-row screen, or a wide character on a
+  one-column screen, no longer underflows and panics.
