@@ -10,7 +10,7 @@
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey.svg">
 </p>
 
-<p align="center"><img alt="ttmux demo" src="docs/demo.gif" width="700"></p>
+<p align="center"><picture><source srcset="docs/demo.avif" type="image/avif"><img alt="ttmux demo" src="docs/demo-poster.png" width="700"></picture></p>
 
 > [!WARNING]
 > **Beta software.** ttmux is still under test. Expect bugs, and expect the
