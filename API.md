@@ -115,11 +115,12 @@ ttmux capture-pane -p -S -50
 ### split-window
 
 ```
-ttmux split-window [-t PANE] [-h] [-v] [COMMAND]
+ttmux split-window [-t PANE] [-h] [-v] [-d] [COMMAND]
 ```
 
 Split a pane in two, and print the new pane's id, such as `%2`. The new
-pane takes the focus. A pane too small to split is an error.
+pane takes the focus, unless `-d` is given. A pane too small to split is an
+error.
 
 With `COMMAND`, the new pane runs it through your shell with `-c` instead of
 starting an interactive shell, as tmux does. The pane closes when the
@@ -130,10 +131,11 @@ command exits. Put `--` before a command that starts with `-`.
 | `-t`, `--target PANE` | the pane to act on. Default is the focused one |
 | `-h`, `--horizontal` | side by side |
 | `-v`, `--vertical` | one above the other, the default as in tmux |
+| `-d`, `--detached` | leave focus where it is instead of moving to the new one |
 
 ```
 ttmux split-window -h
-ttmux split-window -t %1 -v
+ttmux split-window -d -t %1 -v
 ttmux split-window -h 'tail -f log/dev.log'
 ```
 
@@ -292,19 +294,21 @@ ttmux list-panes -F '#{pane_id} #{pane_title}'
 ### new-window
 
 ```
-ttmux new-window [-n NAME] [COMMAND]
+ttmux new-window [-n NAME] [-d] [COMMAND]
 ```
 
-Open a window, focus it, and print its number. With `COMMAND`, the window's
+Open a window, focus it unless `-d` is given, and print its number. With `COMMAND`, the window's
 pane runs it instead of a shell, as `split-window` does.
 
 | Flag | Meaning |
 |---|---|
 | `-n`, `--name NAME` | name it as it is created |
+| `-d`, `--detached` | leave focus where it is instead of moving to the new one |
 
 ```
 ttmux new-window -n logs
 ttmux new-window -n top htop
+ttmux new-window -d -n build make
 ```
 
 ### select-window

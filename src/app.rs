@@ -926,14 +926,24 @@ impl App {
                 target,
                 dir,
                 command,
+                detached,
             } => {
                 let id = self.pane_or_focus(target)?;
                 let tab = self.tab_of(id)?;
+                let was = (self.tab, self.last_tab, self.tabs[tab].focus);
                 self.select_tab(tab);
                 self.set_focus(id);
+                let new = self.split(dir, command.as_deref());
+                if detached {
+                    self.tabs[tab].focus = was.2;
+                    if self.tab != was.0 {
+                        (self.tab, self.last_tab) = (was.0, was.1);
+                        self.relayout();
+                    }
+                }
                 // The new pane's id, so a script can target it without a
                 // trip through list-panes.
-                match self.split(dir, command.as_deref())? {
+                match new? {
                     Some(new) => Ok(format!("%{new}")),
                     None => bail!("no room to split %{id}"),
                 }
@@ -1006,12 +1016,21 @@ impl App {
                 Ok(String::new())
             }
             Cmd::ListPanes { all, json, format } => Ok(self.list_panes(all, json, format)),
-            Cmd::NewWindow { name, command } => {
+            Cmd::NewWindow {
+                name,
+                command,
+                detached,
+            } => {
+                let was = self.tab;
                 self.new_tab(command.as_deref())?;
                 let i = self.tab;
                 if let Some(name) = name {
                     self.tabs[i].name = name;
                     self.tabs[i].renamed = true;
+                }
+                if detached {
+                    self.tab = was;
+                    self.relayout();
                 }
                 Ok(format!("{}", i + 1))
             }
@@ -3347,6 +3366,39 @@ mod tests {
                 assert!(a.slots.contains_key(&id), "orphan pane {id} in a layout");
             }
         }
+    }
+
+    /// Run one scripting command, as the CLI would.
+    fn run(a: &mut App, line: &str) -> Result<String> {
+        let words: Vec<String> = line.split_whitespace().map(String::from).collect();
+        a.script(crate::script::parse(&words[0], &words[1..])?)
+    }
+
+    #[test]
+    fn a_detached_split_or_window_leaves_focus_alone() {
+        let mut a = app();
+        let first = a.focus();
+        let out = run(&mut a, "split-window -d -h").unwrap();
+        assert_eq!(a.tabs[0].layout.ids().len(), 2);
+        assert_eq!(a.focus(), first);
+        assert_ne!(out, format!("%{first}"));
+
+        run(&mut a, "new-window -d").unwrap();
+        assert_eq!(a.tabs.len(), 2);
+        assert_eq!(a.tab, 0);
+        assert_eq!(a.focus(), first);
+
+        // Splitting a pane in another window neither moves there nor
+        // changes which pane that window has focused.
+        let other = a.tabs[1].focus;
+        run(&mut a, &format!("split-window -d -t %{other}")).unwrap();
+        assert_eq!((a.tab, a.focus()), (0, first));
+        assert_eq!(a.tabs[1].focus, other);
+        assert_eq!(a.tabs[1].layout.ids().len(), 2);
+
+        // Without -d the new pane takes focus, as before.
+        let out = run(&mut a, "split-window").unwrap();
+        assert_eq!(format!("%{}", a.focus()), out);
     }
 
     #[test]

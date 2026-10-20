@@ -112,6 +112,13 @@ const FORMAT: Flag = Flag {
     about: "print one line per row, filling #{field} from the JSON, as in tmux",
 };
 
+const DETACHED: Flag = Flag {
+    short: Some("-d"),
+    long: "--detached",
+    arg: None,
+    about: "leave focus where it is instead of moving to the new one",
+};
+
 /// Every command. This order is the order the help prints.
 pub const COMMANDS: &[Spec] = &[
     Spec {
@@ -179,9 +186,11 @@ pub const COMMANDS: &[Spec] = &[
                 arg: None,
                 about: "one above the other, the default as in tmux",
             },
+            DETACHED,
         ],
         examples: &[
             "ttmux split-window -h",
+            "ttmux split-window -d -t %1 -v",
             "ttmux split-window -t %1 -v",
             "ttmux split-window -h 'tail -f log/dev.log'",
         ],
@@ -328,13 +337,20 @@ pub const COMMANDS: &[Spec] = &[
         group: "windows",
         about: "open a window, running COMMAND or a shell in it",
         args: "[COMMAND]",
-        flags: &[Flag {
-            short: Some("-n"),
-            long: "--name",
-            arg: Some("NAME"),
-            about: "name it as it is created",
-        }],
-        examples: &["ttmux new-window -n logs", "ttmux new-window -n top htop"],
+        flags: &[
+            Flag {
+                short: Some("-n"),
+                long: "--name",
+                arg: Some("NAME"),
+                about: "name it as it is created",
+            },
+            DETACHED,
+        ],
+        examples: &[
+            "ttmux new-window -n logs",
+            "ttmux new-window -n top htop",
+            "ttmux new-window -d -n build make",
+        ],
     },
     Spec {
         name: "select-window",
@@ -747,6 +763,8 @@ pub enum Cmd {
         dir: Dir,
         /// Run this through the shell instead of starting an interactive one.
         command: Option<String>,
+        /// Leave focus on the pane that had it.
+        detached: bool,
     },
     SelectPane(PaneId),
     /// Zoom a pane, which is a resize to the whole window.
@@ -781,6 +799,8 @@ pub enum Cmd {
     NewWindow {
         name: Option<String>,
         command: Option<String>,
+        /// Stay on the current window.
+        detached: bool,
     },
     SelectWindow(Win),
     RenameWindow {
@@ -907,6 +927,7 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             // tmux's -h is "side by side" and -v is "stacked"; -v is the
             // default there, so it is the default here.
             let target = a.pane_target()?;
+            let detached = a.flag(&["-d", "--detached"]);
             let dir = if a.flag(&["-h", "--horizontal"]) {
                 Dir::Right
             } else {
@@ -917,6 +938,7 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
                 target,
                 dir,
                 command: a.command(verb)?,
+                detached,
             }
         }
         "select-pane" => {
@@ -998,9 +1020,11 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
         }
         "new-window" => {
             let name = a.value(&["-n", "--name"])?;
+            let detached = a.flag(&["-d", "--detached"]);
             Cmd::NewWindow {
                 name,
                 command: a.command(verb)?,
+                detached,
             }
         }
         "select-window" => {
@@ -1387,6 +1411,7 @@ mod tests {
                 target: None,
                 dir: Dir::Down,
                 command: None,
+                detached: false,
             }
         );
         assert_eq!(
@@ -1395,6 +1420,7 @@ mod tests {
                 target: None,
                 dir: Dir::Right,
                 command: None,
+                detached: false,
             }
         );
     }
@@ -1639,8 +1665,21 @@ mod tests {
             parsed("new-window -n top htop"),
             Cmd::NewWindow {
                 name: Some("top".into()),
-                command: Some("htop".into())
+                command: Some("htop".into()),
+                detached: false,
             }
+        );
+        assert_eq!(
+            parsed("neww -d htop"),
+            Cmd::NewWindow {
+                name: None,
+                command: Some("htop".into()),
+                detached: true,
+            }
+        );
+        assert_eq!(
+            parsed("split-window -d -h"),
+            parsed("split-window --horizontal --detached")
         );
     }
 
