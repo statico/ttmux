@@ -4205,6 +4205,8 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["panes"][0]["dead"], true);
 
+        // The test shell is perl, which would take `-c` as a syntax check.
+        a.cfg.general.shell = "/bin/sh".into();
         run(&mut a, "respawn-pane sleep 60").unwrap();
         assert_eq!(a.focus(), id);
         assert!(!a.slots[&id].pane.is_dead());
