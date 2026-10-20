@@ -827,6 +827,37 @@ impl Pane {
         out
     }
 
+    /// The first character of each cell on `line`, counted as in
+    /// [`Pane::text_between`], with a blank for an empty cell and the wide
+    /// character again for its second half; and whether the row wraps into
+    /// the next. `None` past either end of the history and screen.
+    pub fn line_chars(&mut self, line: isize) -> Option<(Vec<char>, bool)> {
+        if line >= self.rows as isize {
+            return None;
+        }
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let oldest = self.parser.screen().scrollback() as isize;
+        let back = (-line).max(0) as usize;
+        let out = (line >= -oldest).then(|| {
+            self.parser.screen_mut().set_scrollback(back);
+            let row = (line + back as isize) as u16;
+            let screen = self.parser.screen();
+            let mut chars: Vec<char> = vec![];
+            for col in 0..self.cols {
+                let cell = screen.cell(row, col);
+                let c = match (cell, chars.last()) {
+                    (Some(cell), Some(prev)) if cell.is_wide_continuation() => *prev,
+                    (Some(cell), _) => cell.contents().chars().next().unwrap_or(' '),
+                    (None, _) => ' ',
+                };
+                chars.push(c);
+            }
+            (chars, screen.row_wrapped(row))
+        });
+        self.parser.screen_mut().set_scrollback(self.scroll);
+        out
+    }
+
     /// Send `text` to the outer terminal's clipboard with OSC 52, through the
     /// same queue as a program's own copies, so `general.clipboard` gates both.
     pub fn copy_to_host(&mut self, text: &str) {

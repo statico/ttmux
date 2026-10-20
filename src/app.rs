@@ -1847,6 +1847,9 @@ impl App {
             KeyCode::Char('$') | KeyCode::End => col = cols.saturating_sub(1),
             KeyCode::Char('g') => line = isize::MIN / 2,
             KeyCode::Char('G') => line = rows as isize - 1,
+            KeyCode::Char(k @ ('w' | 'b' | 'e')) => {
+                (line, col) = word_motion(&mut s.pane, (line, col), k);
+            }
             KeyCode::Char('v') | KeyCode::Char(' ') => {
                 c.anchor = if c.anchor.is_some() {
                     None
@@ -3112,6 +3115,108 @@ fn merge_images(standing: &mut Vec<Image>, new: Vec<Image>) {
 
 // ------------------------------------------------------------- tests
 
+/// vi's three kinds of character: 0 blank, 1 punctuation, 2 word.
+fn char_class(c: char) -> u8 {
+    if c.is_whitespace() {
+        0
+    } else if c.is_alphanumeric() || c == '_' || !c.is_ascii() {
+        2
+    } else {
+        1
+    }
+}
+
+/// A position in a pane's text that steps a cell at a time, through
+/// history and across rows, reading each row once. A row that did not wrap
+/// ends in an extra blank, so a word never runs on into the next line.
+struct Walk<'a> {
+    pane: &'a mut Pane,
+    line: isize,
+    col: usize,
+    row: Vec<u8>,
+}
+
+impl Walk<'_> {
+    fn load(&mut self, line: isize) -> bool {
+        let Some((chars, wrapped)) = self.pane.line_chars(line) else {
+            return false;
+        };
+        self.row = chars.into_iter().map(char_class).collect();
+        if !wrapped {
+            self.row.push(0);
+        }
+        self.line = line;
+        true
+    }
+
+    fn class(&self) -> u8 {
+        self.row[self.col]
+    }
+
+    fn step(&mut self, forward: bool) -> bool {
+        if forward && self.col + 1 < self.row.len() {
+            self.col += 1;
+        } else if !forward && self.col > 0 {
+            self.col -= 1;
+        } else if self.load(self.line + if forward { 1 } else { -1 }) {
+            self.col = if forward { 0 } else { self.row.len() - 1 };
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Step past every cell of class `c`. False if the text ran out first.
+    fn skip(&mut self, c: u8, forward: bool) -> bool {
+        while self.class() == c {
+            if !self.step(forward) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Move to the last cell of the run under the walk, that way.
+    fn end_of_run(&mut self, forward: bool) {
+        let c = self.class();
+        while self.step(forward) {
+            if self.class() != c {
+                self.step(!forward);
+                break;
+            }
+        }
+    }
+}
+
+/// vi's `w`, `b` and `e` from `at`, a (line, column) as copy mode counts
+/// them. With no word that way the cursor stays where it is.
+fn word_motion(pane: &mut Pane, at: (isize, u16), key: char) -> (isize, u16) {
+    let mut w = Walk {
+        pane,
+        line: at.0,
+        col: at.1 as usize,
+        row: vec![],
+    };
+    if !w.load(at.0) || w.col >= w.row.len() {
+        return at;
+    }
+    let found = match key {
+        'w' => {
+            let c = w.class();
+            (c == 0 || w.skip(c, true)) && w.skip(0, true)
+        }
+        'e' => w.step(true) && w.skip(0, true),
+        _ => w.step(false) && w.skip(0, false),
+    };
+    if !found {
+        return at;
+    }
+    if key != 'w' {
+        w.end_of_run(key == 'e');
+    }
+    (w.line, w.col as u16)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3950,6 +4055,48 @@ mod tests {
             .unwrap();
         assert!(a.copy.is_none());
         assert_eq!(a.paste_buffer, "on");
+    }
+
+    #[test]
+    fn copy_mode_moves_by_vi_words_across_lines() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let mut a = app_running("printf 'foo.bar  baz\\nqux\\n'; sleep 60");
+        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
+            .pane
+            .screen()
+            .contents()
+            .contains("qux")));
+        a.cfg.general.copy_mode = true;
+        a.dispatch(Action::CopyMode).unwrap();
+        a.on_key(key('g')).unwrap();
+        a.on_key(key('0')).unwrap();
+        let mut at = vec![];
+        for c in "wwwwwbebbbbe".chars() {
+            a.on_key(key(c)).unwrap();
+            at.push(a.copy.as_ref().unwrap().cursor);
+        }
+        assert_eq!(
+            at,
+            [
+                (0, 3),  // w: onto the punctuation
+                (0, 4),  // w: onto `bar`
+                (0, 9),  // w: over the blanks to `baz`
+                (1, 0),  // w: on to the next line
+                (1, 0),  // w: no word after `qux`, so it stays
+                (0, 9),  // b: back over the line break
+                (0, 11), // e: the end of `baz`
+                (0, 9),  // b
+                (0, 4),  // b
+                (0, 3),  // b
+                (0, 0),  // b
+                (0, 2),  // e: the end of `foo`
+            ]
+        );
+        // A selection made with them copies what they cover.
+        for c in "0vwey".chars() {
+            a.on_key(key(c)).unwrap();
+        }
+        assert_eq!(a.paste_buffer, "foo.bar");
     }
 
     #[test]

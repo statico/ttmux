@@ -128,7 +128,8 @@ Press the prefix and <kbd>?</kbd> in the app for the full list.
 tmux's copy mode is off by default, because programs like coding agents
 copy on their own and want the mouse drag. Set `general.copy-mode = true`
 and the scroll back key opens it: move with <kbd>h</kbd> <kbd>j</kbd>
-<kbd>k</kbd> <kbd>l</kbd>, press <kbd>v</kbd> to start a selection and
+<kbd>k</kbd> <kbd>l</kbd> or by word with <kbd>w</kbd> <kbd>b</kbd>
+<kbd>e</kbd>, press <kbd>v</kbd> to start a selection and
 <kbd>y</kbd> to copy it, or <kbd>q</kbd> to leave. A mouse drag over a pane
 also copies. The copy goes to your clipboard and to a paste buffer that the
 prefix and <kbd>]</kbd> types back.
