@@ -1,0 +1,8 @@
+#!/bin/sh
+# Offline asciicast -> .mov renderer. See src/main.rs.
+D=$(cd "$(dirname "$0")" && pwd)
+BIN="$D/target/release/castrender"
+if [ ! -x "$BIN" ] || [ -n "$(find "$D/src" "$D/Cargo.toml" -newer "$BIN" 2>/dev/null)" ]; then
+  CARGO_TARGET_DIR="$D/target" cargo build --release --quiet --manifest-path "$D/Cargo.toml" >&2 || exit 1
+fi
+exec "$BIN" "$@"

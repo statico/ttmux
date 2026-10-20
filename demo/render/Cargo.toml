@@ -1,0 +1,15 @@
+[package]
+name = "castrender"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+vt100 = { path = "../../vendor/vt100" }
+ab_glyph = "0.2"
+ab_glyph_rasterizer = "0.1"
+serde_json = "1"
+
+[profile.release]
+debug = false

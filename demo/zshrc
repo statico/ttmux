@@ -1,0 +1,9 @@
+# Demo shell: tidy prompt, no history, nothing personal.
+# record.py copies this to $DEMO_OUT/zdot/.zshrc and points ZDOTDIR there.
+HISTFILE=/dev/null
+unsetopt BEEP
+hash -d videos=$DEMO_OUT
+PROMPT='%F{#7aa2f7}%1~%f %F{#bb9af7}❯%f '
+preexec() { print -n "\e]2;${1%% *}\a" }
+precmd() { print -n "\e]2;zsh\a" }
+cd $DEMO_REPO

@@ -1,0 +1,74 @@
+[general]
+shell = "/bin/zsh"
+shell-args = []
+mouse = true
+scrollback = 10000
+free-mode = false
+focus-follows-mouse = false
+passthrough-images = true
+prefix-timeout-ms = 3000
+keys-preset = "vim"
+
+[appearance]
+border-style = "curved"
+border = "#3b4261"
+border-focused = "#7aa2f7"
+border-alert = "#e0af68"
+title-position = "top"
+dim-unfocused = false
+gap = 0
+float-shadow = true
+
+[status]
+bg = "#1a1b26"
+fg = "#a9b1d6"
+accent = "#7aa2f7"
+separator = " │ "
+time-format = "%H:%M"
+effect = "flat"
+
+[status.header]
+enabled = false
+left = ["host"]
+center = ["tabs"]
+right = ["session"]
+
+[status.footer]
+enabled = true
+left = [
+    "session",
+    "mode",
+]
+center = ["tabs"]
+right = [
+    "agents",
+    "time",
+]
+
+[agents]
+enabled = true
+bell-on-attention = true
+attention-patterns = [
+    "waiting for input",
+    "needs your input",
+    "awaiting approval",
+    "permission",
+    "(y/n)",
+    "[y/n]",
+    "continue?",
+]
+busy-patterns = [
+    "working",
+    "thinking",
+    "running",
+    "esc to interrupt",
+    "…",
+]
+done-patterns = [
+    "done",
+    "complete",
+    "finished",
+    "✓",
+]
+
+[keys]
