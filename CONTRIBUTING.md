@@ -58,7 +58,11 @@ make check      # cargo fmt --check, clippy with -D warnings, and cargo test
 
 ## Releases
 
-Bump `version` in `Cargo.toml`, add a section to `CHANGELOG.md`, then:
+Bump `version` in `Cargo.toml`, add a section to `CHANGELOG.md`.
+The release body on GitHub is that CHANGELOG section in full, so write it as
+the release notes: every user-visible change, with the issue numbers, and
+thanks by @handle to the people who reported them. The workflow fails if the
+section is missing. Then:
 
 ```bash
 make tag        # runs the checks, tags v<version>, and pushes it
