@@ -718,6 +718,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b \"", "split down"),
             ("ctrl+b %", "split right"),
             ("ctrl+b o", "focus-next"),
+            ("ctrl+b ;", "last-pane"),
             ("ctrl+b left", "focus left"),
             ("ctrl+b right", "focus right"),
             ("ctrl+b up", "focus up"),

@@ -401,10 +401,12 @@ impl Layout {
         None
     }
 
-    /// Adjacent pane in `dir`: nearest one with the largest perpendicular overlap.
-    pub fn neighbor(&self, id: PaneId, dir: Dir) -> Option<PaneId> {
+    /// Adjacent pane in `dir`: nearest one with the largest perpendicular
+    /// overlap. `prefer`, the pane focused before this one, wins a tie on
+    /// distance, so going left then right comes back where it started.
+    pub fn neighbor(&self, id: PaneId, dir: Dir, prefer: Option<PaneId>) -> Option<PaneId> {
         let me = self.raw_rect(id)?;
-        let mut best: Option<(u16, u16, PaneId)> = None;
+        let mut best: Option<((u16, bool, u16), PaneId)> = None;
         for (other, r) in self.all_rects() {
             if other == id {
                 continue;
@@ -434,15 +436,13 @@ impl Layout {
             if !ok || overlap == 0 {
                 continue;
             }
-            let better = match best {
-                None => true,
-                Some((bd, bo, _)) => dist < bd || (dist == bd && overlap > bo),
-            };
-            if better {
-                best = Some((dist, overlap, other));
+            // Nearest first, then the remembered pane, then the most overlap.
+            let key = (dist, Some(other) != prefer, u16::MAX - overlap);
+            if best.is_none_or(|(k, _)| key < k) {
+                best = Some((key, other));
             }
         }
-        best.map(|(_, _, id)| id)
+        best.map(|(_, id)| id)
     }
 
     /// Next pane in `ids()` order, wrapping.
@@ -1590,21 +1590,23 @@ mod tests {
     #[test]
     fn neighbor_in_grid() {
         let l = grid();
-        assert_eq!(l.neighbor(1, Dir::Right), Some(2));
-        assert_eq!(l.neighbor(1, Dir::Down), Some(3));
-        assert_eq!(l.neighbor(2, Dir::Left), Some(1));
-        assert_eq!(l.neighbor(4, Dir::Up), Some(2));
-        assert_eq!(l.neighbor(3, Dir::Right), Some(4));
-        assert_eq!(l.neighbor(4, Dir::Left), Some(3));
+        assert_eq!(l.neighbor(1, Dir::Right, None), Some(2));
+        assert_eq!(l.neighbor(1, Dir::Down, None), Some(3));
+        assert_eq!(l.neighbor(2, Dir::Left, None), Some(1));
+        assert_eq!(l.neighbor(4, Dir::Up, None), Some(2));
+        assert_eq!(l.neighbor(3, Dir::Right, None), Some(4));
+        assert_eq!(l.neighbor(4, Dir::Left, None), Some(3));
+        // A remembered pane only counts when it is a neighbour at all.
+        assert_eq!(l.neighbor(1, Dir::Right, Some(4)), Some(2));
     }
 
     #[test]
     fn neighbor_none_at_edges() {
         let l = grid();
-        assert_eq!(l.neighbor(1, Dir::Left), None);
-        assert_eq!(l.neighbor(1, Dir::Up), None);
-        assert_eq!(l.neighbor(4, Dir::Right), None);
-        assert_eq!(l.neighbor(4, Dir::Down), None);
+        assert_eq!(l.neighbor(1, Dir::Left, None), None);
+        assert_eq!(l.neighbor(1, Dir::Up, None), None);
+        assert_eq!(l.neighbor(4, Dir::Right, None), None);
+        assert_eq!(l.neighbor(4, Dir::Down, None), None);
     }
 
     #[test]

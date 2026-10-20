@@ -142,21 +142,25 @@ ttmux split-window -h 'tail -f log/dev.log'
 ### select-pane
 
 ```
-ttmux select-pane [-t PANE] [-L] [--next]
+ttmux select-pane [-t PANE] [-L] [--next] [-l]
 ```
 
 Focus a pane, by id or by direction. Give a target or a direction, but not
-both.
+both. Moving in a direction prefers the pane you came from, so left then
+right goes back where you were, as in tmux. `last-pane` is the same as
+`select-pane -l`.
 
 | Flag | Meaning |
 |---|---|
 | `-t`, `--target PANE` | the pane to act on. Default is the focused one |
 | `-L`, `--left` | focus the pane to the left, and `-R`, `-U`, `-D` for the rest |
 | `--next` | focus the next pane in order, or `--prev` for the one before |
+| `-l`, `--last` | focus the pane that had focus before this one |
 
 ```
 ttmux select-pane -t %3
 ttmux select-pane -R
+ttmux select-pane -l
 ```
 
 ### resize-pane

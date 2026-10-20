@@ -48,6 +48,8 @@ pub enum Action {
     /// Cycle focus to the next/previous pane.
     FocusNext,
     FocusPrev,
+    /// Back to the pane focused before this one (tmux's `last-pane`).
+    LastPane,
     /// Grow the focused pane towards a direction.
     Resize(Dir, u16),
     /// Move the focused floating pane (free mode only).
@@ -121,6 +123,7 @@ impl fmt::Display for Action {
             Focus(d) => write!(f, "focus {}", d.as_str()),
             FocusNext => write!(f, "focus-next"),
             FocusPrev => write!(f, "focus-prev"),
+            LastPane => write!(f, "last-pane"),
             Resize(d, n) => write!(f, "resize {} {}", d.as_str(), n),
             MovePane(d, n) => write!(f, "move {} {}", d.as_str(), n),
             SwapNext => write!(f, "swap-next"),
@@ -180,6 +183,7 @@ impl FromStr for Action {
             "focus" => Focus(dir()?),
             "focus-next" => FocusNext,
             "focus-prev" => FocusPrev,
+            "last-pane" => LastPane,
             "resize" => {
                 let d = dir()?;
                 Resize(d, dir_n(2))
@@ -237,6 +241,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::Focus(Dir::Down),
     Action::FocusNext,
     Action::FocusPrev,
+    Action::LastPane,
     Action::SwapNext,
     Action::BreakPane,
     Action::JoinPane,

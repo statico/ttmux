@@ -214,8 +214,18 @@ pub const COMMANDS: &[Spec] = &[
                 arg: None,
                 about: "focus the next pane in order, or --prev for the one before",
             },
+            Flag {
+                short: Some("-l"),
+                long: "--last",
+                arg: None,
+                about: "focus the pane that had focus before this one",
+            },
         ],
-        examples: &["ttmux select-pane -t %3", "ttmux select-pane -R"],
+        examples: &[
+            "ttmux select-pane -t %3",
+            "ttmux select-pane -R",
+            "ttmux select-pane -l",
+        ],
     },
     Spec {
         name: "resize-pane",
@@ -532,6 +542,8 @@ pub const ALIASES: &[(&str, &str, &[&str])] = &[
     ("capturep", "capture-pane", &[]),
     ("splitw", "split-window", &[]),
     ("selectp", "select-pane", &[]),
+    ("last-pane", "select-pane", &["-l"]),
+    ("lastp", "select-pane", &["-l"]),
     ("resizep", "resize-pane", &[]),
     ("swapp", "swap-pane", &[]),
     ("move-pane", "join-pane", &[]),
@@ -945,17 +957,19 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             let dir = a.direction();
             let next = a.flag(&["--next"]);
             let prev = a.flag(&["--prev", "--previous"]);
+            let last = a.flag(&["-l", "--last"]);
             let target = a.pane_target()?;
             a.end(verb)?;
-            match (target, dir, next, prev) {
-                (Some(_), Some(_), _, _) => {
+            match (target, dir, next, prev, last) {
+                (Some(_), Some(_), _, _, _) => {
                     bail!("select-pane takes a target or a direction, not both")
                 }
-                (Some(id), None, false, false) => Cmd::SelectPane(id),
-                (None, Some(d), false, false) => Cmd::Run(Action::Focus(d)),
-                (None, None, true, false) => Cmd::Run(Action::FocusNext),
-                (None, None, false, true) => Cmd::Run(Action::FocusPrev),
-                _ => bail!("select-pane needs -t PANE, a direction, --next or --prev"),
+                (Some(id), None, false, false, false) => Cmd::SelectPane(id),
+                (None, Some(d), false, false, false) => Cmd::Run(Action::Focus(d)),
+                (None, None, true, false, false) => Cmd::Run(Action::FocusNext),
+                (None, None, false, true, false) => Cmd::Run(Action::FocusPrev),
+                (None, None, false, false, true) => Cmd::Run(Action::LastPane),
+                _ => bail!("select-pane needs -t PANE, a direction, --next, --prev or -l"),
             }
         }
         "resize-pane" => {
@@ -1514,6 +1528,8 @@ mod tests {
     fn the_tmux_aliases_mean_their_long_names() {
         assert_eq!(parsed("next-window"), Cmd::Run(Action::NextTab));
         assert_eq!(parsed("last-window"), Cmd::Run(Action::LastTab));
+        assert_eq!(parsed("last-pane"), Cmd::Run(Action::LastPane));
+        assert_eq!(parsed("select-pane --last"), Cmd::Run(Action::LastPane));
         assert_eq!(
             parsed("lsw"),
             Cmd::ListWindows {

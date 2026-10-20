@@ -78,7 +78,7 @@ impl Layout {
     pub fn geometry(&self) -> Vec<(PaneId, Rect)>;
     pub fn rect_of(&self, id: PaneId) -> Option<Rect>;
     pub fn pane_at(&self, x: u16, y: u16) -> Option<PaneId>;  // topmost
-    pub fn neighbor(&self, id: PaneId, dir: Dir) -> Option<PaneId>;
+    pub fn neighbor(&self, id: PaneId, dir: Dir, prefer: Option<PaneId>) -> Option<PaneId>;
     pub fn next(&self, id: PaneId) -> Option<PaneId>;
     pub fn prev(&self, id: PaneId) -> Option<PaneId>;
 

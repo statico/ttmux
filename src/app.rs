@@ -141,6 +141,9 @@ struct Tab {
     name: String,
     layout: Layout,
     focus: PaneId,
+    /// The pane focused before `focus`, for `last-pane` and for directional
+    /// moves to come back the way they went.
+    last: Option<PaneId>,
     /// Set when the user has renamed it, so it stops tracking the pane title.
     renamed: bool,
 }
@@ -506,6 +509,9 @@ impl App {
     /// user cannot see.
     fn set_focus(&mut self, id: PaneId) {
         let t = self.tab_mut();
+        if t.focus != id {
+            t.last = Some(t.focus);
+        }
         t.focus = id;
         if t.layout.zoomed.is_some_and(|z| z != id) {
             t.layout.set_zoom(None);
@@ -704,6 +710,7 @@ impl App {
                 name: t.name,
                 layout,
                 focus,
+                last: None,
                 renamed: t.renamed,
             });
         }
@@ -743,6 +750,7 @@ impl App {
             self.note("no room to split");
             return Ok(None);
         }
+        t.last = Some(t.focus);
         t.focus = id;
         self.sync_sizes();
         Ok(Some(id))
@@ -807,6 +815,7 @@ impl App {
             name: format!("{}", self.tabs.len() + 1),
             layout,
             focus: id,
+            last: None,
             renamed: false,
         });
         self.tab = self.tabs.len() - 1;
@@ -930,12 +939,13 @@ impl App {
             } => {
                 let id = self.pane_or_focus(target)?;
                 let tab = self.tab_of(id)?;
-                let was = (self.tab, self.last_tab, self.tabs[tab].focus);
+                let was = (self.tab, self.last_tab);
+                let focus_was = (self.tabs[tab].focus, self.tabs[tab].last);
                 self.select_tab(tab);
                 self.set_focus(id);
                 let new = self.split(dir, command.as_deref());
                 if detached {
-                    self.tabs[tab].focus = was.2;
+                    (self.tabs[tab].focus, self.tabs[tab].last) = focus_was;
                     if self.tab != was.0 {
                         (self.tab, self.last_tab) = (was.0, was.1);
                         self.relayout();
@@ -1373,6 +1383,7 @@ impl App {
             name: format!("{}", self.tabs.len() + 1),
             layout,
             focus: id,
+            last: None,
             renamed: false,
         });
         self.detach_pane(from, id);
@@ -1449,7 +1460,14 @@ impl App {
             }
             Focus(d) => {
                 let id = self.focus();
-                if let Some(n) = self.tabs[self.tab].layout.neighbor(id, d) {
+                let t = &self.tabs[self.tab];
+                if let Some(n) = t.layout.neighbor(id, d, t.last) {
+                    self.set_focus(n);
+                }
+            }
+            LastPane => {
+                let t = &self.tabs[self.tab];
+                if let Some(n) = t.last.filter(|n| t.layout.ids().contains(n)) {
                     self.set_focus(n);
                 }
             }
@@ -3399,6 +3417,32 @@ mod tests {
         // Without -d the new pane takes focus, as before.
         let out = run(&mut a, "split-window").unwrap();
         assert_eq!(format!("%{}", a.focus()), out);
+    }
+
+    #[test]
+    fn focus_comes_back_to_the_pane_it_left() {
+        // The layout from issue #3: one tall pane left, two stacked right.
+        let mut a = app();
+        let left = a.focus();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        let tr = a.focus();
+        a.dispatch(Action::Split(Dir::Down)).unwrap();
+        let br = a.focus();
+        for from in [br, tr, br] {
+            a.set_focus(from);
+            a.dispatch(Action::Focus(Dir::Left)).unwrap();
+            assert_eq!(a.focus(), left);
+            a.dispatch(Action::Focus(Dir::Right)).unwrap();
+            assert_eq!(a.focus(), from);
+        }
+        a.dispatch(Action::LastPane).unwrap();
+        assert_eq!(a.focus(), left);
+        a.dispatch(Action::LastPane).unwrap();
+        assert_eq!(a.focus(), br);
+        // A closed pane is not somewhere to go back to.
+        a.close_pane(left);
+        a.dispatch(Action::LastPane).unwrap();
+        assert_eq!(a.focus(), br);
     }
 
     #[test]
