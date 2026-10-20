@@ -142,13 +142,16 @@ ttmux split-window -h 'tail -f log/dev.log'
 ### select-pane
 
 ```
-ttmux select-pane [-t PANE] [-L] [--next] [-l]
+ttmux select-pane [-t PANE] [-L] [--next] [-l] [--where @NAME=VALUE]
 ```
 
 Focus a pane, by id or by direction. Give a target or a direction, but not
 both. Moving in a direction prefers the pane you came from, so left then
 right goes back where you were, as in tmux. `last-pane` is the same as
-`select-pane -l`.
+`select-pane -l`. `--where` focuses the first pane whose
+[pane option](#set-option) has that value, looked up when it runs, so a
+binding such as `"alt+3" = "command select-pane --where @slot=3"` keeps
+up as panes come and go.
 
 | Flag | Meaning |
 |---|---|
@@ -156,11 +159,13 @@ right goes back where you were, as in tmux. `last-pane` is the same as
 | `-L`, `--left` | focus the pane to the left, and `-R`, `-U`, `-D` for the rest |
 | `--next` | focus the next pane in order, or `--prev` for the one before |
 | `-l`, `--last` | focus the pane that had focus before this one |
+| `--where @NAME=VALUE` | focus the first pane whose @option has that value |
 
 ```
 ttmux select-pane -t %3
 ttmux select-pane -R
 ttmux select-pane -l
+ttmux select-pane --where @slot=3
 ```
 
 ### resize-pane
@@ -579,6 +584,11 @@ ttmux run ACTION...
 Run any key-binding action by name, such as `toggle-zoom`. This reaches the
 actions that have no command of their own. `ttmux list-keys` prints the
 names.
+
+It also works the other way: the `command` action runs a scripting command
+line, so a key can do anything a script can. Bind
+`"ctrl+t g" = "command select-pane --where @slot=3"` and the pane is looked
+up each time the key is pressed.
 
 This command takes no flags.
 

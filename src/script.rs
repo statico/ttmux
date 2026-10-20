@@ -220,11 +220,18 @@ pub const COMMANDS: &[Spec] = &[
                 arg: None,
                 about: "focus the pane that had focus before this one",
             },
+            Flag {
+                short: None,
+                long: "--where",
+                arg: Some("@NAME=VALUE"),
+                about: "focus the first pane whose @option has that value",
+            },
         ],
         examples: &[
             "ttmux select-pane -t %3",
             "ttmux select-pane -R",
             "ttmux select-pane -l",
+            "ttmux select-pane --where @slot=3",
         ],
     },
     Spec {
@@ -796,6 +803,11 @@ pub enum Cmd {
         detached: bool,
     },
     SelectPane(PaneId),
+    /// Focus the first pane whose @option `key` is `value`.
+    SelectWhere {
+        key: String,
+        value: String,
+    },
     /// Zoom a pane, which is a resize to the whole window.
     ZoomPane {
         target: Option<PaneId>,
@@ -982,7 +994,23 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             let prev = a.flag(&["--prev", "--previous"]);
             let last = a.flag(&["-l", "--last"]);
             let target = a.pane_target()?;
+            let filter = a.value(&["--where"])?;
             a.end(verb)?;
+            if let Some(f) = filter {
+                if target.is_some() || dir.is_some() || next || prev || last {
+                    bail!("select-pane --where takes no other way to pick a pane");
+                }
+                let Some((key, value)) = f
+                    .split_once('=')
+                    .filter(|(k, _)| k.len() > 1 && k.starts_with('@'))
+                else {
+                    bail!("select-pane --where needs @NAME=VALUE, not {f}");
+                };
+                return Ok(Cmd::SelectWhere {
+                    key: key.into(),
+                    value: value.into(),
+                });
+            }
             match (target, dir, next, prev, last) {
                 (Some(_), Some(_), _, _, _) => {
                     bail!("select-pane takes a target or a direction, not both")
@@ -1583,6 +1611,23 @@ mod tests {
         assert_eq!(parsed("last-window"), Cmd::Run(Action::LastTab));
         assert_eq!(parsed("last-pane"), Cmd::Run(Action::LastPane));
         assert_eq!(parsed("select-pane --last"), Cmd::Run(Action::LastPane));
+        assert_eq!(
+            parsed("select-pane --where @slot=3"),
+            Cmd::SelectWhere {
+                key: "@slot".into(),
+                value: "3".into(),
+            }
+        );
+        assert_eq!(
+            parsed("selectp --where=@k=a=b"),
+            Cmd::SelectWhere {
+                key: "@k".into(),
+                value: "a=b".into(),
+            }
+        );
+        assert!(fails("select-pane --where slot=3"));
+        assert!(fails("select-pane --where @slot"));
+        assert!(fails("select-pane -L --where @slot=3"));
         assert_eq!(
             parsed("lsw"),
             Cmd::ListWindows {

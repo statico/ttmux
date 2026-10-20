@@ -264,10 +264,12 @@ enabled = true
 bell-on-attention = true
 busy-spinner = "braille"   # none, braille, circle, line, dots
 
-# Overrides on top of the preset. "none" unbinds a key.
+# Overrides on top of the preset. "none" unbinds a key, and "command"
+# runs a scripting command each time the key is pressed.
 [keys]
 "ctrl+t v" = "split right"
 "ctrl+t &" = "none"
+"alt+3" = "command select-pane --where @slot=3"
 ```
 
 </details>

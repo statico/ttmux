@@ -960,6 +960,19 @@ impl App {
                     None => bail!("no room to split %{id}"),
                 }
             }
+            Cmd::SelectWhere { key, value } => {
+                let id = self
+                    .tabs
+                    .iter()
+                    .flat_map(|t| t.layout.ids())
+                    .find(|id| {
+                        self.slots
+                            .get(id)
+                            .is_some_and(|s| s.pane.options.get(&key) == Some(&value))
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("no pane has {key}={value}"))?;
+                self.script_inner(Cmd::SelectPane(id))
+            }
             Cmd::SelectPane(id) => {
                 let tab = self.tab_of(id)?;
                 self.select_tab(tab);
@@ -1716,6 +1729,7 @@ impl App {
             }
             Quit => self.quit = true,
             Detach => self.detached = true,
+            Command(line) => self.run_line(&line),
             Nop => {}
         }
         Ok(())
@@ -2103,16 +2117,23 @@ impl App {
         };
         self.overlay = Overlay::None;
         self.cmd_history.push(line.clone());
-        let words = crate::script::split(&line);
+        self.run_line(&line);
+        Ok(())
+    }
+
+    /// Run one scripting command line, and note what it printed or why it
+    /// failed, as the `:` prompt and the `command` action do.
+    fn run_line(&mut self, line: &str) {
+        let words = crate::script::split(line);
         let Some((verb, args)) = words.split_first() else {
-            return Ok(());
+            return;
         };
-        match crate::script::parse(verb, args).and_then(|c| self.script(c)) {
+        let caller = self.caller;
+        match crate::script::parse(verb, args).and_then(|c| self.script_from(c, caller)) {
             Ok(text) if text.is_empty() => {}
             Ok(text) => self.note(text.lines().next().unwrap_or_default().to_string()),
             Err(e) => self.note(format!("{e:#}")),
         }
-        Ok(())
     }
 
     fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
@@ -4150,6 +4171,33 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["panes"][0]["options"], serde_json::json!({"@slot": "3"}));
         assert!(run(&mut a, "set-option -p -t %99 @slot 1").is_err());
+    }
+
+    #[test]
+    fn a_key_can_jump_to_a_pane_by_its_option_at_press_time() {
+        let mut a = app();
+        a.cfg
+            .keys
+            .insert("alt+3".into(), "command select-pane --where @slot=3".into());
+        a.keys.reload(&a.cfg);
+        let alt3 = KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT);
+        // No pane has the slot yet: the key notes why and moves nothing.
+        let first = a.focus();
+        a.on_key(alt3).unwrap();
+        assert_eq!(a.focus(), first);
+
+        run(&mut a, "set-option -p @slot 3").unwrap();
+        run(&mut a, "new-window").unwrap();
+        run(&mut a, "split-window").unwrap();
+        a.on_key(alt3).unwrap();
+        assert_eq!((a.tab, a.focus()), (0, first));
+
+        // The binding found the pane when pressed, not when it was bound.
+        a.slots.get_mut(&first).unwrap().pane.options.clear();
+        let other = a.tabs[1].focus;
+        run(&mut a, &format!("set-option -p -t %{other} @slot 3")).unwrap();
+        a.on_key(alt3).unwrap();
+        assert_eq!((a.tab, a.focus()), (1, other));
     }
 
     #[test]

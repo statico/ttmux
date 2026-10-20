@@ -110,6 +110,9 @@ pub enum Action {
     Detach,
     /// Send the leader chord itself to the pane, tmux's `send-prefix`.
     SendPrefix,
+    /// Run a scripting command line, as typed at the `:` prompt, when the
+    /// key is pressed: `command select-pane --where @slot=3`.
+    Command(String),
     /// Do nothing (useful for unbinding).
     Nop,
 }
@@ -158,6 +161,7 @@ impl fmt::Display for Action {
             Quit => write!(f, "quit"),
             Detach => write!(f, "detach"),
             SendPrefix => write!(f, "send-prefix"),
+            Command(line) => write!(f, "command {line}"),
             Nop => write!(f, "nop"),
         }
     }
@@ -224,6 +228,13 @@ impl FromStr for Action {
             "quit" => Quit,
             "detach" => Detach,
             "send-prefix" => SendPrefix,
+            "command" => {
+                let line = s.trim_start()["command".len()..].trim();
+                if line.is_empty() {
+                    return Err("`command` needs a scripting command to run".into());
+                }
+                Command(line.into())
+            }
             "nop" | "" => Nop,
             other => return Err(format!("unknown action: {other}")),
         })
@@ -305,6 +316,13 @@ mod tests {
         assert!("set-preset".parse::<Action>().is_err());
         assert!("set-preset sideways".parse::<Action>().is_err());
         assert!("frobnicate".parse::<Action>().is_err());
+        assert_eq!(
+            "command  select-pane --where @slot=3".parse(),
+            Ok(Action::Command("select-pane --where @slot=3".into()))
+        );
+        let a = Action::Command("display-message 'a  b'".into());
+        assert_eq!(a.to_string().parse(), Ok(a));
+        assert!("command".parse::<Action>().is_err());
         assert!("focus sideways".parse::<Action>().is_err());
     }
 }
