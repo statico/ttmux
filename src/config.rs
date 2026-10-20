@@ -363,6 +363,9 @@ pub struct General {
     /// into a paste buffer. Off by default, because programs that copy on
     /// their own (coding agents, editors) want the drag for themselves.
     pub copy_mode: bool,
+    /// Keep a pane on screen after its program exits, with its last output,
+    /// for `respawn-pane` to restart. tmux's `remain-on-exit`.
+    pub remain_on_exit: bool,
     /// Milliseconds to wait for a second chord after the prefix.
     pub prefix_timeout_ms: u64,
     /// Stock keymap that `keys` overrides sit on top of.
@@ -389,6 +392,7 @@ impl Default for General {
             clipboard: true,
             notifications: true,
             copy_mode: false,
+            remain_on_exit: false,
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
             which_key: true,

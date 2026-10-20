@@ -329,6 +329,22 @@ pub const COMMANDS: &[Spec] = &[
         examples: &["ttmux kill-pane -t %3"],
     },
     Spec {
+        name: "respawn-pane",
+        group: "panes",
+        about: "start a pane's program again in the same tile",
+        args: "[COMMAND]",
+        flags: &[
+            TARGET_PANE,
+            Flag {
+                short: Some("-k"),
+                long: "--kill",
+                arg: None,
+                about: "kill the program first if it still runs",
+            },
+        ],
+        examples: &["ttmux respawn-pane -t %3", "ttmux respawn-pane -k -- htop"],
+    },
+    Spec {
         name: "list-panes",
         group: "panes",
         about: "one line per pane",
@@ -572,6 +588,7 @@ pub const ALIASES: &[(&str, &str, &[&str])] = &[
     ("joinp", "join-pane", &[]),
     ("breakp", "break-pane", &[]),
     ("killp", "kill-pane", &[]),
+    ("respawnp", "respawn-pane", &[]),
     ("lsp", "list-panes", &[]),
     ("neww", "new-window", &[]),
     ("selectw", "select-window", &[]),
@@ -832,6 +849,12 @@ pub enum Cmd {
         name: String,
     },
     KillPane(Option<PaneId>),
+    RespawnPane {
+        target: Option<PaneId>,
+        /// Kill the program if it still runs, rather than refuse.
+        kill: bool,
+        command: Option<String>,
+    },
     ListPanes {
         all: bool,
         json: bool,
@@ -1076,6 +1099,15 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             let target = a.pane_target()?;
             a.end(verb)?;
             Cmd::KillPane(target)
+        }
+        "respawn-pane" => {
+            let target = a.pane_target()?;
+            let kill = a.flag(&["-k", "--kill"]);
+            Cmd::RespawnPane {
+                target,
+                kill,
+                command: a.command(verb)?,
+            }
         }
         "list-panes" => {
             let all = a.flag(&["-a", "--all"]);
@@ -1794,6 +1826,26 @@ mod tests {
         assert_eq!(
             parsed("split-window -d -h"),
             parsed("split-window --horizontal --detached")
+        );
+    }
+
+    #[test]
+    fn respawn_pane_takes_a_target_kill_and_command() {
+        assert_eq!(
+            parsed("respawn-pane -k -t %2 htop -d 5"),
+            Cmd::RespawnPane {
+                target: Some(2),
+                kill: true,
+                command: Some("htop -d 5".into()),
+            }
+        );
+        assert_eq!(
+            parsed("respawnp"),
+            Cmd::RespawnPane {
+                target: None,
+                kill: false,
+                command: None,
+            }
         );
     }
 

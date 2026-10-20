@@ -278,6 +278,28 @@ Close a pane.
 ttmux kill-pane -t %3
 ```
 
+### respawn-pane
+
+```
+ttmux respawn-pane [-t PANE] [-k] [COMMAND]
+```
+
+Start a pane's program again in the same tile. The pane keeps its id, its
+title and its `@` options. With no COMMAND, the pane runs what it first ran,
+in the directory it first started in. A pane whose program still runs is left
+alone unless `-k` is given. Set `general.remain-on-exit = true` to keep panes
+on screen after their program exits, so that they can be respawned.
+
+| Flag | Meaning |
+|---|---|
+| `-t`, `--target PANE` | the pane to act on. Default is the focused one |
+| `-k`, `--kill` | kill the program first if it still runs |
+
+```
+ttmux respawn-pane -t %3
+ttmux respawn-pane -k -- htop
+```
+
 ### list-panes
 
 ```
@@ -285,7 +307,8 @@ ttmux list-panes [-a] [--json] [-F FORMAT]
 ```
 
 One line per pane. The JSON and `-F` forms also give each pane's process id
-and working directory, as `pid` and `cwd`.
+and working directory, as `pid` and `cwd`, and `dead`, which is true when the
+pane's program has exited and `remain-on-exit` kept it.
 
 | Flag | Meaning |
 |---|---|
@@ -614,6 +637,7 @@ tmux's names work too, so a tmux format string runs as written:
 | pane | `window` | `window_index` |
 | pane | `pid` | `pane_pid` |
 | pane | `cwd` | `pane_current_path` |
+| pane | `dead` | `pane_dead` |
 | pane | `options` | `@name`, one option each |
 | window | `index` | `window_index` |
 | window | `name` | `window_name` |

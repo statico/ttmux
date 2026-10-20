@@ -106,6 +106,10 @@ pub struct PaneSnap {
     pub title_override: Option<String>,
     #[serde(default)]
     pub options: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub start_dir: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub start_command: Option<String>,
     /// Escape codes that reproduce what is on the pane's screen, plus
     /// anything the old server had read but not yet drawn.
     #[serde(default, with = "crate::proto::text_bytes")]

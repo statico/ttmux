@@ -378,6 +378,10 @@ pub struct Pane {
     pub title_override: Option<String>,
     /// tmux's pane user options, `@name` to value, set by scripts.
     pub options: std::collections::BTreeMap<String, String>,
+    /// Where the pane was started and what it was started with, which
+    /// `respawn-pane` repeats.
+    pub start_dir: Option<PathBuf>,
+    pub start_command: Option<String>,
 
     parser: vt100::Parser<Sink>,
     scanner: Scanner,
@@ -419,7 +423,7 @@ impl Pane {
             Some(c) => cmd.args(["-c", c]),
             None => cmd.args(&cfg.general.shell_args),
         }
-        if let Some(dir) = cwd {
+        if let Some(dir) = &cwd {
             cmd.cwd(dir);
         }
         cmd.env("TERM", "xterm-256color");
@@ -441,7 +445,10 @@ impl Pane {
                 None => cmd.env_remove(k),
             }
         }
-        Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)
+        let mut pane = Pane::spawn_cmd(id, cmd, cfg.general.scrollback, cols, rows)?;
+        pane.start_dir = cwd;
+        pane.start_command = command.map(String::from);
+        Ok(pane)
     }
 
     /// Test/headless constructor: runs `cmd` instead of the shell.
@@ -515,6 +522,8 @@ impl Pane {
             bell: false,
             title_override: None,
             options: Default::default(),
+            start_dir: None,
+            start_command: None,
             parser,
             scanner: Scanner::new(),
             images: RefCell::new(Vec::new()),
@@ -707,8 +716,12 @@ impl Pane {
     }
 
     /// The title, then the progress and message the child reported, if any.
+    /// A pane kept after its program exited says so instead.
     pub fn border_title(&self) -> String {
         let title = self.title();
+        if let Some(code) = self.exit_status() {
+            return format!("{title} · exited {code}");
+        }
         match self.parser.callbacks().reports.note() {
             Some(note) => format!("{title} · {note}"),
             None => title,

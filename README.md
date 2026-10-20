@@ -246,6 +246,7 @@ passthrough-images = true    # kitty, iTerm2, and sixel inline images
 clipboard = true             # programs may copy with OSC 52
 notifications = true         # programs may send OSC 9, 99, and 777
 copy-mode = false            # tmux's copy mode and mouse-drag copy
+remain-on-exit = false       # keep a pane after its program exits, for respawn-pane
 update-environment = ["SSH_AUTH_SOCK", "DISPLAY"]  # taken from each client that attaches
 
 [appearance]

@@ -566,8 +566,7 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         // Real size is pushed by sync_sizes once the layout knows about it.
-        let mut pane = Pane::spawn(id, &self.cfg, cwd, command, 80, 24, &self.env)?;
-        pane.set_colours(self.colours.clone());
+        let pane = self.start_pane(id, cwd, command, 80, 24)?;
         self.slots.insert(
             id,
             Slot {
@@ -578,6 +577,42 @@ impl App {
             },
         );
         Ok(id)
+    }
+
+    fn start_pane(
+        &self,
+        id: PaneId,
+        cwd: Option<PathBuf>,
+        command: Option<&str>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<Pane> {
+        let mut pane = Pane::spawn(id, &self.cfg, cwd, command, cols, rows, &self.env)?;
+        pane.set_colours(self.colours.clone());
+        Ok(pane)
+    }
+
+    /// Start a pane's program again in the same place, as tmux's
+    /// `respawn-pane`: the id, the tile and the @options stay.
+    fn respawn_pane(&mut self, id: PaneId, kill: bool, command: Option<String>) -> Result<()> {
+        let old = &self.slots.get(&id).context("no such pane")?.pane;
+        if !kill && !old.is_dead() {
+            bail!("%{id} is still running; -k kills it first");
+        }
+        let cwd = old.start_dir.clone().or_else(|| old.cwd());
+        let command = command.or_else(|| old.start_command.clone());
+        let mut pane = self.start_pane(id, cwd, command.as_deref(), old.cols, old.rows)?;
+        let slot = self.slots.get_mut(&id).context("no such pane")?;
+        pane.options = std::mem::take(&mut slot.pane.options);
+        pane.title_override = slot.pane.title_override.take();
+        // Dropping the old pane kills what is left of it.
+        *slot = Slot {
+            pane,
+            watcher: Watcher::new(),
+            state: AgentState::Idle,
+            images: vec![],
+        };
+        Ok(())
     }
 
     // ---------------------------------------------------------- handover
@@ -618,6 +653,8 @@ impl App {
                 name: slot.pane.program().to_string(),
                 title_override: slot.pane.title_override.clone(),
                 options: slot.pane.options.clone(),
+                start_dir: slot.pane.start_dir.clone(),
+                start_command: slot.pane.start_command.clone(),
                 replay,
             });
             fds.push(fd);
@@ -682,6 +719,8 @@ impl App {
             if let Some(slot) = app.slots.get_mut(&p.id) {
                 slot.pane.title_override = p.title_override;
                 slot.pane.options = p.options;
+                slot.pane.start_dir = p.start_dir;
+                slot.pane.start_command = p.start_command;
             }
         }
         // The active tab's index once the tabs before it that did not make it
@@ -788,6 +827,9 @@ impl App {
 
     /// Reap panes whose child exited.
     fn reap(&mut self) {
+        if self.cfg.general.remain_on_exit {
+            return;
+        }
         let dead: Vec<PaneId> = self
             .slots
             .iter()
@@ -1133,6 +1175,15 @@ impl App {
                 Ok(String::new())
             }
             Cmd::ShowOptions { key, json } => self.show_options(key.as_deref(), json),
+            Cmd::RespawnPane {
+                target,
+                kill,
+                command,
+            } => {
+                let id = self.pane_or_focus(target)?;
+                self.respawn_pane(id, kill, command)?;
+                Ok(String::new())
+            }
             Cmd::SetPaneOption { target, key, value } => {
                 let id = self.pane_or_focus(target)?;
                 let options = &mut self
@@ -1195,6 +1246,7 @@ impl App {
                         "pid": pane.and_then(Pane::pid),
                         "cwd": pane.and_then(Pane::cwd),
                         "options": pane.map(|p| p.options.clone()).unwrap_or_default(),
+                        "dead": pane.is_some_and(Pane::is_dead),
                     })
                 })
                 .collect();
@@ -4138,6 +4190,28 @@ mod tests {
             a.on_key(key(c)).unwrap();
         }
         assert_eq!(a.paste_buffer, "foo.bar");
+    }
+
+    #[test]
+    fn remain_on_exit_keeps_a_dead_pane_for_respawn() {
+        let mut a = app_running("exit 3");
+        a.cfg.general.remain_on_exit = true;
+        let id = a.focus();
+        assert!(pump_until(&mut a, |a| a.slots[&id].pane.is_dead()));
+        a.reap();
+        assert!(a.slots.contains_key(&id));
+        assert!(a.slots[&id].pane.border_title().ends_with("exited 3"));
+        let out = run(&mut a, "list-panes --json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["panes"][0]["dead"], true);
+
+        run(&mut a, "respawn-pane sleep 60").unwrap();
+        assert_eq!(a.focus(), id);
+        assert!(!a.slots[&id].pane.is_dead());
+        let err = run(&mut a, "respawn-pane").unwrap_err();
+        assert!(err.to_string().contains("still running"), "{err}");
+        run(&mut a, "respawn-pane -k").unwrap();
+        assert_eq!(a.slots[&id].pane.start_command.as_deref(), Some("sleep 60"));
     }
 
     #[test]
