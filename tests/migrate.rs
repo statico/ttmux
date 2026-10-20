@@ -143,10 +143,13 @@ fn upgrade_keeps_every_pane_and_window() {
     };
     let before = panes();
     assert_eq!(before.len(), 3, "expected three panes: {before:?}");
+    assert!(s.run(&["set-option", "@slot", "7"]).status.success());
 
     s.upgrade();
 
     assert_eq!(before, panes(), "the layout changed across the handover");
+    let slot = s.run(&["list-panes", "-F", "#{@slot}"]).stdout;
+    assert_eq!(String::from_utf8_lossy(&slot).trim(), "7");
 }
 
 #[test]

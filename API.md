@@ -504,7 +504,7 @@ ttmux show-options appearance.gap
 ### set-option
 
 ```
-ttmux set-option KEY VALUE
+ttmux set-option [-p] [-t PANE] [-u] KEY [VALUE]
 ```
 
 Write one dotted key into the config file, which reloads at once. The key
@@ -516,12 +516,26 @@ whole file. Comments you wrote in it are lost, and the keys come back in
 alphabetical order. The settings screen does the same thing. Keep the file
 in version control if the comments matter.
 
-This command takes no flags.
+A key that starts with `@` is a pane option instead, as tmux's
+`set-option -p` has them. It is a string kept on the pane, not in the
+config file, and it goes when the pane closes. `list-panes` shows it under
+`options` in its JSON, and as `#{@name}` in a format. `-u` removes one.
+
+| Flag | Meaning |
+|---|---|
+| `-p`, `--pane` | set an @option on a pane instead, kept until the pane closes |
+| `-t`, `--target PANE` | the pane to act on. Default is the focused one |
+| `-u`, `--unset` | remove a pane's @option |
+
+Give the flags before the key, so a binding's value can hold flags of its
+own.
 
 ```
 ttmux set-option appearance.border_style divider
 ttmux set-option appearance.gap 1
-ttmux set-option 'keys.ctrl+t g' 'run toggle-zoom'
+ttmux set-option 'keys.ctrl+t g' toggle-zoom
+ttmux set-option -p -t %3 @slot 3
+ttmux list-panes -F '#{pane_id} #{@slot}'
 ```
 
 ### list-keys
@@ -590,6 +604,7 @@ tmux's names work too, so a tmux format string runs as written:
 | pane | `window` | `window_index` |
 | pane | `pid` | `pane_pid` |
 | pane | `cwd` | `pane_current_path` |
+| pane | `options` | `@name`, one option each |
 | window | `index` | `window_index` |
 | window | `name` | `window_name` |
 | window | `panes` | `window_panes` |

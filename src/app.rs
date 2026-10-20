@@ -617,6 +617,7 @@ impl App {
                 rows: slot.pane.rows,
                 name: slot.pane.program().to_string(),
                 title_override: slot.pane.title_override.clone(),
+                options: slot.pane.options.clone(),
                 replay,
             });
             fds.push(fd);
@@ -680,6 +681,7 @@ impl App {
             );
             if let Some(slot) = app.slots.get_mut(&p.id) {
                 slot.pane.title_override = p.title_override;
+                slot.pane.options = p.options;
             }
         }
         // The active tab's index once the tabs before it that did not make it
@@ -1118,6 +1120,20 @@ impl App {
                 Ok(String::new())
             }
             Cmd::ShowOptions { key, json } => self.show_options(key.as_deref(), json),
+            Cmd::SetPaneOption { target, key, value } => {
+                let id = self.pane_or_focus(target)?;
+                let options = &mut self
+                    .slots
+                    .get_mut(&id)
+                    .ok_or_else(|| anyhow::anyhow!("no pane %{id}"))?
+                    .pane
+                    .options;
+                match value {
+                    Some(v) => options.insert(key, v),
+                    None => options.remove(&key),
+                };
+                Ok(String::new())
+            }
             Cmd::SetOption { key, value } => {
                 self.set_option(&key, &value)?;
                 Ok(String::new())
@@ -1165,6 +1181,7 @@ impl App {
                         "active": active,
                         "pid": pane.and_then(Pane::pid),
                         "cwd": pane.and_then(Pane::cwd),
+                        "options": pane.map(|p| p.options.clone()).unwrap_or_default(),
                     })
                 })
                 .collect();
@@ -4116,6 +4133,23 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["panes"][0]["pid"], pid);
         assert_eq!(v["panes"][0]["cwd"], "/");
+    }
+
+    #[test]
+    fn a_pane_option_shows_in_list_panes_and_closes_with_the_pane() {
+        let mut a = app();
+        let first = a.focus();
+        run(&mut a, "split-window").unwrap();
+        run(&mut a, &format!("set-option -p -t %{first} @slot 3")).unwrap();
+        run(&mut a, "set-option -p @slot 4").unwrap();
+        run(&mut a, "set-option -p @gone x").unwrap();
+        run(&mut a, "set-option -p -u @gone").unwrap();
+        let out = run(&mut a, "list-panes -F #{pane_id}=#{@slot}#{@gone}").unwrap();
+        assert_eq!(out.trim(), format!("%{first}=3\n%{}=4", a.focus()));
+        let out = run(&mut a, "list-panes --json").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["panes"][0]["options"], serde_json::json!({"@slot": "3"}));
+        assert!(run(&mut a, "set-option -p -t %99 @slot 1").is_err());
     }
 
     #[test]

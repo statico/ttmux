@@ -490,12 +490,27 @@ pub const COMMANDS: &[Spec] = &[
     Spec {
         name: "set-option",
         group: "session",
-        about: "write one dotted key into the config file, which reloads at once",
-        args: "KEY VALUE",
-        flags: &[],
+        about: "write one dotted key into the config file, or set a pane's @option",
+        args: "KEY [VALUE]",
+        flags: &[
+            Flag {
+                short: Some("-p"),
+                long: "--pane",
+                arg: None,
+                about: "set an @option on a pane instead, kept until the pane closes",
+            },
+            TARGET_PANE,
+            Flag {
+                short: Some("-u"),
+                long: "--unset",
+                arg: None,
+                about: "remove a pane's @option",
+            },
+        ],
         examples: &[
             "ttmux set-option appearance.border_style divider",
             "ttmux set-option appearance.gap 1",
+            "ttmux set-option -p -t %3 @slot 3",
         ],
     },
     Spec {
@@ -720,6 +735,7 @@ pub fn format_row(format: &str, row: &serde_json::Value) -> String {
             .get(key)
             .or_else(|| row.get(bare))
             .or_else(|| row.get(alias))
+            .or_else(|| row.get("options")?.get(key))
         {
             Some(serde_json::Value::String(s)) => s.clone(),
             Some(serde_json::Value::Bool(b)) => u8::from(*b).to_string(),
@@ -841,6 +857,12 @@ pub enum Cmd {
     ShowOptions {
         key: Option<String>,
         json: bool,
+    },
+    /// tmux's `set-option -p @name value`: `None` unsets it.
+    SetPaneOption {
+        target: Option<PaneId>,
+        key: String,
+        value: Option<String>,
     },
     SetOption {
         key: String,
@@ -1127,16 +1149,46 @@ pub fn parse(verb: &str, args: &[String]) -> Result<Cmd> {
             }
         }
         "set-option" => {
+            // Flags only before the key: a binding's value is a command
+            // line, and its own flags are not set-option's.
+            let (mut pane, mut unset, mut target) = (false, false, None);
+            while let Some(w) = a.words.first().filter(|w| w.starts_with('-')) {
+                match w.as_str() {
+                    "-p" | "--pane" => pane = a.flag(&["-p", "--pane"]),
+                    "-u" | "--unset" => unset = a.flag(&["-u", "--unset"]),
+                    "-t" | "--target" => target = a.pane_target()?,
+                    w if w.starts_with("--target=") => target = a.pane_target()?,
+                    w => bail!("set-option: unexpected argument {w}"),
+                }
+            }
             let words = a.rest();
             let Some((key, value)) = words.split_first() else {
                 bail!("set-option needs a key and a value");
             };
-            if value.is_empty() {
-                bail!("set-option needs a value for {key}");
-            }
-            Cmd::SetOption {
-                key: key.clone(),
-                value: value.join(" "),
+            let value = value.join(" ");
+            if key.starts_with('@') {
+                if key.len() == 1 {
+                    bail!("set-option needs a name after @");
+                }
+                if unset != value.is_empty() {
+                    bail!("set-option {key} takes a value, or -u and none");
+                }
+                Cmd::SetPaneOption {
+                    target,
+                    key: key.clone(),
+                    value: (!unset).then_some(value),
+                }
+            } else {
+                if pane || unset || target.is_some() {
+                    bail!("only @options belong to a pane, and {key} is not one");
+                }
+                if value.is_empty() {
+                    bail!("set-option needs a value for {key}");
+                }
+                Cmd::SetOption {
+                    key: key.clone(),
+                    value,
+                }
             }
         }
         "list-keys" => {
@@ -1697,6 +1749,38 @@ mod tests {
         assert_eq!(
             parsed("split-window -d -h"),
             parsed("split-window --horizontal --detached")
+        );
+    }
+
+    #[test]
+    fn set_option_sets_a_pane_option_only_for_an_at_name() {
+        assert_eq!(
+            parsed("set-option -p -t %3 @slot 3"),
+            Cmd::SetPaneOption {
+                target: Some(3),
+                key: "@slot".into(),
+                value: Some("3".into()),
+            }
+        );
+        assert_eq!(
+            parsed("set -u @slot"),
+            Cmd::SetPaneOption {
+                target: None,
+                key: "@slot".into(),
+                value: None,
+            }
+        );
+        assert!(fails("set-option -p general.mouse true"));
+        assert!(fails("set-option -u @slot 3"));
+        assert!(fails("set-option @slot"));
+        assert!(fails("set-option @ 3"));
+        // A binding's own flags are its value, not set-option's.
+        assert_eq!(
+            parsed("set-option keys.alt+3 command select-pane -t %3"),
+            Cmd::SetOption {
+                key: "keys.alt+3".into(),
+                value: "command select-pane -t %3".into(),
+            }
         );
     }
 

@@ -376,6 +376,8 @@ pub struct Pane {
     /// Sticky bell flag, cleared by the app.
     pub bell: bool,
     pub title_override: Option<String>,
+    /// tmux's pane user options, `@name` to value, set by scripts.
+    pub options: std::collections::BTreeMap<String, String>,
 
     parser: vt100::Parser<Sink>,
     scanner: Scanner,
@@ -512,6 +514,7 @@ impl Pane {
             seen_scrolled_off: parser.screen().scrolled_off(),
             bell: false,
             title_override: None,
+            options: Default::default(),
             parser,
             scanner: Scanner::new(),
             images: RefCell::new(Vec::new()),
