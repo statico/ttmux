@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.0 — 2026-10-19
+
+Thanks to @benjmin-r and @justinstimatze, whose issues asked for every
+change in this release.
+
+- A pane one row high no longer panics when its text wraps, as a client
+  started on a 0x0 pty did (#2).
+- Moving focus with a direction goes back to the pane it came from when
+  that pane is a candidate, as in tmux. `last-pane` (`ctrl+b ;` in the
+  tmux preset, or `select-pane -l`) jumps to it (#3).
+- Copy mode moves by vi words with `w`, `b` and `e` (#4).
+- Scripts can tag panes with tmux's `@` options:
+  `set-option -p -t %3 @slot 3`. They show in `list-panes` and in `-F`
+  formats as `#{@slot}`, and they survive an upgrade (#5).
+- `list-panes` gives each pane's `pid` and `cwd` (`#{pane_pid}`,
+  `#{pane_current_path}`) (#6).
+- `general.remain-on-exit` keeps a pane on screen after its program
+  exits, marked `dead` in `list-panes`, and `respawn-pane [-k] [COMMAND]`
+  starts it again in the same tile (#7).
+- `split-window -d` and `new-window -d` leave focus where it is (#8).
+- A key can run a command when it is pressed, through the `command`
+  action, and `select-pane --where @slot=3` finds a pane by its option:
+  `"alt+3" = "command select-pane --where @slot=3"` (#9).
+- Dependencies are updated.
+
 ## 0.8.1 — 2026-10-13
 
 - A client on a slow link no longer freezes on its last frame while its
