@@ -58,7 +58,8 @@ The steps are in `timeline()` in `record.py`:
 - **Draw block, box and braille characters as shapes, not with a font.** If you use a font, `mpv --vo=tct` and `cmatrix` show lines between the cells.
 - **The mouse positions are fixed for 170×48.** If you change the size, the layout, or the timeline before a drag, run `record.py --until N --keep` and look at `ttmux capture-pane` to get the new cells. `FREE_MPV` and `FREE_CMX` are for the free-mode drags.
 - **Claude runs `sleep` in the background,** so "run sleep 30" ends immediately. We ask it to count tests per file, which keeps it busy for some seconds.
-- **A GIF is too large.** The full video as a GIF is 13 to 23 MB, even at 640 px and 10 fps. The AVIF is about 8 MB at 1280 px and 30 fps. Browsers without AVIF show the PNG poster.
+- **A GIF is too large.** The full video as a GIF is 13 to 23 MB, even at 640 px and 10 fps. The AVIF is about 12 MB at 1024 px and 20 fps. Browsers without AVIF show the PNG poster.
+- **Put a keyframe in every second of the AVIF.** With one keyframe every 10 s, the browser drops frames and plays slowly after some seconds.
 - **ffmpeg times are not QuickTime times.** The frame for the social card is at 36.575 s (`SOCIAL_AT` in `make.sh`), when cmatrix fills its window and the crabs float. At 37.0 s free mode is already off.
 - **Live screen capture did not work in the sandbox:** ffmpeg's avfoundation input stopped and did not continue. This is a reason for the record-and-render method.
 

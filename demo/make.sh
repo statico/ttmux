@@ -34,10 +34,11 @@ render() {
 }
 
 web() {
-  # An animated AVIF: the whole video at 1280px is ~8MB, where a GIF of it
-  # is 13MB even at 640px and 10fps.
-  ffmpeg -v error -y -i "$OUT/demo.mov" -vf "scale=1280:-2:flags=lanczos,format=yuv420p" \
-    -c:v libsvtav1 -crf 38 -preset 6 -g 300 -loop 0 "$REPO/docs/demo.avif"
+  # An animated AVIF: the whole video is ~12MB, where a GIF of it is 13MB
+  # even at 640px and 10fps. A keyframe every second: with sparse ones,
+  # browsers drop frames and slow down partway through.
+  ffmpeg -v error -y -i "$OUT/demo.mov" -vf "fps=20,scale=1024:-2:flags=lanczos,format=yuv420p" \
+    -c:v libsvtav1 -crf 38 -preset 6 -g 20 -loop 0 "$REPO/docs/demo.avif"
   # Shown where AVIF isn't supported.
   ffmpeg -v error -y -ss "$SOCIAL_AT" -i "$OUT/demo.mov" -frames:v 1 -vf scale=1280:-2 "$REPO/docs/demo-poster.png"
 }
