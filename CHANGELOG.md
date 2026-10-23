@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.1 — 2026-10-23
+
+- `cargo install --git https://github.com/statico/ttmux` works again. In
+  0.10.0 it failed with "multiple packages with binaries found", because
+  the renderer for the demo video was a second binary in the repo. It is
+  now a cargo example, which `cargo install` does not count.
+
 ## 0.10.0 — 2026-10-22
 
 - Drag a tab along the status bar to reorder the tabs. When you press a
