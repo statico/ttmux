@@ -2,6 +2,16 @@
 name = "castrender"
 version = "0.1.0"
 edition = "2021"
+# An example rather than a binary: `cargo install --git` refuses a repo
+# with two binary packages in it.
+autoexamples = false
+
+[lib]
+path = "lib.rs"
+
+[[example]]
+name = "castrender"
+path = "examples/castrender.rs"
 
 [workspace]
 
