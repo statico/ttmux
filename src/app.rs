@@ -4211,11 +4211,12 @@ mod tests {
     fn copy_mode_copies_by_keys_and_by_drag_only_when_on() {
         let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
         let mut a = app_running("printf 'one\\ntwo\\n'; sleep 60");
-        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
-            .pane
-            .screen()
-            .contents()
-            .contains("two")));
+        // Wait for the newline after "two" too: the keys below count from
+        // the cursor, and it sits at the end of "two" until that arrives.
+        assert!(pump_until(&mut a, |a| {
+            let screen = a.slots[&a.focus()].pane.screen();
+            screen.contents().contains("two") && screen.cursor_position() == (2, 0)
+        }));
         let id = a.focus();
         let inner = a.inner(id, a.tabs[0].layout.rect_of(id).unwrap());
         let mouse = |kind, dx| MouseEvent {
