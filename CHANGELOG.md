@@ -1,9 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-10-22
 
-- Drag a tab along the status bar to reorder the tabs. A pressed tab
-  shows as held until you let go.
+- Drag a tab along the status bar to reorder the tabs. When you press a
+  tab, it is selected and drawn as held (accent-coloured, bold and
+  underlined) until you let go. A tab moves only when the pointer would
+  still be on it after the move, so tabs of different widths do not swap
+  back and forth. While you hold a tab, the panes get no mouse events.
+- The README has a new demo video, and the social preview image uses a
+  frame from it. `demo/` holds the scripts that make them.
 
 ## 0.9.0 — 2026-10-19
 
