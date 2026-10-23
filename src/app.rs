@@ -274,6 +274,8 @@ pub struct App {
     /// Hitboxes published by the last status draw, for mouse clicks. Both
     /// rows can list tabs, so the row is part of the box.
     tab_hits: Vec<(usize, u16, std::ops::Range<u16>)>,
+    /// The tab held down by the mouse, which a drag moves along the bar.
+    tab_grab: Option<usize>,
     area: Rect,
     session: String,
     /// Whether the last frame emitted any graphics, so a frame with none
@@ -410,6 +412,7 @@ impl App {
             cmd_history: vec![],
             message: None,
             tab_hits: vec![],
+            tab_grab: None,
             area,
             session: std::env::var("TTMUX_SESSION").unwrap_or_else(|_| "main".into()),
             caller: None,
@@ -2188,6 +2191,42 @@ impl App {
         }
     }
 
+    /// Move the grabbed tab `g` to the tab under (x, y). It moves only once
+    /// the pointer would still be on it afterwards, so tabs of different
+    /// widths do not swap back and forth under a still pointer.
+    fn drag_tab(&mut self, g: usize, x: u16, y: u16) {
+        let on_row = |i: usize| {
+            self.tab_hits
+                .iter()
+                .find(|(t, row, _)| *t == i && *row == y)
+                .map(|(_, _, r)| r.clone())
+        };
+        let (Some(held), Some((to, over))) = (
+            on_row(g),
+            self.tab_hits
+                .iter()
+                .find(|(_, row, r)| *row == y && r.contains(&x))
+                .map(|(i, _, r)| (*i, r.clone())),
+        ) else {
+            return;
+        };
+        let w = held.end - held.start;
+        let lands = if to > g {
+            x >= over.end.saturating_sub(w)
+        } else {
+            x < over.start + w
+        };
+        if to == g || !lands || g.max(to) >= self.tabs.len() {
+            return;
+        }
+        let t = self.tabs.remove(g);
+        self.tabs.insert(to, t);
+        // As with `move-tab`: `last_tab` names a position.
+        self.last_tab = None;
+        self.tab = to;
+        self.tab_grab = Some(to);
+    }
+
     fn on_mouse(&mut self, ev: MouseEvent) -> Result<()> {
         if !self.cfg.general.mouse {
             return Ok(());
@@ -2200,7 +2239,18 @@ impl App {
             return self.after_settings(out);
         }
 
-        // Status rows: click a tab.
+        // A held tab follows the pointer along the bar until let go,
+        // wherever the pointer wanders.
+        if let Some(g) = self.tab_grab {
+            match ev.kind {
+                MouseEventKind::Drag(_) => self.drag_tab(g, x, y),
+                MouseEventKind::Up(_) => self.tab_grab = None,
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Status rows: press a tab to select and grab it.
         if self.status_rows().iter().any(|(r, _)| r.contains(x, y)) {
             if let MouseEventKind::Down(MouseButton::Left) = ev.kind {
                 if let Some(i) = self
@@ -2210,6 +2260,7 @@ impl App {
                     .map(|(i, _, _)| *i)
                 {
                     self.select_tab(i);
+                    self.tab_grab = Some(i);
                 }
             }
             return Ok(());
@@ -2684,6 +2735,7 @@ impl App {
                     alerts,
                     message: self.message.as_ref().map(|(m, _)| m.as_str()),
                     pending_prefix: self.keys.pending(),
+                    grabbed: self.tab_grab,
                     custom: &custom,
                 };
                 for (r, bar) in rows {
@@ -3910,6 +3962,61 @@ mod tests {
         term.backend_mut().resize(40, 8);
         a.draw(&mut term, &mut host).unwrap();
         assert_eq!((a.area.w, a.area.h), (40, 8));
+    }
+
+    #[test]
+    fn dragging_a_tab_along_the_bar_reorders_the_tabs() {
+        let mut a = app();
+        for _ in 0..2 {
+            a.dispatch(Action::NewTab).unwrap();
+        }
+        for (t, n) in a.tabs.iter_mut().zip(["a", "bbbbbbbb", "c"]) {
+            t.name = n.into();
+            t.renamed = true;
+        }
+        let names = |a: &App| a.tabs.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut host = FakeHost::default();
+        a.draw(&mut term, &mut host).unwrap();
+        let hit = |a: &App, i: usize| a.tab_hits.iter().find(|h| h.0 == i).cloned().unwrap();
+        let (_, row, r) = hit(&a, 0);
+        let mouse = |kind, column| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        a.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), r.start))
+            .unwrap();
+        assert_eq!((a.tab, a.tab_grab), (0, Some(0)));
+        a.draw(&mut term, &mut host).unwrap();
+
+        // Just onto the wide tab's left edge: "a" would not be under the
+        // pointer after a swap, so it stays.
+        let wide = hit(&a, 1).2;
+        a.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), wide.start))
+            .unwrap();
+        assert_eq!(names(&a), ["a", "bbbbbbbb", "c"]);
+
+        a.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), wide.end - 1))
+            .unwrap();
+        assert_eq!(names(&a), ["bbbbbbbb", "a", "c"]);
+        a.draw(&mut term, &mut host).unwrap();
+        // Off the bar the grab holds, and nothing reaches the panes.
+        a.on_mouse(MouseEvent {
+            row: 5,
+            ..mouse(MouseEventKind::Drag(MouseButton::Left), 0)
+        })
+        .unwrap();
+        let last = hit(&a, 2).2;
+        a.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), last.end - 1))
+            .unwrap();
+        assert_eq!(names(&a), ["bbbbbbbb", "c", "a"]);
+        assert_eq!(a.tab, 2);
+        a.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), last.end - 1))
+            .unwrap();
+        assert_eq!(a.tab_grab, None);
     }
 
     #[test]

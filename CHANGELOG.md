@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Drag a tab along the status bar to reorder the tabs. A pressed tab
+  shows as held until you let go.
+
 ## 0.9.0 — 2026-10-19
 
 Thanks to @benjmin-r and @justinstimatze, whose issues asked for every

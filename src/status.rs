@@ -30,6 +30,8 @@ pub struct Ctx<'a> {
     pub alerts: usize,
     pub message: Option<&'a str>,
     pub pending_prefix: bool,
+    /// The tab held down by the mouse, drawn lifted off the bar.
+    pub grabbed: Option<usize>,
     /// What each custom widget last printed, by name. See [`crate::widget`].
     pub custom: &'a BTreeMap<String, String>,
 }
@@ -389,7 +391,10 @@ fn widget(name: &str, cfg: &StatusBar, ctx: &Ctx, base: Style) -> Vec<Span> {
             .iter()
             .enumerate()
             .map(|(i, (name, active))| {
-                let style = if *active {
+                let style = if ctx.grabbed == Some(i) {
+                    base.fg(cfg.accent.0)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else if *active {
                     base.bg(cfg.accent.0)
                         .fg(cfg.bg.0)
                         .add_modifier(Modifier::BOLD)
@@ -786,6 +791,7 @@ mod tests {
             alerts: 0,
             message: None,
             pending_prefix: false,
+            grabbed: None,
             custom: no_custom(),
         }
     }
