@@ -1,6 +1,6 @@
 # The README demo
 
-This directory makes `docs/demo.avif` (the video on the README), `docs/demo-poster.png` and the window on `docs/social-preview.png`.
+This directory makes `docs/demo.avif` (the video on the README), `docs/demo.mp4` (the same video for sites that do not take AVIF), `docs/demo-poster.png` (a still) and the window on `docs/social-preview.png`.
 
 ```sh
 demo/make.sh            # all steps

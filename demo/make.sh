@@ -39,7 +39,10 @@ web() {
   # browsers drop frames and slow down partway through.
   ffmpeg -v error -y -i "$OUT/demo.mov" -vf "fps=20,scale=1024:-2:flags=lanczos,format=yuv420p" \
     -c:v libsvtav1 -crf 38 -preset 6 -g 20 -loop 0 "$REPO/docs/demo.avif"
-  # Shown where AVIF isn't supported.
+  # For sites that take only GIF, MP4 or PNG (Terminal Trove, awesome lists).
+  ffmpeg -v error -y -i "$OUT/demo.mov" -vf "scale=1280:-2:flags=lanczos,format=yuv420p" \
+    -c:v libx264 -crf 26 -preset slow -movflags +faststart -an "$REPO/docs/demo.mp4"
+  # Shown where AVIF isn't supported, and the PNG still for those sites.
   ffmpeg -v error -y -ss "$SOCIAL_AT" -i "$OUT/demo.mov" -frames:v 1 -vf scale=1280:-2 "$REPO/docs/demo-poster.png"
 }
 
