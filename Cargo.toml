@@ -6,6 +6,11 @@ rust-version = "1.82"
 description = "A modern terminal multiplexer: tiling + free-floating panes, mouse, curved borders, in-UI config"
 license = "MIT"
 repository = "https://github.com/statico/ttmux"
+keywords = ["terminal", "multiplexer", "tmux", "tui", "pty"]
+categories = ["command-line-utilities"]
+# The demo videos are over the crates.io size limit. crates.io takes the
+# README's images from the repository instead.
+exclude = ["docs/", "demo/", ".github/"]
 
 [dependencies]
 anyhow = "1"
@@ -14,7 +19,7 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm",
 portable-pty = "0.9"
 # Forked for grapheme clusters, extended SGR and scrollback fixes; see
 # vendor/vt100/TTMUX.md.
-vt100 = { path = "vendor/vt100" }
+vt100 = { package = "ttmux-vt100", version = "0.16.2", path = "vendor/vt100" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"

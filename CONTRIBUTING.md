@@ -68,6 +68,17 @@ section is missing. Then:
 make tag        # runs the checks, tags v<version>, and pushes it
 ```
 
+After the tag is pushed, publish the crate:
+
+```bash
+cargo publish
+```
+
+If `vendor/vt100` changed since the last release, publish it first. Increase
+its `version` in `vendor/vt100/Cargo.toml` and in the `vt100` line of
+`Cargo.toml`. Then run `cargo publish --manifest-path vendor/vt100/Cargo.toml`.
+It is on crates.io as `ttmux-vt100`.
+
 The tag starts `.github/workflows/release.yml`. The workflow builds the four
 supported targets, attaches the tarballs to the release, and then updates the
 Homebrew formula in [statico/homebrew-tap](https://github.com/statico/homebrew-tap).

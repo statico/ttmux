@@ -12,8 +12,8 @@
 [package]
 edition = "2021"
 rust-version = "1.70"
-name = "vt100"
-version = "0.16.2-ttmux"
+name = "ttmux-vt100"
+version = "0.16.2"
 authors = ["Jesse Luehrs <doy@tozt.net>"]
 build = false
 include = [
@@ -21,14 +21,15 @@ include = [
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
+    "TTMUX.md",
 ]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Library for parsing terminal data"
-homepage = "https://github.com/doy/vt100-rust"
+description = "The fork of the vt100 crate that ttmux uses (emoji widths, scrollback and SGR fixes). See TTMUX.md."
+homepage = "https://github.com/statico/ttmux"
 readme = "README.md"
 keywords = [
     "terminal",
@@ -39,7 +40,7 @@ categories = [
     "encoding",
 ]
 license = "MIT"
-repository = "https://github.com/doy/vt100-rust"
+repository = "https://github.com/statico/ttmux"
 
 [lib]
 name = "vt100"
