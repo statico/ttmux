@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 — 2026-10-23
+
+ttmux is out of beta. This release has the same code as 0.10.1.
+
+- The README and `SECURITY.md` no longer call ttmux beta software. Only
+  the newest release gets fixes, as before.
+- The demo video is also in the repo as an MP4 (`docs/demo.mp4`), with a
+  PNG still (`docs/demo-poster.png`), for sites that do not show AVIF.
+
 ## 0.10.1 — 2026-10-23
 
 - `cargo install --git https://github.com/statico/ttmux` works again. In
