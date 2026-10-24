@@ -41,12 +41,12 @@ Prebuilt binaries for macOS and Linux are also on the
 
 ## Why
 
-tmux works well and has decades of muscle memory behind it. But a fresh tmux
-needs a `.tmux.conf` and plugins like
-[tmux-sensible](https://github.com/tmux-plugins/tmux-sensible) before it
-stops getting in the way. ttmux ships with those defaults.
+tmux works well, and many people know its keys. But a new tmux install
+needs a `.tmux.conf` file and plugins such as
+[tmux-sensible](https://github.com/tmux-plugins/tmux-sensible) before it is
+comfortable to use. ttmux has those defaults from the start.
 
-| | tmux, out of the box | ttmux |
+| | tmux, by default | ttmux |
 |---|---|---|
 | Escape key | a delay after <kbd>esc</kbd> (500ms before 3.5) | no delay, so vim leaves insert mode at once |
 | Scrollback | 2,000 lines | 10,000 lines |
@@ -57,15 +57,15 @@ stops getting in the way. ttmux ships with those defaults.
 | Modern keys | `extended-keys` off, so shift+enter is lost | kitty keyboard and modifyOtherKeys |
 | Images | sixel if built in, the rest need `allow-passthrough` | kitty, iTerm2, and sixel, even `mpv` video, and nothing but images |
 | Config | `.tmux.conf`, `source-file` by hand | TOML, reload with the prefix and <kbd>r</kbd>, or a settings screen |
-| Discovering keys | a list behind the prefix and `?` | a which-key popup and a command palette |
+| Help with keys | a list behind the prefix and `?` | a which-key popup and a command palette |
 | Layout | tiling | tiling or free-floating, drag and drop |
 | Agents | — | a per-pane busy, needs-you, or done mark |
 
 ## Keys
 
-On first start ttmux asks which keymap you want: Modern, tmux, or screen.
-Change it later in settings or with `general.keys-preset`, and rebind any
-key under `[keys]`.
+When you start ttmux for the first time, it asks which keymap you want:
+Modern, tmux, or screen. To change the keymap later, use the settings screen
+or `general.keys-preset`. To change one key, add it under `[keys]`.
 
 <details>
 <summary>Keys for each keymap</summary>
@@ -117,41 +117,51 @@ Every keymap also has these, with no prefix:
 
 Press the prefix and <kbd>?</kbd> in the app for the full list.
 
-tmux's copy mode is off by default, because programs like coding agents
-copy on their own and want the mouse drag. Set `general.copy-mode = true`
-and the scroll back key opens it: move with <kbd>h</kbd> <kbd>j</kbd>
-<kbd>k</kbd> <kbd>l</kbd> or by word with <kbd>w</kbd> <kbd>b</kbd>
-<kbd>e</kbd>, press <kbd>v</kbd> to start a selection and
-<kbd>y</kbd> to copy it, or <kbd>q</kbd> to leave. A mouse drag over a pane
-also copies. The copy goes to your clipboard and to a paste buffer that the
-prefix and <kbd>]</kbd> types back.
+Copy mode, as in tmux, is off by default. Programs such as coding agents
+do their own copy, and they need the mouse drag for it. To use copy mode,
+set `general.copy-mode = true`. Then the scroll back key opens it:
 
-Hold the prefix and a popup lists what can follow it, like which-key in
-neovim. Turn it off with `general.which-key = false`.
+- Move with <kbd>h</kbd> <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>, or by word
+  with <kbd>w</kbd> <kbd>b</kbd> <kbd>e</kbd>.
+- Press <kbd>v</kbd> to start a selection, and <kbd>y</kbd> to copy it.
+- Press <kbd>q</kbd> to leave.
+
+A mouse drag over a pane also copies. The copied text goes to your
+clipboard and to a paste buffer. The prefix and <kbd>]</kbd> type the
+paste buffer into the pane.
+
+After you press the prefix, a popup shows the keys that can come next, as
+which-key does in neovim. To disable the popup, set
+`general.which-key = false`.
 
 The prefix and <kbd>:</kbd> open a command line for the scripting
-commands below. <kbd>Tab</kbd> completes a command or a flag, and the row
-above shows the usage of the command you are typing.
+commands below. <kbd>Tab</kbd> completes a command or a flag. The row above
+the command line shows the usage of the current command.
 
-A name you type is yours. A program can set a title with an escape
-sequence, but that title never replaces a name you set, and it names the
-pane, not the tab. The tab takes the title only while it holds one pane.
+A program can set a title with an escape sequence. This title goes on the
+pane, not on the tab, and it never replaces a name that you set. A tab shows
+the title of its pane only when the tab has one pane.
 
 Every text field takes the readline keys, including <kbd>ctrl+a</kbd>,
 <kbd>ctrl+e</kbd>, <kbd>ctrl+w</kbd>, <kbd>ctrl+k</kbd>, <kbd>ctrl+u</kbd>,
-<kbd>ctrl+y</kbd>, <kbd>alt+b</kbd>, and <kbd>alt+f</kbd>. Lists move with
-<kbd>ctrl+n</kbd> and <kbd>ctrl+p</kbd>, and <kbd>ctrl+g</kbd> cancels.
+<kbd>ctrl+y</kbd>, <kbd>alt+b</kbd>, and <kbd>alt+f</kbd>. In a list,
+<kbd>ctrl+n</kbd> and <kbd>ctrl+p</kbd> move the selection, and
+<kbd>ctrl+g</kbd> cancels.
 
 ## Free mode
 
-<kbd>ctrl+alt+f</kbd> turns the grid of panes into a window manager. Drag a
-title bar to move a pane. Drag any corner to resize it. Click to raise it.
-Tiling mode gets the same mouse support for dividers. Grab the line between
-two panes and drag it.
+<kbd>ctrl+alt+f</kbd> changes the grid of panes into floating windows.
+Drag a title bar to move a pane. Drag a corner to resize it. Click a pane to
+bring it to the front.
+
+In tiling mode, drag the line between two panes to resize them. Drag a pane
+by its title onto the side of another pane to move it there. Drag a tab
+along the status bar to change the order of the tabs.
 
 ## Sessions
 
-ttmux works like tmux. The server keeps your panes alive after you detach.
+Sessions work as in tmux. The server keeps your panes alive after you
+detach.
 
 ```
 ttmux                       # attach to the default session, or start it
@@ -183,8 +193,9 @@ one of them, new panes do not get it either.
 
 ## Scripting
 
-Every pane can drive the session it lives in. The commands are tmux's, so a
-tmux script mostly runs unchanged.
+A program in a pane can control the session of that pane. The commands
+have the same names and flags as in tmux, so most tmux scripts work without
+a change.
 
 <details>
 <summary>The commands</summary>
@@ -206,24 +217,28 @@ ttmux run toggle-zoom                     # any key-binding action
 
 </details>
 
-A target is a pane id from `list-panes`, or a window number counted from 1.
-With no target the command acts on the pane it was run from, or the focused
-pane outside ttmux. The session is the one `$TTMUX_SESSION` names, which
-every pane already has set. `ttmux --help` prints the full list.
+A target is a pane id from `list-panes`, or a window number that starts
+at 1. If a command has no target, it acts on the pane that it runs in.
+Outside ttmux, it acts on the focused pane. The command uses the session in
+`$TTMUX_SESSION`, which ttmux sets in every pane. `ttmux --help` prints the
+full list.
 
 [API.md](API.md) is the full reference: every command, every flag, the exit
-codes, and recipes. `ttmux <command> --help` prints one command, and
-`ttmux list-commands --json` prints the whole API for an agent to read.
+codes, and examples. `ttmux <command> --help` prints the help for one
+command. `ttmux list-commands --json` prints the full API in a form that a
+program can read.
 
 ## Config
 
-The file is `~/.config/ttmux/ttmux.toml`. ttmux writes it for you on the
-first save. Every key in it is also in the settings screen, so the file is
-for version control and the screen is for changes.
+The config file is `~/.config/ttmux/ttmux.toml`. ttmux writes it when you
+first save in the settings screen. Every key in the file is also in the
+settings screen. You can keep the file in version control and make changes
+in the screen.
 
 After you edit the file, press the prefix and <kbd>r</kbd> to reload it.
-ttmux does not reload it on its own, because widget commands in it run as
-you, and a program that writes the file should not get them run unasked.
+ttmux does not reload the file automatically. The widget commands in the
+file run as your user, so a program that changes the file must not be able
+to start them.
 
 <details>
 <summary>An example config</summary>
@@ -233,10 +248,10 @@ you, and a program that writes the file should not get them run unasked.
 mouse = true
 scrollback = 10000
 free-mode = false
-keys-preset = "vim"          # vim | tmux | screen
+keys-preset = "vim"          # vim (Modern) | tmux | screen
 passthrough-images = true    # kitty, iTerm2, and sixel inline images
-clipboard = true             # programs may copy with OSC 52
-notifications = true         # programs may send OSC 9, 99, and 777
+clipboard = true             # programs can copy with OSC 52
+notifications = true         # programs can send OSC 9, 99, and 777
 copy-mode = false            # tmux's copy mode and mouse-drag copy
 remain-on-exit = false       # keep a pane after its program exits, for respawn-pane
 update-environment = ["SSH_AUTH_SOCK", "DISPLAY"]  # taken from each client that attaches
@@ -269,8 +284,8 @@ busy-spinner = "braille"   # none, braille, circle, line, dots
 
 ## Custom widgets
 
-A widget runs a shell command and shows what it prints. Give it a name under
-`[status.widgets]`, then put that name in a row.
+A widget runs a shell command and shows the output in the status bar. Give
+the widget a name under `[status.widgets]`. Then put that name in a row.
 
 <details>
 <summary>How widgets work</summary>
@@ -285,42 +300,47 @@ command = "df -h / | awk 'NR==2 {print $5}'"
 interval = 60               # seconds between runs, 0 runs it once
 ```
 
-The command runs with `sh -c`, so pipes, globs and `~` work. ttmux uses the
-first line of the output. tmux markup such as `#[fg=red,bold]` is honored, so
-a script written for tmux `status-right` works without a change.
+The command runs with `sh -c`, so pipes, globs, and `~` work. ttmux shows
+the first line of the output. ttmux also reads tmux markup such as
+`#[fg=red,bold]`, so a script for tmux `status-right` works without a change.
 
-A slow command does not block the screen. It runs in its own thread, and ttmux
-does not start a second copy while the first one runs.
+A slow command does not stop the screen. The command runs in its own thread.
+ttmux does not start a second copy while the first copy runs.
 
 </details>
 
 ## Coding-agent alerts
 
-A pane that runs a coding agent gets a mark: `◐` for busy, `●` for wants
-you, and `✓` for done. The status bar counts the panes that wait on you, and
-<kbd>ctrl+alt+n</kbd> goes to the next one. The patterns live under
-`[agents]`, so this works with any agent.
+A pane that runs a coding agent gets a mark: `◐` for busy, `●` for "needs
+you", and `✓` for done. The status bar shows how many panes wait for you.
+<kbd>ctrl+alt+n</kbd> goes to the next of these panes. ttmux finds the state
+with text patterns under `[agents]`, so you can add patterns for any agent.
 
 A program that reports its own status with
 [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status) does
-not need patterns: `working` shows as busy, `blocked` and `error` as wants
-you, and `done` as done. The pane's border adds its progress and message,
-as in `cargo · 40% compiling`, and what a blocked one waits for, as in
-`terraform · needs permission: apply plan?`. Its reports win over the patterns until it
-clears them, resets the terminal, or the shell prints its next prompt.
+not need patterns. `working` shows as busy, `blocked` and `error` show as
+"needs you", and `done` shows as done.
+
+The pane border also shows the progress and the message from the program,
+for example `cargo · 40% compiling`. When the program is blocked, the border
+shows the reason, for example `terraform · needs permission: apply plan?`.
+
+The reports from the program replace the patterns. This continues until the
+program clears its status, the terminal resets, or the shell shows its next
+prompt.
 
 ## Terminals
 
-ttmux is built against Ghostty and iTerm2. Any terminal with 24-bit color
-and SGR mouse reporting works, including Alacritty, kitty, WezTerm, and
-Terminal.app.
+ttmux is tested most with Ghostty and iTerm2. It works in any terminal
+that has 24-bit color and SGR mouse reports. Examples are Alacritty, kitty,
+WezTerm, and Terminal.app.
 
 <details>
 <summary>Ghostty and alt+arrows</summary>
 
-Ghostty never sends `alt+left` and `alt+right` to ttmux, because it binds
-them to the word motions of readline. To get horizontal focus movement back,
-unbind them in the config of Ghostty:
+Ghostty does not send `alt+left` and `alt+right` to ttmux. It uses these
+keys to move by word, as readline does. To move the focus left and right
+with these keys, remove the Ghostty bindings in the Ghostty config:
 
 ```
 keybind = alt+left=unbind
@@ -331,7 +351,7 @@ keybind = alt+right=unbind
 
 ## Compatibility
 
-What programs inside a pane can count on, by the spec they follow:
+ttmux supports these terminal features for programs in a pane:
 
 - Truecolor, and undercurl, dotted, dashed and double underlines in color
   (SGR 38/48/58 and `4:x`)
@@ -345,25 +365,28 @@ What programs inside a pane can count on, by the spec they follow:
   reporting (modes 1000, 1002, 1003, 1006), and a cursor shape per pane
   (DECSCUSR)
 - Window titles (OSC 0, 1, 2)
-- OSC 52 copy to your clipboard, and OSC 9, 99 and 777 notifications, each
-  of which can be turned off
+- OSC 52 copy to your clipboard, and OSC 9, 99, and 777 notifications.
+  You can disable each of them.
 - [OSC 7501 program status](https://www.superlogical.com/rex/docs/build/program-status):
-  a program that reports `working`, `blocked`, `done` or `error` sets its
-  pane's agent mark itself; see [Coding-agent alerts](#coding-agent-alerts)
-- Shell prompt marks (OSC 133 `A`), which end the last command's status
+  a program that reports `working`, `blocked`, `done`, or `error` sets the
+  agent mark of its pane. See [Coding-agent alerts](#coding-agent-alerts).
+- Shell prompt marks (OSC 133 `A`), which clear the status of the last
+  command
 - Answers to cursor position and status (DSR 5, 6), device attributes (DA1,
   DA2), XTVERSION, window size (`CSI 18t`), mode (DECRQM), color (OSC 10,
   11) and XTGETTCAP queries, so fzf, neovim and fish do not stall
 - Dark or light theme reports (`CSI ?996n`, mode 2031)
 - Scrollback that keeps output scrolled under a fixed footer, as Claude
   Code and Codex draw, and `CSI 3J` to clear it
-- Pastes that cannot close their own bracket early
-- No accidental nesting: attaching from inside a pane is refused, as in tmux
+- Bracketed pastes that the pasted text cannot end early
+- No accidental nesting: as in tmux, ttmux does not attach from inside a
+  pane
 
 ## Platforms
 
-macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64. CI builds
-and tests all three.
+macOS on Apple silicon and Intel, and Linux on x86_64 and aarch64. CI tests
+macOS on both chips and Linux on x86_64. Each release has builds for all
+four.
 
 ## Security
 
