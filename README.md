@@ -24,11 +24,13 @@ With Homebrew, on macOS or Linux:
 brew install statico/tap/ttmux
 ```
 
-Or build it from source, which needs Rust 1.82 or later:
+Or build it with Cargo, which needs Rust 1.82 or later:
 
 ```
-cargo install --git https://github.com/statico/ttmux
+cargo install ttmux
 ```
+
+To build the latest code on `main`, use `cargo install --git https://github.com/statico/ttmux`.
 
 Then start it:
 
