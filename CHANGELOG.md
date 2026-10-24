@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 — 2026-10-23
+
+This release has the same code as 1.0.0.
+
+- ttmux is on crates.io. Install it with `cargo install ttmux`. The
+  vt100 fork that ttmux uses is published as the `ttmux-vt100` crate.
+- The README is rewritten in plain English, and its install steps give
+  `cargo install ttmux`.
+
 ## 1.0.0 — 2026-10-23
 
 ttmux is out of beta. This release has the same code as 0.10.1.
