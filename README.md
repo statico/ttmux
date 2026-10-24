@@ -12,10 +12,6 @@
 
 <p align="center"><picture><source srcset="docs/demo.avif" type="image/avif"><img alt="ttmux demo" src="docs/demo-poster.png" width="700"></picture></p>
 
-> [!NOTE]
-> **Made entirely with [Claude Code](https://claude.com/claude-code).** Every
-> line of this project was written by Claude.
-
 ttmux runs many terminals in one window, like tmux or screen. It adds
 floating panes, real mouse support, curved borders, and a settings screen
 that you open inside the app.
