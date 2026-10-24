@@ -488,7 +488,7 @@ fn the_cli_answers_without_a_terminal() {
     };
 
     let (ok, out) = run(&["--version"]);
-    assert!(ok && out.starts_with("ttmux 0."), "{out:?}");
+    assert!(ok && out == format!("ttmux {}\n", env!("CARGO_PKG_VERSION")), "{out:?}");
 
     let (ok, out) = run(&["--help"]);
     assert!(ok && out.contains("ctrl+t ,"), "{out:?}");

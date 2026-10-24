@@ -12,10 +12,6 @@
 
 <p align="center"><picture><source srcset="docs/demo.avif" type="image/avif"><img alt="ttmux demo" src="docs/demo-poster.png" width="700"></picture></p>
 
-> [!WARNING]
-> **Beta software.** ttmux is still under test. Expect bugs, and expect the
-> config format to change before 1.0.
-
 > [!NOTE]
 > **Made entirely with [Claude Code](https://claude.com/claude-code).** Every
 > line of this project was written by Claude.

@@ -12,13 +12,12 @@ equal to a login shell for your account.
 
 ## Supported versions
 
-Only the newest release gets fixes. ttmux is beta software before 1.0, so
-there is no backport branch.
+Only the newest release gets fixes. There is no backport branch.
 
 | Version | Supported |
 |---|---|
-| 0.5.x | Yes |
-| 0.4.x and older | No |
+| 1.0.x | Yes |
+| 0.x | No |
 
 ## Report a vulnerability
 
@@ -215,5 +214,3 @@ ttmux does not defend against these.
 - **Release provenance.** Release binaries are not signed and carry no build
   attestation. The `.sha256` files sit next to the archives in the same
   release, so they detect a corrupt download and not a compromised release.
-- **Beta status.** ttmux is before 1.0. The wire format and the config format
-  change between releases.
