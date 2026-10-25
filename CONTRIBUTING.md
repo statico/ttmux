@@ -79,6 +79,20 @@ its `version` in `vendor/vt100/Cargo.toml` and in the `vt100` line of
 `Cargo.toml`. Then run `cargo publish --manifest-path vendor/vt100/Cargo.toml`.
 It is on crates.io as `ttmux-vt100`.
 
+After the tag is pushed, update the Arch Linux package in
+`packaging/arch/PKGBUILD`:
+
+1. Set `pkgver` to the new version.
+2. Set `pkgrel` to `1`.
+3. Get the checksum of the source tarball:
+
+   ```bash
+   curl -sL https://github.com/statico/ttmux/archive/v<version>.tar.gz | shasum -a 256
+   ```
+
+4. Put this checksum in `sha256sums`.
+5. Commit the change and push it to `main`.
+
 The tag starts `.github/workflows/release.yml`. The workflow builds the four
 supported targets, attaches the tarballs to the release, and then updates the
 Homebrew formula in [statico/homebrew-tap](https://github.com/statico/homebrew-tap).

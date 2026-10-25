@@ -32,6 +32,27 @@ cargo install ttmux
 
 To build the latest code on `main`, use `cargo install --git https://github.com/statico/ttmux`.
 
+On Arch Linux, build the package from the PKGBUILD in this repository:
+
+```
+git clone https://github.com/statico/ttmux
+cd ttmux/packaging/arch
+makepkg -si
+```
+
+If you use [paru](https://github.com/Morganamilo/paru), you can add this
+repository as a PKGBUILD repository. Add these lines to
+`~/.config/paru/paru.conf`:
+
+```
+[ttmux]
+Url = https://github.com/statico/ttmux
+Path = packaging/arch
+```
+
+Then install it with `paru -Sy ttmux`. paru then gets each new release when
+you update your system.
+
 Then start it:
 
 ```
