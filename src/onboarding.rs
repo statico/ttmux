@@ -161,6 +161,7 @@ fn draw_ready(buf: &mut Buffer, inner: Rect, cfg: &Config) {
         ("Help", Action::ToggleHelp),
         ("Settings", Action::ToggleSettings),
         ("Commands", Action::CommandPalette),
+        ("Jump to", Action::ChoosePane),
         ("Split", Action::Split(crate::action::Dir::Down)),
     ] {
         row.line(

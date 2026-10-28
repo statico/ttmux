@@ -98,6 +98,8 @@ pub enum Action {
     ToggleSettings,
     ToggleHelp,
     CommandPalette,
+    /// Fuzzy-find a tab or pane and go to it, tmux's `choose-tree`.
+    ChoosePane,
     /// The `:` line, where a scripting command can be typed.
     CommandLine,
     /// Jump to the next pane flagged by an agent alert.
@@ -155,6 +157,7 @@ impl fmt::Display for Action {
             ToggleSettings => write!(f, "settings"),
             ToggleHelp => write!(f, "help"),
             CommandPalette => write!(f, "command-palette"),
+            ChoosePane => write!(f, "choose-pane"),
             CommandLine => write!(f, "command-line"),
             NextAlert => write!(f, "next-alert"),
             ReloadConfig => write!(f, "reload-config"),
@@ -222,6 +225,7 @@ impl FromStr for Action {
             "settings" => ToggleSettings,
             "help" => ToggleHelp,
             "command-palette" => CommandPalette,
+            "choose-pane" => ChoosePane,
             "command-line" => CommandLine,
             "next-alert" => NextAlert,
             "reload-config" => ReloadConfig,
@@ -280,6 +284,7 @@ pub const ALL_ACTIONS: &[Action] = &[
     Action::ToggleSettings,
     Action::ToggleHelp,
     Action::CommandPalette,
+    Action::ChoosePane,
     Action::CommandLine,
     Action::NextAlert,
     Action::ReloadConfig,

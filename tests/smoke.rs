@@ -232,6 +232,38 @@ fn a_pane_breaks_out_into_its_own_tab_and_joins_back() {
 }
 
 #[test]
+fn ctrl_and_a_digit_or_the_prefix_and_a_digit_go_to_a_tab() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x14v"); // tab 1 gets two panes, so it can be told apart
+    h.wait_for("a second pane", |s| s.matches('╭').count() == 2);
+    h.send(b"\x14c"); // tab 2 has one
+    h.wait_for("a second tab", |s| s.matches('╭').count() == 1);
+
+    h.send(b"\x1b[49;5u"); // ctrl+1 in the kitty keyboard protocol
+    h.wait_for("tab 1", |s| s.matches('╭').count() == 2);
+    h.send(b"\x142"); // ctrl+t 2
+    h.wait_for("tab 2", |s| s.matches('╭').count() == 1);
+}
+
+#[test]
+fn ctrl_quote_finds_a_pane_by_name() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x14v"); // tab 1 gets two panes, so it can be told apart
+    h.wait_for("a second pane", |s| s.matches('╭').count() == 2);
+    h.send(b"\x14c");
+    h.wait_for("a second tab", |s| s.matches('╭').count() == 1);
+
+    h.send(b"\x1b[39;5u"); // ctrl+' in the kitty keyboard protocol
+    h.wait_for("the switcher", |s| {
+        s.contains("Jump to") && s.contains("1.2")
+    });
+    h.send(b"1.2\r");
+    h.wait_for("tab 1", |s| s.matches('╭').count() == 2);
+}
+
+#[test]
 fn the_settings_overlay_opens() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));

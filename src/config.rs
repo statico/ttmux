@@ -304,6 +304,17 @@ pub enum KeysPreset {
     Screen,
 }
 
+/// The modifier that, held with a digit, jumps straight to that tab.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TabNumberKeys {
+    #[default]
+    Ctrl,
+    Alt,
+    CtrlShift,
+    Off,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TitlePosition {
@@ -372,6 +383,9 @@ pub struct General {
     pub keys_preset: KeysPreset,
     /// Show the which-key hint popup while waiting for the chord after the prefix.
     pub which_key: bool,
+    /// Modifier+digit selects tabs 1 to 9 with no prefix. Old terminals send
+    /// ctrl+1 as a bare `1`; the kitty keyboard protocol tells them apart.
+    pub tab_number_keys: TabNumberKeys,
     /// Variables a newly attached client updates in the session, so panes
     /// started afterwards talk to *this* terminal's ssh agent, display and
     /// clipboard rather than the long-dead one that started the session.
@@ -396,6 +410,7 @@ impl Default for General {
             prefix_timeout_ms: 1500,
             keys_preset: KeysPreset::default(),
             which_key: true,
+            tab_number_keys: TabNumberKeys::default(),
             update_environment: [
                 "SSH_AUTH_SOCK",
                 "SSH_CONNECTION",
@@ -650,6 +665,9 @@ fn direct_keys() -> Vec<(&'static str, &'static str)> {
         ("ctrl+alt+t", "new-tab"),
         ("ctrl+alt+,", "settings"),
         ("ctrl+alt+p", "command-palette"),
+        // Free in every program, since terminals without the kitty keyboard
+        // protocol cannot send it at all.
+        ("ctrl+'", "choose-pane"),
         ("ctrl+alt+n", "next-alert"),
         ("shift+pageup", "scroll-up 10"),
         ("shift+pagedown", "scroll-down 10"),
@@ -704,10 +722,9 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+t a", "rename-pane"),
             ("ctrl+t [", "copy-mode"),
             ("ctrl+t ]", "paste-buffer"),
-            // tmux's choose-tree / choose-window; the palette is the nearest
-            // chooser ttmux has.
             ("ctrl+t ;", "command-palette"),
-            ("ctrl+t \"", "command-palette"),
+            // tmux's choose-tree / choose-window.
+            ("ctrl+t \"", "choose-pane"),
             ("ctrl+t esc", "copy-mode"),
             ("ctrl+t ?", "help"),
             ("ctrl+t ,", "settings"),
@@ -737,6 +754,8 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+b .", "rename-pane"),
             ("ctrl+b !", "break-pane"),
             ("ctrl+b :", "command-line"),
+            ("ctrl+b w", "choose-pane"),
+            ("ctrl+b s", "choose-pane"),
             ("ctrl+b ?", "help"),
             ("ctrl+b space", "next-preset"),
             ("ctrl+b [", "copy-mode"),
@@ -758,17 +777,57 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
             ("ctrl+a .", "rename-pane"),
             ("ctrl+a shift+k", "close-pane"),
             ("ctrl+a :", "command-line"),
+            // screen's windowlist.
+            ("ctrl+a \"", "choose-pane"),
             ("ctrl+a ?", "help"),
             ("ctrl+a esc", "copy-mode"),
             ("ctrl+a ]", "paste-buffer"),
             ("ctrl+a d", "detach"),
         ],
     };
+    let leader = match p {
+        KeysPreset::Vim => "ctrl+t",
+        KeysPreset::Tmux => "ctrl+b",
+        KeysPreset::Screen => "ctrl+a",
+    };
+    // tmux's `prefix N` select-window, counting from 1 like the tab bar.
+    let digits = (1..=9).map(|n| (format!("{leader} {n}"), format!("select-tab {n}")));
     direct_keys()
         .into_iter()
         .chain(prefixed.iter().copied())
         .map(|(k, v)| (k.to_string(), v.to_string()))
+        .chain(digits)
         .collect()
+}
+
+/// Modifier+digit for tabs 1 to 9, per `general.tab-number-keys`.
+fn tab_number_keys(t: TabNumberKeys) -> Vec<(String, String)> {
+    let m = match t {
+        TabNumberKeys::Ctrl => "ctrl",
+        TabNumberKeys::Alt => "alt",
+        TabNumberKeys::CtrlShift => "ctrl+shift",
+        TabNumberKeys::Off => return vec![],
+    };
+    (1..=9)
+        .map(|n| (format!("{m}+{n}"), format!("select-tab {n}")))
+        .collect()
+}
+
+/// Fold `ctrl+1 select-tab 1` … `ctrl+9 select-tab 9` into one
+/// `ctrl+1-9 select-tab N` row, for listings a person reads. `rows` must be
+/// in keymap order, where a run of digits sits together.
+pub fn fold_tab_digits(rows: Vec<(String, String)>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = rows
+        .into_iter()
+        .map(|(k, a)| match k.char_indices().last() {
+            Some((i, d)) if d.is_ascii_digit() && a == format!("select-tab {d}") => {
+                (format!("{}1-9", &k[..i]), "select-tab N".into())
+            }
+            _ => (k, a),
+        })
+        .collect();
+    out.dedup();
+    out
 }
 
 /// `$TTMUX_CONFIG`, else `$XDG_CONFIG_HOME/ttmux/ttmux.toml`, else
@@ -827,7 +886,8 @@ impl Config {
     pub fn keymap(&self) -> (BTreeMap<Binding, crate::action::Action>, Vec<String>) {
         let mut map = BTreeMap::new();
         let mut errors = vec![];
-        let preset = preset_keys(self.general.keys_preset);
+        let mut preset = preset_keys(self.general.keys_preset);
+        preset.extend(tab_number_keys(self.general.tab_number_keys));
         for (k, v) in preset.iter().chain(self.keys.iter()) {
             let b = match k.parse::<Binding>() {
                 Ok(b) => b,
@@ -951,7 +1011,7 @@ mod tests {
             c.general.keys_preset = p;
             let (map, errors) = c.keymap();
             assert!(errors.is_empty(), "{p:?}: {errors:?}");
-            assert_eq!(map.len(), preset_keys(p).len(), "{p:?}");
+            assert_eq!(map.len(), preset_keys(p).len() + 9, "{p:?}");
             assert_eq!(c.prefixes(), vec![leader.parse().unwrap()], "{p:?}");
         }
     }
@@ -968,6 +1028,33 @@ mod tests {
         assert_eq!(map[&b("ctrl+t z")], crate::action::Action::Quit);
         assert!(!map.contains_key(&b("ctrl+t x")));
         assert!(!map.contains_key(&b("ctrl+t q")));
+    }
+
+    #[test]
+    fn tab_number_keys_pick_the_modifier_or_none() {
+        use crate::action::Action::SelectTab;
+        let b = |s: &str| s.parse::<Binding>().unwrap();
+        let all = ["ctrl+3", "alt+3", "ctrl+shift+3"];
+        for (opt, want) in [
+            ("ctrl", Some("ctrl+3")),
+            ("alt", Some("alt+3")),
+            ("ctrl-shift", Some("ctrl+shift+3")),
+            ("off", None),
+        ] {
+            let c: Config =
+                toml::from_str(&format!("[general]\ntab-number-keys = \"{opt}\"\n")).unwrap();
+            let (map, errors) = c.keymap();
+            assert!(errors.is_empty(), "{errors:?}");
+            for k in all {
+                let got = map.get(&b(k));
+                assert_eq!(
+                    got,
+                    (Some(k) == want).then_some(&SelectTab(3)),
+                    "{opt}: {k}"
+                );
+            }
+            assert_eq!(map[&b("ctrl+t 3")], SelectTab(3), "{opt}");
+        }
     }
 
     #[test]

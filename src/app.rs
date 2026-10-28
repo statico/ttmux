@@ -148,6 +148,18 @@ struct Tab {
     renamed: bool,
 }
 
+/// One line of the `choose-pane` list. A tab with one pane is one row that
+/// names the pane; a split tab gets a row of its own, then one per pane.
+#[derive(Debug, Clone)]
+struct SwitchRow {
+    tab: usize,
+    pane: Option<PaneId>,
+    /// What is drawn.
+    text: String,
+    /// What the query matches: the text, plus the tab's name for a pane row.
+    find: String,
+}
+
 enum Overlay {
     None,
     Help {
@@ -157,6 +169,12 @@ enum Overlay {
     Palette {
         query: LineEdit,
         sel: usize,
+    },
+    /// `choose-pane`: every tab and pane, taken when it opened.
+    Switch {
+        query: LineEdit,
+        sel: usize,
+        rows: Vec<SwitchRow>,
     },
     Prompt {
         label: String,
@@ -1761,6 +1779,19 @@ impl App {
                     sel: 0,
                 }
             }
+            ChoosePane => {
+                let rows = self.switch_rows();
+                let here = (self.tab, Some(self.focus()));
+                let sel = rows
+                    .iter()
+                    .position(|r| (r.tab, r.pane) == here || (r.tab == here.0 && r.pane.is_none()))
+                    .unwrap_or(0);
+                self.overlay = Overlay::Switch {
+                    query: LineEdit::default(),
+                    sel,
+                    rows,
+                }
+            }
             CommandLine => self.overlay = Overlay::Command(CmdLine::new(self.cmd_history.clone())),
             NextAlert => match self.next_alert() {
                 Some((tab, id)) => {
@@ -1885,6 +1916,7 @@ impl App {
                 return self.after_settings(out).map(|_| true);
             }
             Overlay::Palette { .. } => return self.palette_key(ev).map(|_| true),
+            Overlay::Switch { .. } => return self.switch_key(ev).map(|_| true),
             Overlay::Prompt { .. } => return self.prompt_key(ev).map(|_| true),
             Overlay::Command(c) => {
                 let out = c.key(ev);
@@ -2078,11 +2110,88 @@ impl App {
     }
 
     fn palette_matches(query: &str) -> Vec<&'static Action> {
-        let q = query.to_ascii_lowercase();
-        ALL_ACTIONS
-            .iter()
-            .filter(|a| a.to_string().to_ascii_lowercase().contains(&q))
-            .collect()
+        fuzzy_filter(query, ALL_ACTIONS.iter().map(|a| (a, a.to_string())))
+    }
+
+    /// Every tab and pane in tab order, then the layout's pane order.
+    fn switch_rows(&self) -> Vec<SwitchRow> {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let mut rows = vec![];
+        for (ti, t) in self.tabs.iter().enumerate() {
+            let ids = t.layout.ids();
+            let pane = |id: PaneId| {
+                let Some(s) = self.slots.get(&id) else {
+                    return String::new();
+                };
+                let cwd = s.pane.cwd().map(|p| p.display().to_string());
+                let cwd = match cwd {
+                    Some(c) if !home.is_empty() && c.starts_with(&home) => {
+                        format!("~{}", &c[home.len()..])
+                    }
+                    Some(c) => c,
+                    None => String::new(),
+                };
+                format!("{}  {cwd}", s.pane.title())
+            };
+            let label = self.tab_label(ti, t);
+            if let [id] = ids[..] {
+                let text = format!("{label}  {}", pane(id));
+                rows.push(SwitchRow {
+                    tab: ti,
+                    pane: Some(id),
+                    find: text.clone(),
+                    text,
+                });
+                continue;
+            }
+            rows.push(SwitchRow {
+                tab: ti,
+                pane: None,
+                text: format!("{label}  {} panes", ids.len()),
+                find: label.clone(),
+            });
+            for (pi, id) in ids.into_iter().enumerate() {
+                let text = format!("   {}.{}  {}", ti + 1, pi + 1, pane(id));
+                rows.push(SwitchRow {
+                    tab: ti,
+                    pane: Some(id),
+                    find: format!("{label} {text}"),
+                    text,
+                });
+            }
+        }
+        rows
+    }
+
+    fn switch_key(&mut self, ev: KeyEvent) -> Result<()> {
+        let Overlay::Switch { query, sel, rows } = &mut self.overlay else {
+            return Ok(());
+        };
+        if query.key(ev) {
+            *sel = 0;
+            return Ok(());
+        }
+        let hits = || fuzzy_filter(query.text(), rows.iter().map(|r| (r, r.find.clone())));
+        match ev.code {
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Up => *sel = sel.saturating_sub(1),
+            KeyCode::Down => *sel = (*sel + 1).min(hits().len().saturating_sub(1)),
+            KeyCode::Enter => {
+                let to = hits()
+                    .get((*sel).min(hits().len().saturating_sub(1)))
+                    .map(|r| (r.tab, r.pane));
+                self.overlay = Overlay::None;
+                if let Some((tab, pane)) = to {
+                    self.select_tab(tab);
+                    if let Some(id) = pane {
+                        self.set_focus(id);
+                    }
+                    self.relayout();
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn palette_key(&mut self, ev: KeyEvent) -> Result<()> {
@@ -2761,6 +2870,18 @@ impl App {
                     draw_palette(buf, overlay_rect(self.area), query, *sel, &self.cfg);
                     cursor = None;
                 }
+                Overlay::Switch { query, sel, rows } => {
+                    let hits: Vec<String> =
+                        fuzzy_filter(query.text(), rows.iter().map(|r| (r, r.find.clone())))
+                            .iter()
+                            .map(|r| r.text.clone())
+                            .collect();
+                    let title = "Jump to";
+                    let hint = "type to filter, ↑↓ to select, Enter to go, Esc to cancel";
+                    let rect = overlay_rect(self.area);
+                    draw_list(buf, rect, (title, hint), query, &hits, *sel, &self.cfg);
+                    cursor = None;
+                }
                 Overlay::Welcome(w) => {
                     let rect = overlay_rect(self.area);
                     let inner = modal(buf, rect, w.title(), w.hint(), &self.cfg);
@@ -3129,8 +3250,18 @@ fn hint_parts(hint: &str) -> Vec<(&str, &str)> {
         .collect()
 }
 
-fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
+/// The help screen's rows: the keymap, with the tab digits folded.
+fn help_rows(cfg: &Config) -> Vec<(String, String)> {
     let (map, _) = cfg.keymap();
+    crate::config::fold_tab_digits(
+        map.iter()
+            .map(|(b, a)| (b.to_string(), a.to_string()))
+            .collect(),
+    )
+}
+
+fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
+    let map = help_rows(cfg);
     // The keymap is longer than any screen is tall, so the help scrolls
     // rather than quietly hiding the bindings past the bottom.
     let rows = modal_content(rect).h as usize;
@@ -3152,13 +3283,13 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
         if y >= inner.y + inner.h {
             break;
         }
-        let b = format!("{:>KEYS$}", binding.to_string());
+        let b = format!("{binding:>KEYS$}");
         crate::settings_ui::put(buf, inner.x, y, &b, inner.w, accent);
         crate::settings_ui::put(
             buf,
             inner.x + KEYS as u16 + 3,
             y,
-            &action.to_string(),
+            action,
             inner.w.saturating_sub(KEYS as u16 + 3),
             style,
         );
@@ -3168,17 +3299,29 @@ fn draw_help(buf: &mut Buffer, rect: Rect, cfg: &Config, scroll: usize) {
 /// How far `help` can scroll: the last page still fills the box.
 fn help_max_scroll(cfg: &Config, area: Rect) -> usize {
     let rows = modal_content(overlay_rect(area)).h as usize;
-    cfg.keymap().0.len().saturating_sub(rows)
+    help_rows(cfg).len().saturating_sub(rows)
 }
 
 fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg: &Config) {
-    let inner = modal(
-        buf,
-        rect,
-        "Commands",
-        "type to filter, ↑↓ to select, Enter to run, Esc to cancel",
-        cfg,
-    );
+    let hits: Vec<String> = App::palette_matches(query.text())
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    let hint = "type to filter, ↑↓ to select, Enter to run, Esc to cancel";
+    draw_list(buf, rect, ("Commands", hint), query, &hits, sel, cfg);
+}
+
+/// A filter field over a list, as the palette and `choose-pane` draw it.
+fn draw_list(
+    buf: &mut Buffer,
+    rect: Rect,
+    (title, hint): (&str, &str),
+    query: &LineEdit,
+    items: &[String],
+    sel: usize,
+    cfg: &Config,
+) {
+    let inner = modal(buf, rect, title, hint, cfg);
     let style = Style::default().fg(cfg.status.fg.into());
     let sel_style = Style::default()
         .fg(cfg.status.bg.into())
@@ -3195,17 +3338,71 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg:
     if inner.w == 0 {
         return;
     }
-    let hits = App::palette_matches(query.text());
-    let sel = sel.min(hits.len().saturating_sub(1));
-    for (i, a) in hits.iter().enumerate() {
-        let y = inner.y + 2 + i as u16;
+    let sel = sel.min(items.len().saturating_sub(1));
+    // Scroll just far enough to keep the selection on screen.
+    let room = inner.h.saturating_sub(2).max(1) as usize;
+    let first = (sel + 1).saturating_sub(room);
+    for (i, a) in items.iter().enumerate().skip(first) {
+        let y = inner.y + 2 + (i - first) as u16;
         if y >= inner.y + inner.h {
             break;
         }
         let s = if i == sel { sel_style } else { style };
-        let line = format!(" {:<width$}", a.to_string(), width = inner.w as usize - 1);
+        let line = format!(" {:<width$}", a, width = inner.w as usize - 1);
         buf.set_stringn(inner.x, y, line, inner.w as usize, s);
     }
+}
+
+/// The items whose text has every letter of `query` in order, any case,
+/// best first; ties keep the order they came in. An empty query keeps all.
+fn fuzzy_filter<T>(query: &str, items: impl Iterator<Item = (T, String)>) -> Vec<T> {
+    let mut hits: Vec<(i32, T)> = items
+        .filter_map(|(t, text)| fuzzy_score(query, &text).map(|s| (s, t)))
+        .collect();
+    hits.sort_by_key(|(s, _)| -s);
+    hits.into_iter().map(|(_, t)| t).collect()
+}
+
+/// `None` unless every letter of `query` is in `text` in order. A letter
+/// that follows the one before it, or starts a word, scores more than one
+/// found after a gap. The best of all the ways the letters line up wins.
+fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
+    let low = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let q: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(low)
+        .collect();
+    let t: Vec<char> = text.chars().collect();
+    let start = |k: usize| {
+        if k == 0 || !t[k - 1].is_alphanumeric() {
+            3
+        } else {
+            0
+        }
+    };
+    let Some((first, rest)) = q.split_first() else {
+        return Some(0);
+    };
+    // at[k]: the best score so far with the latest query letter on t[k].
+    let mut at: Vec<Option<i32>> = (0..t.len())
+        .map(|k| (low(t[k]) == *first).then(|| 1 + start(k)))
+        .collect();
+    for &c in rest {
+        let mut gap = None; // best of at[..k - 1]
+        let mut next = vec![None; t.len()];
+        for k in 0..t.len() {
+            if k >= 2 {
+                gap = gap.max(at[k - 2]);
+            }
+            if low(t[k]) == c {
+                let run = k.checked_sub(1).and_then(|p| at[p]).map(|s| s + 4);
+                next[k] = run.max(gap).map(|s| s + 1 + start(k));
+            }
+        }
+        at = next;
+    }
+    at.into_iter().flatten().max()
 }
 
 fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &LineEdit, cfg: &Config) {
@@ -3507,6 +3704,53 @@ mod tests {
         assert_eq!(sel, App::palette_matches("").len() - 2);
         a.on_key(ctrl('g')).unwrap();
         assert!(matches!(a.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn fuzzy_score_wants_every_letter_in_order_and_ranks_runs_first() {
+        assert!(fuzzy_score("nt", "new-tab").is_some());
+        assert!(fuzzy_score("NT", "new-tab").is_some());
+        assert!(fuzzy_score("tn", "new-tab").is_none());
+        assert_eq!(fuzzy_score("", "anything"), Some(0));
+        let hits = fuzzy_filter(
+            "tab",
+            ["split down", "next-tab", "t-a-b"]
+                .into_iter()
+                .map(|s| (s, s.into())),
+        );
+        assert_eq!(hits, ["next-tab", "t-a-b"]);
+    }
+
+    #[test]
+    fn choose_pane_lists_the_tree_and_jumps_to_the_pick() {
+        let mut a = app();
+        a.dispatch(Action::Split(Dir::Right)).unwrap();
+        a.dispatch(Action::NewTab).unwrap();
+        a.tabs[0].name = "logs".into();
+        a.tabs[0].renamed = true;
+        let target = a.tabs[0].layout.ids()[1];
+
+        a.dispatch(Action::ChoosePane).unwrap();
+        let Overlay::Switch { rows, sel, .. } = &a.overlay else {
+            panic!()
+        };
+        // Tab 1's own row, its two panes, then tab 2 as one row.
+        let shape: Vec<_> = rows.iter().map(|r| (r.tab, r.pane.is_some())).collect();
+        assert_eq!(shape, [(0, false), (0, true), (0, true), (1, true)]);
+        assert!(rows[2].text.starts_with("   1.2  "), "{:?}", rows[2].text);
+        assert_eq!(*sel, 3, "opens on the pane you are in");
+
+        // The tab's name finds its panes; "1.2" picks the second.
+        for c in "logs1.2".chars() {
+            a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
+                .unwrap();
+        }
+        a.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(matches!(a.overlay, Overlay::None));
+        assert_eq!(a.tab, 0);
+        assert_eq!(a.focus(), target);
+        assert_eq!(a.last_tab, Some(1), "last-tab comes back here");
     }
 
     #[test]

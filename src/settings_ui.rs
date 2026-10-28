@@ -14,7 +14,8 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::action::{Action, ALL_ACTIONS};
 use crate::color_picker::{self, Picker};
 use crate::config::{
-    BarEffect, Binding, BorderStyle, BusySpinner, Chord, Config, KeysPreset, Rgb, TitlePosition,
+    BarEffect, Binding, BorderStyle, BusySpinner, Chord, Config, KeysPreset, Rgb, TabNumberKeys,
+    TitlePosition,
 };
 use crate::layout::Rect;
 use crate::line_edit::{LineEdit, CARET};
@@ -52,6 +53,7 @@ const TITLE_POSITIONS: &[&str] = &["top", "bottom", "hidden"];
 const EFFECTS: &[&str] = &["flat", "starfield", "gradient"];
 const SPINNERS: &[&str] = &["none", "braille", "circle", "line", "dots"];
 const KEYS_PRESETS: &[&str] = &["vim", "tmux", "screen"];
+const TAB_NUMBER_KEYS: &[&str] = &["ctrl", "alt", "ctrl-shift", "off"];
 
 /// How a field is edited.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,6 +148,15 @@ fn keys_preset_name(p: KeysPreset) -> &'static str {
     }
 }
 
+fn tab_number_keys_name(t: TabNumberKeys) -> &'static str {
+    match t {
+        TabNumberKeys::Ctrl => "ctrl",
+        TabNumberKeys::Alt => "alt",
+        TabNumberKeys::CtrlShift => "ctrl-shift",
+        TabNumberKeys::Off => "off",
+    }
+}
+
 fn spinner_name(s: BusySpinner) -> &'static str {
     match s {
         BusySpinner::None => "none",
@@ -180,6 +191,11 @@ fn fields(cfg: &Config, section: usize) -> Vec<Field> {
                 int_f("prefix-timeout-ms", g.prefix_timeout_ms, 0, 10_000),
                 choice_f("keys-preset", KEYS_PRESETS, keys_preset_name(g.keys_preset)),
                 bool_f("which-key", g.which_key),
+                choice_f(
+                    "tab-number-keys",
+                    TAB_NUMBER_KEYS,
+                    tab_number_keys_name(g.tab_number_keys),
+                ),
                 bool_f("clipboard", g.clipboard),
                 bool_f("notifications", g.notifications),
                 bool_f("copy-mode", g.copy_mode),
@@ -315,11 +331,20 @@ fn set(cfg: &mut Config, section: usize, index: usize, value: &str) -> Result<()
             }
         }
         (0, 9) => cfg.general.which_key = parse_bool(value),
-        (0, 10) => cfg.general.clipboard = parse_bool(value),
-        (0, 11) => cfg.general.notifications = parse_bool(value),
-        (0, 12) => cfg.general.copy_mode = parse_bool(value),
-        (0, 13) => cfg.general.remain_on_exit = parse_bool(value),
-        (0, 14) => cfg.general.update_environment = parse_list(value),
+        (0, 10) => {
+            cfg.general.tab_number_keys = match value {
+                "ctrl" => TabNumberKeys::Ctrl,
+                "alt" => TabNumberKeys::Alt,
+                "ctrl-shift" => TabNumberKeys::CtrlShift,
+                "off" => TabNumberKeys::Off,
+                other => return Err(format!("unknown tab number keys: {other}")),
+            }
+        }
+        (0, 11) => cfg.general.clipboard = parse_bool(value),
+        (0, 12) => cfg.general.notifications = parse_bool(value),
+        (0, 13) => cfg.general.copy_mode = parse_bool(value),
+        (0, 14) => cfg.general.remain_on_exit = parse_bool(value),
+        (0, 15) => cfg.general.update_environment = parse_list(value),
 
         (1, 0) => {
             cfg.appearance.border_style = match value {

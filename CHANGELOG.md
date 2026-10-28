@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- The prefix and a digit from 1 to 9 go to that tab, as `prefix N` does
+  in tmux. This works in every keymap.
+- <kbd>ctrl+1</kbd> to <kbd>ctrl+9</kbd> go to a tab with no prefix. The
+  new `general.tab-number-keys` setting changes the modifier to `alt` or
+  `ctrl-shift`, or turns the keys `off`. The ctrl keys need a terminal
+  that has the kitty keyboard protocol. Other terminals send ctrl+1 as a
+  plain `1`, and that still types `1`.
+- The help screen and the which-key popup show the nine tab keys as one
+  row.
+- <kbd>ctrl+'</kbd> opens a list of every tab and pane, with each pane's
+  title and folder. Type to filter it, and press <kbd>Enter</kbd> to go to
+  the tab or pane. The letters you type only need to come in order. The
+  new `choose-pane` action is also on the prefix and <kbd>"</kbd> (Modern
+  and screen keymaps) and the prefix and <kbd>w</kbd> or <kbd>s</kbd>
+  (tmux keymap). In the Modern keymap, the prefix and <kbd>"</kbd> opened
+  the command palette before; the prefix and <kbd>;</kbd> still does.
+- The command palette uses the same matching, so `nt` finds `new-tab`.
+  Its list now scrolls to keep the selected row on screen.
+
 ## 1.0.1 — 2026-10-23
 
 This release has the same code as 1.0.0.

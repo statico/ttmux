@@ -20,11 +20,12 @@ use crate::render::put_cell;
 /// keymap's own (`BTreeMap`) order, which makes the listing deterministic.
 pub fn entries(cfg: &Config, prefix: &Chord) -> Vec<(String, String)> {
     let (map, _) = cfg.keymap();
-    let mut v: Vec<(String, String)> = map
-        .iter()
-        .filter(|(b, _)| b.0.len() == 2 && b.0[0] == *prefix)
-        .map(|(b, a)| (b.0[1].to_string(), a.to_string()))
-        .collect();
+    let mut v = crate::config::fold_tab_digits(
+        map.iter()
+            .filter(|(b, _)| b.0.len() == 2 && b.0[0] == *prefix)
+            .map(|(b, a)| (b.0[1].to_string(), a.to_string()))
+            .collect(),
+    );
     v.sort_by_key(|(k, _)| (rank(k), k.clone()));
     v
 }
@@ -131,6 +132,8 @@ mod tests {
         assert!(e.contains(&("s".into(), "split down".into())), "{e:?}");
         assert!(e.contains(&("c".into(), "new-tab".into())), "{e:?}");
         assert!(e.contains(&("ctrl+d".into(), "detach".into())), "{e:?}");
+        assert!(e.contains(&("1-9".into(), "select-tab N".into())), "{e:?}");
+        assert!(!e.iter().any(|(k, _)| k == "3"), "{e:?}");
     }
 
     #[test]

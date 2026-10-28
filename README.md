@@ -104,6 +104,7 @@ or `general.keys-preset`. To change one key, add it under `[keys]`.
 | Next layout | `space` | `space` | |
 | New, next, previous tab | `c` `n` `p` | `c` `n` `p` | `c` `n` `p` |
 | Last tab | `ctrl+t` | | |
+| Go to tab 1 to 9 | `1`–`9` | `1`–`9` | `1`–`9` |
 | Move the tab left or right | `<` `>` | | |
 | Break the pane into a tab | `!` | `!` | |
 | Join the pane into a tab | `@` | | |
@@ -114,6 +115,7 @@ or `general.keys-preset`. To change one key, add it under `[keys]`.
 | Close the tab | `&` | `&` | |
 | Command line | `:` | `:` | `:` |
 | Command palette | `;` | | |
+| Jump to a tab or pane | `"` | `w` or `s` | `"` |
 | Send the prefix | `t` | `ctrl+b` | `a` |
 | Settings | `,` | | |
 | Help | `?` | `?` | `?` |
@@ -131,7 +133,9 @@ Every keymap also has these, with no prefix:
 | <kbd>ctrl+alt+f</kbd> | Switch between tiling and free mode |
 | <kbd>ctrl+alt+z</kbd> | Zoom the pane |
 | <kbd>ctrl+alt+t</kbd> | New tab |
+| <kbd>ctrl+1</kbd>–<kbd>9</kbd> | Go to tab 1 to 9 (see `tab-number-keys`) |
 | <kbd>ctrl+alt+p</kbd> | Command palette |
+| <kbd>ctrl+'</kbd> | Jump to a tab or pane |
 | <kbd>ctrl+alt+,</kbd> | Settings |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
 | <kbd>shift+pageup</kbd> / <kbd>pagedown</kbd> | Scroll back and forward |
@@ -152,6 +156,13 @@ set `general.copy-mode = true`. Then the scroll back key opens it:
 A mouse drag over a pane also copies. The copied text goes to your
 clipboard and to a paste buffer. The prefix and <kbd>]</kbd> type the
 paste buffer into the pane.
+
+<kbd>ctrl+'</kbd> lists every tab and every pane in it, with each
+pane's title and folder. Type a few letters of any of them, then press
+<kbd>Enter</kbd> to go there. The letters only need to come in order, so
+`apsrv` finds `api` / `server`. This key needs a terminal with the kitty
+keyboard protocol. In other terminals, use the prefix and the key in the
+table above.
 
 After you press the prefix, a popup shows the keys that can come next, as
 which-key does in neovim. To disable the popup, set
@@ -272,6 +283,7 @@ mouse = true
 scrollback = 10000
 free-mode = false
 keys-preset = "vim"          # vim (Modern) | tmux | screen
+tab-number-keys = "ctrl"     # ctrl | alt | ctrl-shift | off: modifier+1-9 goes to a tab
 passthrough-images = true    # kitty, iTerm2, and sixel inline images
 clipboard = true             # programs can copy with OSC 52
 notifications = true         # programs can send OSC 9, 99, and 777
