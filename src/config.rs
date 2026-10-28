@@ -791,7 +791,7 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
         KeysPreset::Screen => "ctrl+a",
     };
     // tmux's `prefix N` select-window, counting from 1 like the tab bar.
-    let digits = (1..=9).map(|n| (format!("{leader} {n}"), format!("select-tab {n}")));
+    let digits = tab_digits().map(|(d, n)| (format!("{leader} {d}"), format!("select-tab {n}")));
     direct_keys()
         .into_iter()
         .chain(prefixed.iter().copied())
@@ -800,7 +800,20 @@ pub fn preset_keys(p: KeysPreset) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Modifier+digit for tabs 1 to 9, per `general.tab-number-keys`.
+fn tab_of(digit: char) -> u32 {
+    match digit.to_digit(10) {
+        Some(0) => 10,
+        n => n.unwrap_or(0),
+    }
+}
+
+/// Each digit key and its tab: 1 to 9, then 0 for the tenth, as on the
+/// keyboard's top row.
+fn tab_digits() -> impl Iterator<Item = (u32, u32)> {
+    (1..=9).map(|n| (n, n)).chain([(0, 10)])
+}
+
+/// Modifier+digit for tabs 1 to 10, per `general.tab-number-keys`.
 fn tab_number_keys(t: TabNumberKeys) -> Vec<(String, String)> {
     let m = match t {
         TabNumberKeys::Ctrl => "ctrl",
@@ -808,20 +821,20 @@ fn tab_number_keys(t: TabNumberKeys) -> Vec<(String, String)> {
         TabNumberKeys::CtrlShift => "ctrl+shift",
         TabNumberKeys::Off => return vec![],
     };
-    (1..=9)
-        .map(|n| (format!("{m}+{n}"), format!("select-tab {n}")))
+    tab_digits()
+        .map(|(d, n)| (format!("{m}+{d}"), format!("select-tab {n}")))
         .collect()
 }
 
-/// Fold `ctrl+1 select-tab 1` … `ctrl+9 select-tab 9` into one
-/// `ctrl+1-9 select-tab N` row, for listings a person reads. `rows` must be
-/// in keymap order, where a run of digits sits together.
+/// Fold `ctrl+1 select-tab 1` … `ctrl+0 select-tab 10` into one
+/// `ctrl+1-9,0 select-tab N` row, for listings a person reads. `rows` must
+/// be in keymap order, where a run of digits sits together.
 pub fn fold_tab_digits(rows: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = rows
         .into_iter()
         .map(|(k, a)| match k.char_indices().last() {
-            Some((i, d)) if d.is_ascii_digit() && a == format!("select-tab {d}") => {
-                (format!("{}1-9", &k[..i]), "select-tab N".into())
+            Some((i, d)) if d.is_ascii_digit() && a == format!("select-tab {}", tab_of(d)) => {
+                (format!("{}1-9,0", &k[..i]), "select-tab N".into())
             }
             _ => (k, a),
         })
@@ -1011,7 +1024,7 @@ mod tests {
             c.general.keys_preset = p;
             let (map, errors) = c.keymap();
             assert!(errors.is_empty(), "{p:?}: {errors:?}");
-            assert_eq!(map.len(), preset_keys(p).len() + 9, "{p:?}");
+            assert_eq!(map.len(), preset_keys(p).len() + 10, "{p:?}");
             assert_eq!(c.prefixes(), vec![leader.parse().unwrap()], "{p:?}");
         }
     }
@@ -1054,6 +1067,10 @@ mod tests {
                 );
             }
             assert_eq!(map[&b("ctrl+t 3")], SelectTab(3), "{opt}");
+            assert_eq!(map[&b("ctrl+t 0")], SelectTab(10), "{opt}");
+            if let Some(k) = want {
+                assert_eq!(map[&b(&k.replace('3', "0"))], SelectTab(10), "{opt}");
+            }
         }
     }
 

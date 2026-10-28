@@ -132,7 +132,10 @@ mod tests {
         assert!(e.contains(&("s".into(), "split down".into())), "{e:?}");
         assert!(e.contains(&("c".into(), "new-tab".into())), "{e:?}");
         assert!(e.contains(&("ctrl+d".into(), "detach".into())), "{e:?}");
-        assert!(e.contains(&("1-9".into(), "select-tab N".into())), "{e:?}");
+        assert!(
+            e.contains(&("1-9,0".into(), "select-tab N".into())),
+            "{e:?}"
+        );
         assert!(!e.iter().any(|(k, _)| k == "3"), "{e:?}");
     }
 

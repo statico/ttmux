@@ -417,7 +417,7 @@ mod tests {
         let mut k = Keys::new(&Config::default());
         let t = Instant::now();
         k.resolve_at(ctrl('t'), t);
-        assert_eq!(k.resolve_at(ch('0'), t), Resolution::Passthrough);
+        assert_eq!(k.resolve_at(ch('y'), t), Resolution::Passthrough);
         assert!(!k.pending());
     }
 

@@ -104,7 +104,7 @@ or `general.keys-preset`. To change one key, add it under `[keys]`.
 | Next layout | `space` | `space` | |
 | New, next, previous tab | `c` `n` `p` | `c` `n` `p` | `c` `n` `p` |
 | Last tab | `ctrl+t` | | |
-| Go to tab 1 to 9 | `1`–`9` | `1`–`9` | `1`–`9` |
+| Go to tab 1 to 10 | `1`–`9`, `0` | `1`–`9`, `0` | `1`–`9`, `0` |
 | Move the tab left or right | `<` `>` | | |
 | Break the pane into a tab | `!` | `!` | |
 | Join the pane into a tab | `@` | | |
@@ -133,7 +133,7 @@ Every keymap also has these, with no prefix:
 | <kbd>ctrl+alt+f</kbd> | Switch between tiling and free mode |
 | <kbd>ctrl+alt+z</kbd> | Zoom the pane |
 | <kbd>ctrl+alt+t</kbd> | New tab |
-| <kbd>ctrl+1</kbd>–<kbd>9</kbd> | Go to tab 1 to 9 (see `tab-number-keys`) |
+| <kbd>ctrl+1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> | Go to tab 1 to 10 (see `tab-number-keys`) |
 | <kbd>ctrl+alt+p</kbd> | Command palette |
 | <kbd>ctrl+'</kbd> | Jump to a tab or pane |
 | <kbd>ctrl+alt+,</kbd> | Settings |
@@ -283,7 +283,7 @@ mouse = true
 scrollback = 10000
 free-mode = false
 keys-preset = "vim"          # vim (Modern) | tmux | screen
-tab-number-keys = "ctrl"     # ctrl | alt | ctrl-shift | off: modifier+1-9 goes to a tab
+tab-number-keys = "ctrl"     # ctrl | alt | ctrl-shift | off: modifier+1-9 or 0 goes to a tab
 passthrough-images = true    # kitty, iTerm2, and sixel inline images
 clipboard = true             # programs can copy with OSC 52
 notifications = true         # programs can send OSC 9, 99, and 777

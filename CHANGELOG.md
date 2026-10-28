@@ -3,13 +3,14 @@
 ## Unreleased
 
 - The prefix and a digit from 1 to 9 go to that tab, as `prefix N` does
-  in tmux. This works in every keymap.
-- <kbd>ctrl+1</kbd> to <kbd>ctrl+9</kbd> go to a tab with no prefix. The
+  in tmux, and 0 goes to the tenth tab. This works in every keymap.
+- <kbd>ctrl+1</kbd> to <kbd>ctrl+9</kbd> and <kbd>ctrl+0</kbd> go to a
+  tab with no prefix. The
   new `general.tab-number-keys` setting changes the modifier to `alt` or
   `ctrl-shift`, or turns the keys `off`. The ctrl keys need a terminal
   that has the kitty keyboard protocol. Other terminals send ctrl+1 as a
   plain `1`, and that still types `1`.
-- The help screen and the which-key popup show the nine tab keys as one
+- The help screen and the which-key popup show the ten tab keys as one
   row.
 - <kbd>ctrl+'</kbd> opens a list of every tab and pane, with each pane's
   title and folder. Type to filter it, and press <kbd>Enter</kbd> to go to
