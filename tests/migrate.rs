@@ -42,6 +42,9 @@ impl Session {
             .args(args)
             .env("TTMUX_SOCKET", &self.sock)
             .env("TTMUX_CONFIG", &self.cfg)
+            // `upgrade` with no -t means $TTMUX_SESSION, and the log is named
+            // for the session: run from inside ttmux, that is the real one's.
+            .env("TTMUX_LOG", self.sock.with_extension("log"))
             .env_remove("TTMUX")
             .output()
             .unwrap()
