@@ -20,6 +20,9 @@
   the command palette before; the prefix and <kbd>;</kbd> still does.
 - The command palette uses the same matching, so `nt` finds `new-tab`.
   Its list now scrolls to keep the selected row on screen.
+- Saving in the settings screen says so in the screen itself: "saved"
+  and the path, or why the save failed. Before, the only sign was a
+  message in the status bar, behind the settings screen.
 
 ## 1.0.1 — 2026-10-23
 

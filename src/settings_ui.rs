@@ -506,6 +506,8 @@ pub struct Settings {
     scroll: usize,
     edit: Edit,
     error: Option<String>,
+    /// What the last save did, on the error line until the next key.
+    notice: Option<String>,
 }
 
 impl Default for Settings {
@@ -523,6 +525,7 @@ impl Settings {
             scroll: 0,
             edit: Edit::None,
             error: None,
+            notice: None,
         }
     }
 
@@ -547,7 +550,16 @@ impl Settings {
 
     // ------------------------------------------------------------- keyboard
 
+    /// Show how an [`Outcome::Save`] went: where it wrote, or why it failed.
+    pub fn saved(&mut self, result: Result<String, String>) {
+        match result {
+            Ok(m) => self.notice = Some(m),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
     pub fn on_key(&mut self, ev: KeyEvent, cfg: &mut Config) -> Outcome {
+        self.notice = None;
         match self.edit.clone() {
             Edit::Buffer(buf) => self.key_buffer(ev, cfg, buf),
             Edit::Colour(p) => self.key_colour(ev, cfg, p),
@@ -949,15 +961,13 @@ impl Settings {
             self.draw_fields(buf, g.fields, cfg, base);
         }
 
-        if let Some(e) = &self.error {
-            put(
-                buf,
-                g.fields.x,
-                g.error_y,
-                e,
-                g.fields.w,
-                base.fg(Color::Red),
-            );
+        let line = match (&self.error, &self.notice) {
+            (Some(e), _) => Some((e, base.fg(Color::Red))),
+            (None, Some(n)) => Some((n, base.fg(accent))),
+            _ => None,
+        };
+        if let Some((text, style)) = line {
+            put(buf, g.fields.x, g.error_y, text, g.fields.w, style);
         }
     }
 
@@ -1553,6 +1563,17 @@ mod tests {
         let (mut s, mut cfg) = (Settings::new(), Config::default());
         assert_eq!(s.on_key(c('s'), &mut cfg), Outcome::Save);
         assert_eq!(s.on_key(k(KeyCode::Esc), &mut cfg), Outcome::Close);
+    }
+
+    #[test]
+    fn a_save_says_so_until_the_next_key() {
+        let (mut s, mut cfg) = (Settings::new(), Config::default());
+        s.saved(Ok("saved ~/x.toml".into()));
+        assert_eq!(s.notice.as_deref(), Some("saved ~/x.toml"));
+        s.on_key(k(KeyCode::Down), &mut cfg);
+        assert_eq!(s.notice, None);
+        s.saved(Err("save failed: denied".into()));
+        assert_eq!(s.error.as_deref(), Some("save failed: denied"));
     }
 
     #[test]

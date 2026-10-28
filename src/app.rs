@@ -2082,9 +2082,12 @@ impl App {
             Outcome::Save => {
                 let cfg = self.cfg.clone();
                 self.apply_config(cfg);
-                match self.cfg.save(&self.cfg_path) {
-                    Ok(()) => self.note(format!("saved {}", self.cfg_path.display())),
-                    Err(e) => self.note(format!("save failed: {e}")),
+                let result = match self.cfg.save(&self.cfg_path) {
+                    Ok(()) => Ok(format!("saved {}", tilde(&self.cfg_path))),
+                    Err(e) => Err(format!("save failed: {e}")),
+                };
+                if let Overlay::Settings(s) = &mut self.overlay {
+                    s.saved(result);
                 }
             }
         }
@@ -2115,7 +2118,6 @@ impl App {
 
     /// Every tab and pane in tab order, then the layout's pane order.
     fn switch_rows(&self) -> Vec<SwitchRow> {
-        let home = std::env::var("HOME").unwrap_or_default();
         let mut rows = vec![];
         for (ti, t) in self.tabs.iter().enumerate() {
             let ids = t.layout.ids();
@@ -2123,14 +2125,7 @@ impl App {
                 let Some(s) = self.slots.get(&id) else {
                     return String::new();
                 };
-                let cwd = s.pane.cwd().map(|p| p.display().to_string());
-                let cwd = match cwd {
-                    Some(c) if !home.is_empty() && c.starts_with(&home) => {
-                        format!("~{}", &c[home.len()..])
-                    }
-                    Some(c) => c,
-                    None => String::new(),
-                };
+                let cwd = s.pane.cwd().map(|p| tilde(&p)).unwrap_or_default();
                 format!("{}  {cwd}", s.pane.title())
             };
             let label = self.tab_label(ti, t);
@@ -3309,6 +3304,16 @@ fn draw_palette(buf: &mut Buffer, rect: Rect, query: &LineEdit, sel: usize, cfg:
         .collect();
     let hint = "type to filter, ↑↓ to select, Enter to run, Esc to cancel";
     draw_list(buf, rect, ("Commands", hint), query, &hits, sel, cfg);
+}
+
+/// `path` with the home directory written as `~`.
+fn tilde(path: &std::path::Path) -> String {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    match home.and_then(|h| path.strip_prefix(h).ok().map(PathBuf::from)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 /// A filter field over a list, as the palette and `choose-pane` draw it.
