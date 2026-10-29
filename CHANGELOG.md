@@ -21,6 +21,10 @@
   the command palette before; the prefix and <kbd>;</kbd> still does.
 - The command palette uses the same matching, so `nt` finds `new-tab`.
   Its list now scrolls to keep the selected row on screen.
+- As in tmux, a command can be shortened to the start of its name, if
+  no other command starts the same way. `ttmux att` attaches, and
+  `ttmux kill-ses -t work` ends a session. A start that fits more than
+  one command, such as `kill-s`, is an error that lists them.
 - Saving in the settings screen says so in the screen itself: "saved"
   and the path, or why the save failed. Before, the only sign was a
   message in the status bar, behind the settings screen.

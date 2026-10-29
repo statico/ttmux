@@ -208,6 +208,9 @@ ttmux upgrade               # move a session to a server started from here
 
 <kbd>ctrl+t</kbd> <kbd>d</kbd> detaches.
 
+As in tmux, you can shorten a command to the start of its name, if no
+other command starts the same way: `ttmux att` is `ttmux attach-session`.
+
 `ttmux upgrade` moves a live session to a new server. The shells, jobs, and
 screens stay. Add `-t work` for a named session. Use it for two things:
 

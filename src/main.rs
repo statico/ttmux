@@ -27,6 +27,9 @@ options:
     -h, --help            show this message
     -V, --version         show the version
 
+As in tmux, a command can be shortened to any part of its start that
+names only one: `ttmux att`, `ttmux kill-ses -t work`.
+
 Everything else is configured from inside ttmux: press ctrl+t ,.
 
 Scripting commands act on the session named by $TTMUX_SESSION, which every
@@ -103,7 +106,15 @@ fn run() -> Result<ExitCode> {
     // Bare `ttmux` creates the session it attaches to; a spelled-out
     // `attach` does not, so a typo in `-t` is an error and not a new session.
     let create = verb.is_none();
-    match verb.as_deref().unwrap_or("attach") {
+    let verb = match verb.as_deref().map(expand_verb) {
+        Some(Err(e)) => {
+            eprintln!("ttmux: {e}");
+            return Ok(ExitCode::from(script::EXIT_USAGE));
+        }
+        Some(Ok(v)) => v,
+        None => "attach".into(),
+    };
+    match verb.as_str() {
         "new" | "new-session" => {
             let name = target(&rest, &["-s", "-t"])?.unwrap_or_else(default_session);
             if rest.iter().any(|a| a == "-d") {
@@ -150,6 +161,44 @@ fn run() -> Result<ExitCode> {
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The commands `main` runs itself; the scripting ones are in `script`.
+const SESSION_COMMANDS: &[&str] = &[
+    "new-session",
+    "attach-session",
+    "kill-session",
+    "kill-server",
+    "upgrade",
+];
+
+/// tmux's rule: a command may be cut down to any start of its name that
+/// names no other command, so `att` is `attach-session`. A name or an alias
+/// spelled out in full always wins, which is how `a` and `ls` stay short.
+fn expand_verb(verb: &str) -> Result<String, String> {
+    let exact = ["new", "attach", "a", "at"].contains(&verb)
+        || SESSION_COMMANDS.contains(&verb)
+        || script::is_command(verb);
+    if exact {
+        return Ok(verb.into());
+    }
+    let mut hits: Vec<&str> = SESSION_COMMANDS
+        .iter()
+        .copied()
+        .chain(script::COMMANDS.iter().map(|c| c.name))
+        .filter(|n| n.starts_with(verb))
+        .collect();
+    hits.sort();
+    hits.dedup();
+    match hits[..] {
+        [one] => Ok(one.into()),
+        // Left as typed, for the "unknown command" message and the usage.
+        [] => Ok(verb.into()),
+        _ => Err(format!(
+            "ambiguous command: {verb}, could be: {}",
+            hits.join(", ")
+        )),
+    }
 }
 
 /// tmux's rule: no attaching from inside a pane. Into its own session the
@@ -246,4 +295,31 @@ fn target(rest: &[String], names: &[&str]) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_verb;
+
+    #[test]
+    fn a_unique_start_of_a_command_is_that_command() {
+        assert_eq!(expand_verb("att").unwrap(), "attach-session");
+        assert_eq!(expand_verb("kill-ses").unwrap(), "kill-session");
+        assert_eq!(expand_verb("upg").unwrap(), "upgrade");
+        assert_eq!(expand_verb("split-w").unwrap(), "split-window");
+        // Spelled-out names and aliases are never expanded.
+        assert_eq!(expand_verb("a").unwrap(), "a");
+        assert_eq!(expand_verb("ls").unwrap(), "ls");
+        assert_eq!(expand_verb("new").unwrap(), "new");
+        assert_eq!(expand_verb("bogus").unwrap(), "bogus");
+    }
+
+    #[test]
+    fn an_ambiguous_start_names_the_candidates() {
+        let e = expand_verb("kill-s").unwrap_err();
+        assert!(
+            e.contains("kill-server") && e.contains("kill-session"),
+            "{e}"
+        );
+    }
 }
