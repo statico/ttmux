@@ -19,6 +19,9 @@
   and screen keymaps) and the prefix and <kbd>w</kbd> or <kbd>s</kbd>
   (tmux keymap). In the Modern keymap, the prefix and <kbd>"</kbd> opened
   the command palette before; the prefix and <kbd>;</kbd> still does.
+- <kbd>ctrl+{</kbd> and <kbd>ctrl+}</kbd> (ctrl+shift+[ and ]) go to the
+  previous and next tab, as in a browser. They need a terminal that has
+  the kitty keyboard protocol.
 - The command palette uses the same matching, so `nt` finds `new-tab`.
   Its list now scrolls to keep the selected row on screen.
 - As in tmux, a command can be shortened to the start of its name, if

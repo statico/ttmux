@@ -247,6 +247,21 @@ fn ctrl_and_a_digit_or_the_prefix_and_a_digit_go_to_a_tab() {
 }
 
 #[test]
+fn ctrl_shift_brackets_step_through_the_tabs() {
+    let mut h = Harness::start(80, 24);
+    h.wait_for("the first pane", |s| s.contains('╭'));
+    h.send(b"\x14v"); // tab 1 gets two panes, so it can be told apart
+    h.wait_for("a second pane", |s| s.matches('╭').count() == 2);
+    h.send(b"\x14c");
+    h.wait_for("a second tab", |s| s.matches('╭').count() == 1);
+
+    h.send(b"\x1b[91;6u"); // ctrl+shift+[ in the kitty keyboard protocol
+    h.wait_for("tab 1", |s| s.matches('╭').count() == 2);
+    h.send(b"\x1b[125;5u"); // ctrl+}, as a terminal that shifts it sends
+    h.wait_for("tab 2", |s| s.matches('╭').count() == 1);
+}
+
+#[test]
 fn ctrl_quote_finds_a_pane_by_name() {
     let mut h = Harness::start(80, 24);
     h.wait_for("the first pane", |s| s.contains('╭'));

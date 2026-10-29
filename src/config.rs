@@ -668,6 +668,12 @@ fn direct_keys() -> Vec<(&'static str, &'static str)> {
         // Free in every program, since terminals without the kitty keyboard
         // protocol cannot send it at all.
         ("ctrl+'", "choose-pane"),
+        // A browser's tab keys. Terminals that report the shifted character
+        // send ctrl+{ and ctrl+} instead.
+        ("ctrl+shift+[", "prev-tab"),
+        ("ctrl+shift+]", "next-tab"),
+        ("ctrl+{", "prev-tab"),
+        ("ctrl+}", "next-tab"),
         ("ctrl+alt+n", "next-alert"),
         ("shift+pageup", "scroll-up 10"),
         ("shift+pagedown", "scroll-down 10"),

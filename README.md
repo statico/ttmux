@@ -136,6 +136,7 @@ Every keymap also has these, with no prefix:
 | <kbd>ctrl+1</kbd>–<kbd>9</kbd>, <kbd>0</kbd> | Go to tab 1 to 10 (see `tab-number-keys`) |
 | <kbd>ctrl+alt+p</kbd> | Command palette |
 | <kbd>ctrl+'</kbd> | Jump to a tab or pane |
+| <kbd>ctrl+{</kbd> / <kbd>ctrl+}</kbd> | Previous or next tab |
 | <kbd>ctrl+alt+,</kbd> | Settings |
 | <kbd>ctrl+alt+n</kbd> | Go to the next pane that wants you |
 | <kbd>shift+pageup</kbd> / <kbd>pagedown</kbd> | Scroll back and forward |
