@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.2 — 2026-10-30
+
+- The cursor in a text field is now the character under it, shown in
+  reverse colors. Before, the cursor was a thin bar that took a column
+  of its own and moved the text after it to the right. With the cursor
+  at the start, for example after <kbd>ctrl+a</kbd> in the rename
+  prompt, the name looked like it had a space in front of it. Nothing
+  was added to the name. This change applies to every text field: the
+  rename prompt, the command palette, the pane switcher, the command
+  line, the settings screen, and the color picker.
+
 ## 1.1.1 — 2026-10-29
 
 - The `starfield` status bar effect twinkles now. Before, it put new
