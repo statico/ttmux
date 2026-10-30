@@ -1,6 +1,6 @@
 # Maintainer: Ian Langworth <https://github.com/statico>
 pkgname=ttmux
-pkgver=1.1.0
+pkgver=1.1.1
 pkgrel=1
 pkgdesc='A modern terminal multiplexer: tiling + free-floating panes, mouse, curved borders, in-UI config'
 arch=('x86_64' 'aarch64')
@@ -10,7 +10,7 @@ depends=('glibc' 'libgcc')
 makedepends=('cargo')
 options=('!lto' '!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('f69f8e0d595eeb653e7e900d09131392d214d3797053e2afeccf8cfc4d77ef5e')
+sha256sums=('039747f2c1ac3c1bc17ffc0885f3351290393dcd655cf54ab54b5da6f4dc3f91')
 
 prepare() {
   cd "$pkgname-$pkgver"
