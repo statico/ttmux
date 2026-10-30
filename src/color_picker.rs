@@ -18,7 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::config::{Config, Rgb};
 use crate::layout::Rect;
-use crate::line_edit::{LineEdit, CARET};
+use crate::line_edit::LineEdit;
 use crate::settings_ui::put;
 
 /// What the settings panel should do with the picker after an event.
@@ -219,17 +219,17 @@ impl Picker {
 
         let bad = self.text.text().parse::<Rgb>().is_err();
         let on = |f: Focus| if self.focus == f { "›" } else { " " };
-        let hex = if self.focus == Focus::Hex {
-            self.text.with_caret(CARET)
-        } else {
-            self.text.text().to_string()
-        };
+        let hex = format!("{} hex  ", on(Focus::Hex));
         line(
             buf,
             HEX_Y,
-            &format!("{} hex  {hex}", on(Focus::Hex)),
+            &format!("{hex}{}", self.text.text()),
             if bad { plain.fg(Color::Red) } else { plain },
         );
+        if self.focus == Focus::Hex && HEX_Y < r.h {
+            let x = r.x + hex.chars().count() as u16;
+            self.text.draw_caret(buf, x, r.y + HEX_Y, r.right());
+        }
 
         let c = channels(self.cur.0);
         let mut chans = format!("{} rgb ", on(Focus::Channels));

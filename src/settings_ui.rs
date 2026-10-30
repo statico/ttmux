@@ -18,7 +18,7 @@ use crate::config::{
     TitlePosition,
 };
 use crate::layout::Rect;
-use crate::line_edit::{LineEdit, CARET};
+use crate::line_edit::LineEdit;
 
 /// What the app should do once the overlay has handled an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1007,7 +1007,7 @@ impl Settings {
             let editing = selected && matches!(self.edit, Edit::Buffer(_) | Edit::Capture);
             let mut segs: Vec<(String, Style)> = vec![];
             match (&self.edit, &f.kind) {
-                (Edit::Buffer(b), _) if editing => value = b.with_caret(CARET),
+                (Edit::Buffer(b), _) if editing => value = b.text().to_string(),
                 (Edit::Capture, _) if editing => value = "press a key…".into(),
                 // The colour itself, beside its name: a hex code is not a
                 // colour anyone can see.
@@ -1039,7 +1039,10 @@ impl Settings {
             } else {
                 base.add_modifier(Modifier::DIM)
             };
-            put_row(buf, r, y, &label, &segs, style, dots);
+            let vx = put_row(buf, r, y, &label, &segs, style, dots);
+            if let (Edit::Buffer(b), true) = (&self.edit, editing) {
+                b.draw_caret(buf, vx, y, r.right());
+            }
         }
     }
 
@@ -1048,10 +1051,11 @@ impl Settings {
             buf,
             r.x,
             r.y,
-            &format!("action: {}", filter.with_caret(CARET)),
+            &format!("action: {}", filter.text()),
             r.w,
             base,
         );
+        filter.draw_caret(buf, r.x + 8, r.y, r.right());
         for (i, a) in filtered_actions(filter.text())
             .iter()
             .enumerate()
@@ -1080,6 +1084,7 @@ fn picker_rect(fields: Rect) -> Rect {
 
 /// One row of `r`: `label · · · value`, the value flush right and the whole
 /// width painted with `style`. A value too long to fit follows the label.
+/// Returns the column the value starts at.
 fn put_row(
     buf: &mut Buffer,
     r: Rect,
@@ -1088,7 +1093,7 @@ fn put_row(
     value: &[(String, Style)],
     style: Style,
     dots: Style,
-) {
+) -> u16 {
     put(buf, r.x, y, &" ".repeat(r.w as usize), r.w, style);
     let lw = label.chars().count() as u16;
     let vw: u16 = value.iter().map(|(s, _)| s.chars().count() as u16).sum();
@@ -1105,6 +1110,7 @@ fn put_row(
         put(buf, x, y, text, r.right().saturating_sub(x), *s);
         x = x.saturating_add(text.chars().count() as u16);
     }
+    vx
 }
 
 fn filtered_actions(filter: &str) -> Vec<String> {

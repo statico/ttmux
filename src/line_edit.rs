@@ -6,9 +6,8 @@
 //! behave the same way.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-/// What a field draws at its cursor.
-pub const CARET: &str = "▏";
+use ratatui::buffer::Buffer;
+use ratatui::style::Modifier;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LineEdit {
@@ -41,7 +40,22 @@ impl LineEdit {
         self.text.is_empty()
     }
 
-    /// The text, with `caret` inserted where the cursor is, for drawing.
+    /// Show the cursor by reversing the cell under it, for a field whose text
+    /// starts at `(x, y)` and must stay left of `right`. A caret glyph would
+    /// take a column of its own and push the text after it along, so at the
+    /// front of a field it reads as a leading space.
+    // ponytail: one column per char, like the fields that draw the text.
+    pub fn draw_caret(&self, buf: &mut Buffer, x: u16, y: u16, right: u16) {
+        let col = x.saturating_add(self.text[..self.cursor].chars().count() as u16);
+        if col < right {
+            if let Some(cell) = buf.cell_mut((col, y)) {
+                cell.modifier.insert(Modifier::REVERSED);
+            }
+        }
+    }
+
+    /// The text, with `caret` inserted where the cursor is.
+    #[cfg(test)]
     pub fn with_caret(&self, caret: &str) -> String {
         let (head, tail) = self.text.split_at(self.cursor);
         format!("{head}{caret}{tail}")

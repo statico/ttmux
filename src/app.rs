@@ -27,7 +27,7 @@ use crate::config::{Bar, BorderStyle, Config};
 use crate::graphics::Image;
 use crate::input::{encode_key, encode_mouse, Keys, Resolution};
 use crate::layout::{Layout, Mode, PaneId, Preset, Rect};
-use crate::line_edit::{LineEdit, CARET};
+use crate::line_edit::LineEdit;
 use crate::migrate::{PaneSnap, Snapshot, TabSnap};
 use crate::pty::Pane;
 use crate::render;
@@ -3356,12 +3356,13 @@ fn draw_list(
     buf.set_stringn(
         inner.x,
         inner.y,
-        format!("> {}", query.with_caret(CARET)),
+        format!("> {}", query.text()),
         inner.w as usize,
         Style::default()
             .fg(cfg.status.accent.into())
             .add_modifier(Modifier::BOLD),
     );
+    query.draw_caret(buf, inner.x + 2, inner.y, inner.right());
     if inner.w == 0 {
         return;
     }
@@ -3451,10 +3452,11 @@ fn draw_prompt(buf: &mut Buffer, area: Rect, label: &str, input: &LineEdit, cfg:
     buf.set_stringn(
         inner.x,
         inner.y,
-        input.with_caret(CARET),
+        input.text(),
         inner.w as usize,
         Style::default().fg(cfg.status.fg.into()),
     );
+    input.draw_caret(buf, inner.x, inner.y, inner.right());
 }
 
 /// ctrl+n and ctrl+p as Down and Up, ctrl+g as Esc. Text fields have no use
@@ -4004,6 +4006,39 @@ mod tests {
             let mut buf = Buffer::empty(area.into());
             draw_prompt(&mut buf, area, "rename", &LineEdit::new("x"), &cfg);
         }
+    }
+
+    #[test]
+    fn the_prompt_cursor_does_not_push_the_text_along() {
+        // A caret glyph took a column, so ctrl+a looked like it put a space
+        // in front of the name.
+        let cfg = Config::default();
+        let area = Rect::new(0, 0, 40, 5);
+        let draw = |input: &LineEdit| {
+            let mut buf = Buffer::empty(area.into());
+            draw_prompt(&mut buf, area, "rename", input, &cfg);
+            buf
+        };
+        let mut input = LineEdit::new("xyz");
+        let at_end = draw(&input);
+        input.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        let at_front = draw(&input);
+        let text = |buf: &Buffer| -> Vec<String> {
+            buf.content()
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect()
+        };
+        assert_eq!(text(&at_front), text(&at_end));
+        let reversed = |buf: &Buffer| -> Vec<String> {
+            buf.content()
+                .iter()
+                .filter(|c| c.modifier.contains(Modifier::REVERSED))
+                .map(|c| c.symbol().to_string())
+                .collect()
+        };
+        assert_eq!(reversed(&at_front), ["x"]);
+        assert_eq!(reversed(&at_end), [" "]);
     }
 
     #[test]

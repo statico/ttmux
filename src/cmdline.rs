@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 
 use crate::config::Config;
 use crate::layout::Rect;
-use crate::line_edit::{LineEdit, CARET};
+use crate::line_edit::LineEdit;
 use crate::render::put_cell;
 use crate::script;
 
@@ -177,13 +177,8 @@ impl CmdLine {
             .fg(cfg.status.fg.into())
             .bg(cfg.status.bg.into());
         let y = area.bottom() - 1;
-        write_line(
-            buf,
-            area,
-            y,
-            &format!(":{}", self.input.with_caret(CARET)),
-            style,
-        );
+        write_line(buf, area, y, &format!(":{}", self.input.text()), style);
+        self.input.draw_caret(buf, area.x + 1, y, area.right());
         if area.h > 1 {
             let hint = style
                 .fg(cfg.status.accent.into())
