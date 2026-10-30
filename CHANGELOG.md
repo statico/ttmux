@@ -1,15 +1,20 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-29
+
+New ways to move between tabs and panes.
 
 - The prefix and a digit from 1 to 9 go to that tab, as `prefix N` does
   in tmux, and 0 goes to the tenth tab. This works in every keymap.
 - <kbd>ctrl+1</kbd> to <kbd>ctrl+9</kbd> and <kbd>ctrl+0</kbd> go to a
-  tab with no prefix. The
-  new `general.tab-number-keys` setting changes the modifier to `alt` or
-  `ctrl-shift`, or turns the keys `off`. The ctrl keys need a terminal
-  that has the kitty keyboard protocol. Other terminals send ctrl+1 as a
-  plain `1`, and that still types `1`.
+  tab with no prefix. The new `general.tab-number-keys` setting, also on
+  the settings screen, changes the modifier to `alt` or `ctrl-shift`, or
+  turns the keys `off`. The ctrl keys need a terminal that has the kitty
+  keyboard protocol. Other terminals send ctrl+1 as a plain `1`, and
+  that still types `1`.
+- <kbd>ctrl+{</kbd> and <kbd>ctrl+}</kbd> (ctrl+shift+[ and ]) go to the
+  previous and next tab, as in a browser. They also need the kitty
+  keyboard protocol.
 - The help screen and the which-key popup show the ten tab keys as one
   row.
 - <kbd>ctrl+'</kbd> opens a list of every tab and pane, with each pane's
@@ -19,9 +24,6 @@
   and screen keymaps) and the prefix and <kbd>w</kbd> or <kbd>s</kbd>
   (tmux keymap). In the Modern keymap, the prefix and <kbd>"</kbd> opened
   the command palette before; the prefix and <kbd>;</kbd> still does.
-- <kbd>ctrl+{</kbd> and <kbd>ctrl+}</kbd> (ctrl+shift+[ and ]) go to the
-  previous and next tab, as in a browser. They need a terminal that has
-  the kitty keyboard protocol.
 - The command palette uses the same matching, so `nt` finds `new-tab`.
   Its list now scrolls to keep the selected row on screen.
 - As in tmux, a command can be shortened to the start of its name, if
