@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-10-29
+
+- The `starfield` status bar effect twinkles now. Before, it put new
+  stars in new places every second. Now each star stays in its cell and
+  fades in and out slowly, on its own timing, so the bar looks calm.
+  The idea comes from the starfield in the Codex CLI.
+
 ## 1.1.0 — 2026-10-29
 
 New ways to move between tabs and panes.
