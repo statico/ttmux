@@ -51,6 +51,8 @@ const RING_GAP: Duration = Duration::from_secs(3);
 
 /// How long each frame of a busy tab's spinner stays up.
 const SPIN_FRAME: Duration = Duration::from_millis(100);
+/// How often the starfield bar effect repaints its twinkle.
+const STAR_FRAME: Duration = Duration::from_millis(150);
 
 /// One scripted command waiting for the app thread, with the channel its
 /// answer goes back on.
@@ -2512,6 +2514,7 @@ impl App {
         let mut last_tick = Instant::now();
         let mut last_busy = Instant::now();
         let mut last_spin = None;
+        let mut last_star = None;
         loop {
             if let Some(e) = self.exit() {
                 return Ok(e);
@@ -2636,6 +2639,11 @@ impl App {
             let spin = self.spin_frame();
             if spin != last_spin {
                 last_spin = spin;
+                dirty = true;
+            }
+            let star = self.star_frame();
+            if star != last_star {
+                last_star = star;
                 dirty = true;
             }
 
@@ -3003,6 +3011,20 @@ impl App {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         Some((t.as_millis() / SPIN_FRAME.as_millis()) as usize % frames.len())
+    }
+
+    /// The starfield's frame, while a status row is showing it.
+    fn star_frame(&self) -> Option<u128> {
+        let s = &self.cfg.status;
+        if s.effect != crate::config::BarEffect::Starfield
+            || !(s.header.enabled || s.footer.enabled)
+        {
+            return None;
+        }
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Some(t.as_millis() / STAR_FRAME.as_millis())
     }
 
     /// The spinner for a tab with a busy agent in it. ttmux turns it, not

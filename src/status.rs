@@ -160,7 +160,7 @@ pub fn draw(
 
     // The effect goes in the cells no widget claimed, so widget text, its
     // colours and the hitboxes are identical under every effect.
-    paint_effect(buf, rect, cfg, &taken, now_secs());
+    paint_effect(buf, rect, cfg, &taken, now_millis());
 
     hits.sort_by_key(|(_, r)| r.start);
     hits
@@ -304,27 +304,12 @@ impl Row<'_> {
 // ---------------------------------------------------------------- effects
 
 /// Paint `cfg.effect` into the background of the cells `taken` leaves free.
-/// `t` is a whole-second bucket: the starfield drifts once a second instead of
-/// flickering every frame.
-fn paint_effect(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], t: u64) {
+/// `ms` is the wall clock in milliseconds, which the starfield twinkles by.
+fn paint_effect(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], ms: u64) {
     let (from, to) = match cfg.effect {
         BarEffect::Flat => return,
         BarEffect::Starfield => {
-            for y in rect.y..rect.bottom() {
-                for x in rect.x..rect.right() {
-                    if taken[(x - rect.x) as usize] {
-                        continue;
-                    }
-                    let h = hash3(x as u64, y as u64, t);
-                    // Sparse: ~1 cell in 64 is a bright star, 3 more are dim.
-                    let (sym, fg) = match h % 64 {
-                        0 => ("✦", cfg.fg.0),
-                        1..=3 => ("·", Color::DarkGray),
-                        _ => continue,
-                    };
-                    put_cell(buf, x, y, sym, Style::default().fg(fg).bg(cfg.bg.0));
-                }
-            }
+            paint_stars(buf, rect, cfg, taken, ms);
             return;
         }
         // Indexed and Reset carry no components to blend, so stay flat rather
@@ -349,6 +334,49 @@ fn paint_effect(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], t
             put_cell(buf, x, y, " ", Style::default().fg(cfg.fg.0).bg(bg));
         }
     }
+}
+
+/// Single braille dots: a star is the smallest mark a cell can hold.
+const STAR_DOTS: [&str; 8] = ["⠁", "⠂", "⠄", "⠈", "⠐", "⠠", "⡀", "⢀"];
+
+/// After Codex's composer starfield: one cell in five holds a star that
+/// stays put and pulses on its own slow period, so the bar twinkles faintly
+/// rather than reshuffling.
+fn paint_stars(buf: &mut Buffer, rect: Rect, cfg: &StatusBar, taken: &[bool], ms: u64) {
+    let time = ms as f64 / 1000.0;
+    let rgb = rgb_of(cfg.fg.0).zip(rgb_of(cfg.bg.0));
+    for y in rect.y..rect.bottom() {
+        for x in rect.x..rect.right() {
+            if taken[(x - rect.x) as usize] {
+                continue;
+            }
+            let h = hash3(x as u64, y as u64, 0);
+            if h % 5 != 0 {
+                continue;
+            }
+            let period = 4.0 + (h % 31) as f64 / 10.0;
+            let phase = (time / period + (h % 997) as f64 / 997.0).fract();
+            // sin^12 keeps each star dark most of its period, then a brief glint.
+            let lit = (phase * std::f64::consts::PI).sin().powi(12) * 0.55;
+            if lit < 0.04 {
+                continue;
+            }
+            let fg = match rgb {
+                Some((f, b)) => {
+                    Color::Rgb(mix(b.0, f.0, lit), mix(b.1, f.1, lit), mix(b.2, f.2, lit))
+                }
+                // No components to blend: show only the peak, dimly.
+                None if lit > 0.3 => Color::DarkGray,
+                None => continue,
+            };
+            let sym = STAR_DOTS[(h / 161 % 8) as usize];
+            put_cell(buf, x, y, sym, Style::default().fg(fg).bg(cfg.bg.0));
+        }
+    }
+}
+
+fn mix(a: u8, b: u8, f: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * f).round() as u8
 }
 
 fn rgb_of(c: Color) -> Option<(u8, u8, u8)> {
@@ -599,11 +627,15 @@ fn color(value: &str) -> Option<Color> {
 
 // ------------------------------------------------------------------ time
 
-fn now_secs() -> u64 {
+fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn now_secs() -> u64 {
+    now_millis() / 1000
 }
 
 fn now(fmt: &str) -> String {
@@ -1345,41 +1377,48 @@ mod tests {
     }
 
     #[test]
-    fn starfield_holds_still_within_a_second_and_drifts_after() {
+    fn stars_stay_put_and_twinkle() {
         let c = with_effect(BarEffect::Starfield);
-        let bar = bar_with(&[], &[], &[]);
-        let paint = |t: u64| {
+        let paint = |ms: u64| {
             let mut buf = buffer(80);
             draw(
                 &mut buf,
                 Rect::new(0, 0, 80, 1),
                 &c,
-                &bar,
+                &bar_with(&[], &[], &[]),
                 &make_ctx(&[], &[]),
             );
-            paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], t);
+            paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], ms);
             buf
         };
-        assert_eq!(paint(1_700_000_000), paint(1_700_000_000));
-        assert_ne!(paint(1_700_000_000), paint(1_700_000_001));
-
-        // And the real clock path: two frames inside one second agree.
-        for _ in 0..3 {
-            let t0 = now_secs();
-            let (a, _) = draw_bar(&c, 80);
-            let (b, _) = draw_bar(&c, 80);
-            if now_secs() == t0 {
-                assert_eq!(a, b);
-                break;
+        assert_eq!(paint(1_700_000_000_000), paint(1_700_000_000_000));
+        // Over a few seconds the field changes, but each cell only ever shows
+        // its own star or nothing.
+        let mut seen: Vec<Option<String>> = vec![None; 80];
+        let mut changed = false;
+        let first = paint(0);
+        for ms in (0..10_000).step_by(150) {
+            let buf = paint(ms);
+            changed |= buf != first;
+            for x in 0..80u16 {
+                let sym = buf.cell((x, 0)).unwrap().symbol().to_string();
+                if sym == " " {
+                    continue;
+                }
+                let s = seen[x as usize].get_or_insert(sym.clone());
+                assert_eq!(*s, sym, "star at {x} changed glyph");
             }
         }
+        assert!(changed);
     }
 
     #[test]
     fn starfield_actually_paints_something() {
         let c = with_effect(BarEffect::Starfield);
         let mut buf = buffer(80);
-        paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], 7);
+        (0..10_000)
+            .step_by(150)
+            .for_each(|ms| paint_effect(&mut buf, Rect::new(0, 0, 80, 1), &c, &[false; 80], ms));
         assert!(row(&buf, 80).trim() != "");
     }
 
