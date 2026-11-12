@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.3 — 2026-11-11
+
+- In copy mode, a mouse drag that goes above or below the pane now
+  scrolls the pane, as it does in tmux. The selection grows onto the
+  lines that come into view. The pane keeps scrolling while you hold
+  the button outside it, so you can select more than one screen of
+  text. This needs `general.copy-mode = true`.
+
 ## 1.1.2 — 2026-10-30
 
 - The cursor in a text field is now the character under it, shown in
