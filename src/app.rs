@@ -46,6 +46,9 @@ const TICK_BUSY: Duration = Duration::from_millis(1);
 const TICK_IDLE: Duration = Duration::from_millis(16);
 /// How long after the last keystroke or byte the loop stays on the fast tick.
 const BUSY_FOR: Duration = Duration::from_millis(400);
+/// How often a copy-mode drag held past a pane's edge scrolls a line, tmux's
+/// rate.
+const DRAG_SCROLL_EVERY: Duration = Duration::from_millis(50);
 /// The least time between two agent bells passed to the outer terminal.
 const RING_GAP: Duration = Duration::from_secs(3);
 
@@ -261,6 +264,10 @@ struct Copy {
     anchor: Option<(isize, u16)>,
     /// Begun by a drag, so letting go copies and leaves.
     mouse: bool,
+    /// Where a drag pointer is held above or below the pane, and when the
+    /// view last stepped toward it. The view keeps scrolling while it stays
+    /// there, as tmux does, though the terminal sends nothing more.
+    edge: Option<(u16, u16, Instant)>,
 }
 
 /// What a rename prompt is about to name.
@@ -1752,6 +1759,7 @@ impl App {
                         cursor: (s.pane.scrolled_off() as isize + line, col),
                         anchor: None,
                         mouse: false,
+                        edge: None,
                     });
                     self.note("copy mode: v selects, y copies, q leaves");
                 }
@@ -2391,6 +2399,7 @@ impl App {
                         cursor: at,
                         anchor: Some(at),
                         mouse: true,
+                        edge: None,
                     });
                 } else {
                     self.forward_mouse(ev);
@@ -2401,11 +2410,7 @@ impl App {
                     self.tab_mut().layout.drag_to(x, y);
                     self.sync_sizes();
                 } else if self.copy.as_ref().is_some_and(|c| c.mouse) {
-                    if let Some(at) = self.copy_point(x, y, true) {
-                        if let Some(c) = self.copy.as_mut() {
-                            c.cursor = at;
-                        }
-                    }
+                    self.drag_copy(x, y);
                 } else {
                     self.forward_mouse(ev);
                 }
@@ -2453,6 +2458,51 @@ impl App {
             _ => self.forward_mouse(ev),
         }
         Ok(())
+    }
+
+    /// Move a copy-mode drag to (x, y). Above or below the pane, the view
+    /// scrolls one line toward the pointer, and the selection follows onto
+    /// the line that comes into view.
+    fn drag_copy(&mut self, x: u16, y: u16) {
+        let id = self.focus();
+        let Some(inner) = self.tabs[self.tab]
+            .layout
+            .rect_of(id)
+            .map(|r| self.inner(id, r))
+        else {
+            return;
+        };
+        let dir = if y < inner.y {
+            -1
+        } else if y >= inner.bottom() {
+            1
+        } else {
+            0
+        };
+        if dir != 0 {
+            if let Some(s) = self.slots.get_mut(&id) {
+                s.pane.scroll_by(dir);
+            }
+        }
+        let at = self.copy_point(x, y, true);
+        if let Some(c) = self.copy.as_mut() {
+            if let Some(at) = at {
+                c.cursor = at;
+            }
+            c.edge = (dir != 0).then(|| (x, y, Instant::now()));
+        }
+    }
+
+    /// The repeat of a drag held past the pane's edge. True when it moved.
+    fn drag_scroll(&mut self) -> bool {
+        let Some((x, y, t)) = self.copy.as_ref().filter(|c| c.mouse).and_then(|c| c.edge) else {
+            return false;
+        };
+        if t.elapsed() < DRAG_SCROLL_EVERY {
+            return false;
+        }
+        self.drag_copy(x, y);
+        true
     }
 
     /// Where a copy-mode drag at (x, y) lands in the focused pane, when copy
@@ -2635,6 +2685,7 @@ impl App {
             if let Some(e) = self.exit() {
                 return Ok(e);
             }
+            dirty |= self.drag_scroll();
 
             let spin = self.spin_frame();
             if spin != last_spin {
@@ -4562,6 +4613,55 @@ mod tests {
             .unwrap();
         assert!(a.copy.is_none());
         assert_eq!(a.paste_buffer, "on");
+    }
+
+    #[test]
+    fn copy_mode_drag_past_the_top_scrolls_the_view_and_keeps_scrolling() {
+        let mut a = app_running("seq 1 100; sleep 60");
+        a.cfg.general.copy_mode = true;
+        assert!(pump_until(&mut a, |a| a.slots[&a.focus()]
+            .pane
+            .screen()
+            .contents()
+            .contains("100")));
+        let id = a.focus();
+        let inner = a.inner(id, a.tabs[0].layout.rect_of(id).unwrap());
+        assert!(inner.y > 0, "the test drags onto the row above the pane");
+        let top = a.slots[&id]
+            .pane
+            .screen()
+            .contents()
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        let first: u32 = top.trim().parse().unwrap();
+        let mouse = |kind, row| MouseEvent {
+            kind,
+            column: inner.x,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        a.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), inner.y + 1))
+            .unwrap();
+        // Off the top: one line per motion, as the terminal reports it...
+        a.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), inner.y - 1))
+            .unwrap();
+        assert_eq!(a.slots[&id].pane.scroll, 1);
+        // ...and more while the pointer is held there and nothing arrives.
+        assert!(!a.drag_scroll(), "too soon for the repeat");
+        std::thread::sleep(DRAG_SCROLL_EVERY);
+        assert!(a.drag_scroll());
+        assert_eq!(a.slots[&id].pane.scroll, 2);
+
+        a.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), inner.y - 1))
+            .unwrap();
+        assert!(a.copy.is_none());
+        // From two lines above the old top down to the cell the drag began
+        // on, the first digit of that row.
+        let want = format!("{}\n{}\n{}\n{}", first - 2, first - 1, first, first + 1);
+        assert_eq!(a.paste_buffer, want[..want.len() - 1]);
     }
 
     #[test]
