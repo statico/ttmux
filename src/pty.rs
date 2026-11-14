@@ -915,29 +915,40 @@ impl Pane {
             .process_id()
             .map(|p| p as libc::pid_t)
             .filter(|pg| *pg > 1);
+        // A shell with job control puts `cmd &` in a process group of its
+        // own, which no signal to the shell's group reaches. What every
+        // process in the pane's session shares is the pty as its controlling
+        // terminal. This runs first because when the shell, the session
+        // leader, dies, Linux takes that terminal away from the rest. Not
+        // pkill: macOS pkill has no `-s`, and its `-t` matches nothing.
+        //
+        // ponytail: shells out to ps; a /proc walk plus a sysctl for macOS
+        // is the alternative, and it is a lot of code for a path that runs
+        // once per pane at exit.
         #[cfg(unix)]
-        if let Some(pg) = pg {
-            unsafe { libc::killpg(pg, libc::SIGHUP) };
+        if let Some(tty) = self.master.tty_name() {
+            let tty = tty.strip_prefix("/dev").unwrap_or(&tty).to_owned();
+            let out = std::process::Command::new("ps")
+                .arg("-o")
+                .arg("pid=")
+                .arg("-t")
+                .arg(&tty)
+                .stderr(std::process::Stdio::null())
+                .output();
+            let pids = out.map(|o| o.stdout).unwrap_or_default();
+            for pid in String::from_utf8_lossy(&pids).split_whitespace() {
+                // Never 0 or 1: those signal this process's group, or init.
+                if let Ok(pid @ 2..) = pid.parse::<libc::pid_t>() {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
         }
         let _ = child.kill();
+        // A grandchild that outlives the shell keeps the pty slave open, so
+        // the reader thread would sit in read() forever holding the fd.
         #[cfg(unix)]
         if let Some(pg) = pg {
-            // A grandchild that outlives the shell keeps the pty slave open, so
-            // the reader thread would sit in read() forever holding the fd.
             unsafe { libc::killpg(pg, libc::SIGKILL) };
-            // A shell with job control puts `cmd &` in a process group of its
-            // own, which the killpg above never reaches. The session is the
-            // one grouping that holds every descendant, and setsid() made the
-            // child's pid its session id.
-            //
-            // ponytail: shells out to pkill; a /proc walk plus a sysctl for
-            // macOS is the alternative, and it is a lot of code for a path
-            // that runs once per pane at exit.
-            let _ = std::process::Command::new("pkill")
-                .args(["-9", "-s", &pg.to_string()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
         }
         // Nothing else waits on this child once the app drops the pane, and
         // Child's Drop doesn't reap: without this it stays <defunct>.
@@ -1276,10 +1287,27 @@ mod tests {
     /// Do not split them apart again.
     #[test]
     fn kill_reaps_the_child_and_its_group() {
-        // The shell ignores SIGHUP (so the kill escalates to SIGKILL, the path
-        // that never waits) and leaves a grandchild holding the pty slave.
-        let mut p = pane("trap '' HUP; (sleep 30) & printf 'up'; wait", 40, 10);
+        // First a job as a shell with job control starts it: a process group
+        // of its own, so no signal to the shell's group reaches it, and deaf
+        // to the SIGHUP the shell passes on to its jobs as it dies.
+        // Then the shell ignores SIGHUP (so the kill escalates to SIGKILL,
+        // the path that never waits) and leaves a grandchild holding the pty
+        // slave.
+        let mut p = pane(
+            "set -m; (trap '' HUP; exec sleep 31) & echo \"job=$!\"; set +m; \
+             trap '' HUP; (sleep 30) & printf 'up'; wait",
+            40,
+            10,
+        );
         assert!(pump_until(&mut p, |p| p.screen().contents().contains("up")));
+        let job: libc::pid_t = p
+            .screen()
+            .contents()
+            .split("job=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse().ok())
+            .expect("the job's pid");
         // setsid() in the spawn makes the child's pid its process group id.
         let pid = p.child.borrow().process_id().unwrap() as libc::pid_t;
         p.kill();
@@ -1297,6 +1325,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while unsafe { libc::killpg(pid, 0) } == 0 {
             assert!(Instant::now() < deadline, "process group survived kill()");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        while unsafe { libc::kill(job, 0) } == 0 {
+            assert!(Instant::now() < deadline, "the job survived kill()");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
