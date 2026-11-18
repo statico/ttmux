@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.4 — 2026-11-17
+
+- The detach key now detaches only the client that pressed it. Before,
+  when more than one terminal was attached to the same session, a
+  detach in one of them detached all of them. A `detach` sent as a
+  script command still detaches every client.
+- On macOS, closing a pane now also stops the jobs that its shell put
+  in the background. Before, these jobs could keep running after the
+  pane was gone.
+
 ## 1.1.3 — 2026-11-11
 
 - In copy mode, a mouse drag that goes above or below the pane now
