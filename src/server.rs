@@ -79,7 +79,8 @@ struct State {
 /// Everything the client threads, the backend and the host share.
 struct Hub {
     state: Mutex<State>,
-    events: Sender<Event>,
+    /// Input for the app, tagged with the client it came from, if any.
+    events: Sender<(Option<u64>, Event)>,
     /// Scripted commands on their way to the app thread, which picks them up
     /// on its next pass round the loop.
     jobs: Sender<ScriptJob>,
@@ -156,12 +157,23 @@ impl Hub {
         if size != st.size {
             st.size = size;
             // The app only learns about geometry through its event stream.
-            let _ = self.events.send(Event::Resize(size.0, size.1));
+            let _ = self.events.send((None, Event::Resize(size.0, size.1)));
         }
     }
 
     fn drop_client(&self, id: u64) {
         let mut st = self.state.lock().unwrap();
+        st.clients.retain(|c| c.id != id);
+        self.resize_locked(&mut st);
+    }
+
+    /// Say goodbye to one client. Dropping its sender ends its writer, which
+    /// closes the socket.
+    fn detach(&self, id: u64) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = st.clients.iter().find(|c| c.id == id) {
+            let _ = c.tx.try_send(ServerMsg::Bye("detached".into()));
+        }
         st.clients.retain(|c| c.id != id);
         self.resize_locked(&mut st);
     }
@@ -284,8 +296,11 @@ impl Backend for WireBackend {
 
 struct ServerHost {
     hub: Arc<Hub>,
-    rx: Receiver<Event>,
+    rx: Receiver<(Option<u64>, Event)>,
     jobs: Receiver<ScriptJob>,
+    /// The client behind the event `poll` last returned. The app checks for
+    /// a detach right after handling each event, so this is who asked.
+    from: Option<u64>,
 }
 
 impl Host for ServerHost {
@@ -296,7 +311,10 @@ impl Host for ServerHost {
             bail!("kill-server");
         }
         match self.rx.recv_timeout(timeout) {
-            Ok(e) => Ok(Some(e)),
+            Ok((from, e)) => {
+                self.from = from;
+                Ok(Some(e))
+            }
             Err(RecvTimeoutError::Timeout) => Ok(None),
             Err(RecvTimeoutError::Disconnected) => bail!("event channel closed"),
         }
@@ -308,7 +326,12 @@ impl Host for ServerHost {
     }
 
     fn commands(&mut self) -> Vec<ScriptJob> {
-        self.jobs.try_iter().collect()
+        let jobs: Vec<_> = self.jobs.try_iter().collect();
+        if !jobs.is_empty() {
+            // A scripted `detach` belongs to no one client.
+            self.from = None;
+        }
+        jobs
     }
 
     fn colours(&mut self) -> Option<(String, String)> {
@@ -493,17 +516,10 @@ fn client_thread(stream: UnixStream, hub: Arc<Hub>) {
                 hub.resize_locked(&mut st);
             }
             Ok(Some(ClientMsg::Input(ev))) => {
-                let _ = hub.events.send(ev);
+                let _ = hub.events.send((Some(id), ev));
             }
             Ok(Some(ClientMsg::Detach)) => {
-                // Through the client entry rather than a sender of our own:
-                // a clone held here outlives `park()` below, and shutdown
-                // waits on the writer that the last sender keeps alive.
-                let st = hub.state.lock().unwrap();
-                if let Some(c) = st.clients.iter().find(|c| c.id == id) {
-                    let _ = c.tx.try_send(ServerMsg::Bye("detached".into()));
-                }
-                drop(st);
+                hub.detach(id);
                 break;
             }
             Ok(Some(ClientMsg::Hello { .. }))
@@ -864,6 +880,7 @@ fn run(listener: UnixListener, adopt: Option<Adoption>) -> Result<()> {
         hub: hub.clone(),
         rx,
         jobs: jobs_rx,
+        from: None,
     };
     {
         let hub = hub.clone();
@@ -876,10 +893,13 @@ fn run(listener: UnixListener, adopt: Option<Adoption>) -> Result<()> {
             if exit == Exit::Quit || hub.kill.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            // The app detached: there is one shared view, so that means every
-            // client leaves. The session itself keeps running, which is the
-            // whole point -- a per-client `Detach` never gets this far.
-            hub.detach_all("detached");
+            // The app detached. Only the client that pressed the key leaves;
+            // a scripted detach has no client, so it sends everyone away.
+            // The session itself keeps running, which is the whole point.
+            match host.from.take() {
+                Some(id) => hub.detach(id),
+                None => hub.detach_all("detached"),
+            }
             app.detached = false;
         }
     })();

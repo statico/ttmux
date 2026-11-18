@@ -25,9 +25,11 @@ impl Session {
     fn start() -> Session {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("s.sock");
-        // A config path that does not exist: the app falls back to defaults
-        // rather than reading whatever the developer running the tests has.
-        let cfg = dir.path().join("nonexistent.toml");
+        // An empty config: the app falls back to defaults rather than
+        // reading whatever the developer running the tests has, and does not
+        // open the first-run welcome over the keys a test sends.
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(&cfg, "").unwrap();
         let status = Command::new(env!("CARGO_BIN_EXE_ttmux"))
             .args(["new", "-d", "-s", "test"])
             .env("TTMUX_SOCKET", &sock)
@@ -145,6 +147,34 @@ fn attach_detach_reattach_keeps_the_session() {
     assert!(proto::is_live(&s.sock));
     let mut b = s.attach(100, 40);
     b.wait_for_column(99);
+}
+
+#[test]
+fn the_detach_key_detaches_only_the_client_that_pressed_it() {
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    let s = Session::start();
+    let mut a = s.attach(100, 40);
+    a.wait_for_column(99);
+    let mut b = s.attach(100, 40);
+    b.wait_for_column(99);
+
+    a.send(&ClientMsg::Input(Event::Key(KeyEvent::new(
+        KeyCode::Char('t'),
+        KeyModifiers::CONTROL,
+    ))));
+    a.send(&ClientMsg::Input(Event::Key(KeyEvent::from(
+        KeyCode::Char('d'),
+    ))));
+    loop {
+        match a.recv() {
+            Some(ServerMsg::Bye(_)) | None => break,
+            Some(_) => {}
+        }
+    }
+
+    // `b` is still attached: it gets a fresh screen when it resizes.
+    b.send(&ClientMsg::Input(Event::Resize(80, 30)));
+    b.wait_for_clear();
 }
 
 #[test]
